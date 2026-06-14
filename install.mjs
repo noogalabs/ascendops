@@ -261,39 +261,57 @@ if (IS_MAC) {
     ok('build-essential');
   }
 } else if (IS_WINDOWS) {
-  // Check for Windows Build Tools
+  // Check for Visual C++ Build Tools. `cl.exe` is only on PATH inside a
+  // "Developer PowerShell for VS" — a normal PowerShell won't see it even when
+  // the tools ARE installed, which produced false "build tools missing" failures
+  // mid-install. So if cl.exe isn't on PATH we fall back to vswhere, which
+  // reports the install regardless of PATH (and is what node-gyp itself uses to
+  // locate the toolset, so a vswhere hit is sufficient for the later build).
   let hasBuildTools = false;
-  try {
-    run('cl.exe /? 2>&1');
-    hasBuildTools = true;
-  } catch { /* not in PATH */ }
   try {
     run('where cl.exe');
     hasBuildTools = true;
-  } catch { /* not found */ }
+  } catch { /* cl.exe not on PATH — normal outside a Developer PowerShell */ }
+
+  if (!hasBuildTools) {
+    // vswhere ships with every VS 2017+ installer at a fixed location. Query for
+    // the VC++ x64/x86 toolset component; a non-empty installationPath means the
+    // build tools are present even though cl.exe isn't on this shell's PATH.
+    const vswhere = join(
+      process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+      'Microsoft Visual Studio', 'Installer', 'vswhere.exe'
+    );
+    if (existsSync(vswhere)) {
+      try {
+        const vcPath = run(`${JSON.stringify(vswhere)} -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`);
+        if (vcPath) hasBuildTools = true;
+      } catch { /* vswhere found no matching install */ }
+    }
+  }
 
   if (!hasBuildTools) {
     console.log('');
-    console.log(`${Y}  ! Visual C++ Build Tools are required for native Node.js addons.${R}`);
+    console.log(`${Y}  ! Visual C++ Build Tools are required for native Node.js addons (node-pty).${R}`);
     console.log('');
-    console.log(`    ${BOLD}Option A (recommended): Install via npm${R}`);
-    console.log('    Run this command in an Administrator PowerShell, then re-run this installer:');
-    console.log(`    ${Y}  npm install -g windows-build-tools${R}`);
+    console.log(`    ${BOLD}Recommended: install via winget (Administrator PowerShell)${R}`);
+    console.log('    Run this, then re-run this installer:');
+    console.log(`    ${Y}  winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"${R}`);
     console.log('');
-    console.log(`    ${BOLD}Option B: Install Visual Studio Build Tools manually${R}`);
+    console.log(`    ${BOLD}Manual alternative${R}`);
     console.log('    https://visualstudio.microsoft.com/visual-cpp-build-tools/');
+    console.log('    (select the "Desktop development with C++" workload)');
     console.log('');
     const tryAuto = process.env.AUTO_BUILD_TOOLS === '1';
     if (tryAuto) {
-      warn('Attempting auto-install of windows-build-tools...');
+      warn('Attempting auto-install of VC++ Build Tools via winget (requires admin)...');
       try {
-        runVisible('npm install -g windows-build-tools');
-        ok('windows-build-tools installed');
+        runVisible('winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"');
+        ok('Visual C++ Build Tools installed via winget');
       } catch {
-        fail('Could not auto-install build tools. See instructions above.');
+        fail('Could not auto-install build tools via winget. Install manually (see above), then re-run.\nIf winget is missing, update "App Installer" from the Microsoft Store.');
       }
     } else {
-      fail('Visual C++ Build Tools required. See instructions above.\nSet AUTO_BUILD_TOOLS=1 to attempt auto-install (requires admin).');
+      fail('Visual C++ Build Tools required. See instructions above.\nSet AUTO_BUILD_TOOLS=1 to attempt auto-install via winget (requires admin).');
     }
   } else {
     ok('Visual C++ Build Tools found');
@@ -480,10 +498,23 @@ if (existsSync(INSTALL_DIR)) {
     } catch { /* no upstream remote yet */ }
 
     if (!hasUpstream) {
-      // Check if origin points to canonical — if so, rename it to upstream
       let originUrl = '';
       try { originUrl = run('git remote get-url origin', { cwd: INSTALL_DIR }); } catch { /* no origin */ }
-      if (originUrl && (originUrl.includes('noogalabs/ascendops') || originUrl.includes('grandamenium/cortextos') || originUrl === REPO_URL)) {
+      const repoName = REPO_URL.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '').split('/').pop();
+      // origin IS the canonical repo (a plain clone) — rename it to upstream.
+      const isCanonicalOrigin = !!originUrl && (
+        originUrl.includes('noogalabs/ascendops') ||
+        originUrl.includes('grandamenium/cortextos') ||
+        originUrl === REPO_URL
+      );
+      // origin is a personal FORK — same repo name, different owner
+      // (e.g. <you>/ascendops). Recognize it by repo-name so an in-place
+      // re-run of a manually forked+cloned tree still wires up upstream and can
+      // pull updates, instead of silently skipping the migration.
+      const isForkOrigin = !!originUrl && !isCanonicalOrigin && (
+        originUrl.endsWith(`/${repoName}.git`) || originUrl.endsWith(`/${repoName}`)
+      );
+      if (isCanonicalOrigin) {
         log('Migrating git remotes: renaming origin → upstream...');
         try {
           run('git remote rename origin upstream', { cwd: INSTALL_DIR });
@@ -491,6 +522,17 @@ if (existsSync(INSTALL_DIR)) {
           hasUpstream = true;
         } catch {
           warn('Could not rename remote — run manually: git remote rename origin upstream');
+        }
+      } else if (isForkOrigin) {
+        // Keep origin = your fork; add canonical as upstream so pulls work and
+        // you can still contribute back. Matches the gh-fork install end state.
+        log('Detected a personal fork as origin — adding canonical "upstream" remote...');
+        try {
+          run(`git remote add upstream ${REPO_URL}`, { cwd: INSTALL_DIR });
+          ok(`"upstream" remote added (origin stays your fork, upstream = ${repoName})`);
+          hasUpstream = true;
+        } catch {
+          warn(`Could not add upstream — run manually: git remote add upstream ${REPO_URL}`);
         }
       }
     }
@@ -609,8 +651,8 @@ try {
     console.error('  If you see C++ compilation errors, install build tools:');
     console.error('    sudo apt-get install -y build-essential');
   } else if (IS_WINDOWS) {
-    console.error('  If you see C++ compilation errors, install Visual C++ Build Tools:');
-    console.error('    npm install -g windows-build-tools  (run as Administrator)');
+    console.error('  If you see C++ compilation errors, install Visual C++ Build Tools (run as Administrator):');
+    console.error('    winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"');
   }
   process.exit(1);
 }
