@@ -34,7 +34,7 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
 3. **Install the tool itself.** The skill's page (`skills/pm/SKILL.md`) lists the one command that
    installs the actual CLI. For Property Meld:
    ```bash
-   pipx install git+https://github.com/noogalabs/cli-anything-pm.git
+   pipx install --include-deps git+https://github.com/noogalabs/cli-anything-pm.git
    ```
 4. **Add your own credentials.** Every connector talks to *your* account, so it needs *your* login
    or API keys — nothing is shared or pre-filled. The skill's page tells you exactly which

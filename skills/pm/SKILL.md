@@ -11,7 +11,7 @@ Connect your agent to Property Meld: read work orders, properties, and vendors, 
 ## Install
 
 ```bash
-pipx install git+https://github.com/noogalabs/cli-anything-pm.git
+pipx install --include-deps git+https://github.com/noogalabs/cli-anything-pm.git
 ```
 
 This installs the `pm` command globally. Verify it landed:
@@ -21,6 +21,11 @@ pm --help
 ```
 
 > **No PyPI package** — install from the git URL above, not `pipx install cli-anything-pm`.
+>
+> **Use `--include-deps`.** Without it, pipx exposes only `pm`, not the `playwright`
+> command that the browser-backed commands (`assign-tech`, `comments`) need below —
+> you'd hit `playwright: command not found`. `--include-deps` puts `playwright` on
+> your PATH too.
 
 ## Before it works — your own credentials (required)
 
@@ -31,7 +36,10 @@ Installing the `pm` command is not enough on its own. `pm` talks to **your** Pro
    export PM_CLIENT_ID=your_client_id
    export PM_CLIENT_SECRET=your_client_secret
    ```
-2. **Browser backend (assign-tech, comments)** — these use a logged-in browser session:
+2. **Browser backend (assign-tech, comments) — only if you use those commands.** The
+   Nexus read commands above need no browser. For the browser-backed commands, install
+   a browser and point at your login session (the `playwright` command is available
+   because you installed with `--include-deps`):
    ```bash
    playwright install chromium
    # Point PM_CREDS_PATH at your Property Meld login JSON
