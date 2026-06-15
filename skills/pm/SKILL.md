@@ -58,6 +58,10 @@ Confirm credentials are working:
 pm probe
 ```
 
+> **Note:** `pm probe` checks your OAuth credentials, not your tenant id. A green
+> probe does **not** confirm `PM_MULTITENANT_ID` is correct — double-check you set
+> it to your own tenant, or commands will run against the wrong account.
+
 ## Commands
 
 ### Work Orders
