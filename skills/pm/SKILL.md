@@ -55,7 +55,7 @@ Installing the `pm` command is not enough on its own. `pm` talks to **your** Pro
 Confirm credentials are working:
 
 ```bash
-pm probe --json
+pm probe
 ```
 
 ## Commands
@@ -65,8 +65,8 @@ pm probe --json
 pm work-orders list --status open --json          # Open (pending assignment, vendor, or mgmt availability)
 pm work-orders list --status pending --json       # Awaiting vendor (PENDING_VENDOR)
 pm work-orders list --limit 50 --json             # More results
-# Status slugs: open | pending | completed | canceled. Any other value is passed
-# through as a raw PM status (e.g. --status PENDING_COMPLETION).
+# Status slugs: open | pending | completed | canceled.
+# For a raw PM status, use --status-raw (e.g. --status-raw PENDING_COMPLETION).
 pm work-orders get <meld_id> --json               # Single work order detail
 pm work-orders comments <meld_id> --json          # Get comments/notes (browser)
 ```
@@ -84,7 +84,7 @@ pm assign-tech --work-order-id <id> --tech Carlos --json
 
 ### Health Check
 ```bash
-pm probe --json                                    # Verify API credentials
+pm probe                                           # Verify API credentials
 ```
 
 ## Backend Notes
