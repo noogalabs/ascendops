@@ -1,0 +1,87 @@
+---
+name: pm
+description: "CLI for Property Meld work order management. Read work orders, properties, and vendors via the Nexus API; assign techs via browser automation. Use when working with Property Meld melds, work orders, or tech assignment."
+triggers: ["property meld", "work order", "meld", "pm work-orders", "pm assign-tech", "meld triage"]
+---
+
+# Property Meld CLI (pm)
+
+Connect your agent to Property Meld: read work orders, properties, and vendors, and assign techs — from the command line instead of clicking through the web UI.
+
+## Install
+
+```bash
+pipx install git+https://github.com/noogalabs/cli-anything-pm.git
+```
+
+This installs the `pm` command globally. Verify it landed:
+
+```bash
+pm --help
+```
+
+> **No PyPI package** — install from the git URL above, not `pipx install cli-anything-pm`.
+
+## Before it works — your own credentials (required)
+
+Installing the `pm` command is not enough on its own. `pm` talks to **your** Property Meld account, so you must provide your own credentials. Nothing here is shared or pre-filled.
+
+1. **Nexus API (read commands)** — set these environment variables to your Property Meld Nexus API client credentials:
+   ```bash
+   export PM_CLIENT_ID=your_client_id
+   export PM_CLIENT_SECRET=your_client_secret
+   ```
+2. **Browser backend (assign-tech, comments)** — these use a logged-in browser session:
+   ```bash
+   playwright install chromium
+   # Point PM_CREDS_PATH at your Property Meld login JSON
+   # (default: ~/.claude/credentials/property-meld.json)
+   ```
+
+Confirm credentials are working:
+
+```bash
+pm probe --json
+```
+
+## Commands
+
+### Work Orders
+```bash
+pm work-orders list --status open --json          # List open work orders
+pm work-orders list --status pending --json       # Pending completion
+pm work-orders list --limit 50 --json             # More results
+pm work-orders get <meld_id> --json               # Single work order detail
+pm work-orders comments <meld_id> --json          # Get comments/notes (browser)
+```
+
+### Properties & Vendors
+```bash
+pm properties list --json                          # All properties
+pm vendors list --json                             # All vendors
+```
+
+### Tech Assignment (browser backend)
+```bash
+pm assign-tech --work-order-id <id> --tech Carlos --json
+```
+
+### Health Check
+```bash
+pm probe --json                                    # Verify API credentials
+```
+
+## Backend Notes
+
+| Command | Backend | Requires |
+|---------|---------|---------|
+| work-orders list | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
+| work-orders get | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
+| work-orders comments | Browser (Playwright) | PM_CREDS_PATH + cookies |
+| properties list | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
+| vendors list | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
+| assign-tech | Browser (Playwright) | PM_CREDS_PATH + cookies |
+
+## Source
+
+Tool repo: https://github.com/noogalabs/cli-anything-pm

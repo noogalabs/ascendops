@@ -156,6 +156,19 @@ cortextos dashboard          # Start web dashboard (--port 3000)
 
 ---
 
+## CLI Tools
+
+Connectors that let your agent work directly inside external software (Property Meld, AppFolio, and more). Browse the shelf, install one with a single command, then add your own by PR'ing a folder into this repo.
+
+See **[CLI-TOOLS.md](./CLI-TOOLS.md)** for the tool shelf and the use + contribute guide.
+
+```bash
+# Example: add the Property Meld connector
+npx skills add noogalabs/ascendops --skill pm
+```
+
+---
+
 ## Security
 
 cortextOS has undergone a dedicated security hardening sprint covering prompt injection resistance, guardrail enforcement, and approval gate integrity. Agents require explicit human approval before any external action (email, deploy, delete, financial). The guardrails system is self-improving: agents log near-misses and extend GUARDRAILS.md each session.
