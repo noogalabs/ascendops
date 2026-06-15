@@ -31,11 +31,17 @@ pm --help
 
 Installing the `pm` command is not enough on its own. `pm` talks to **your** Property Meld account, so you must provide your own credentials. Nothing here is shared or pre-filled.
 
-1. **Nexus API (read commands)** — set these environment variables to your Property Meld Nexus API client credentials:
+1. **Nexus API (read commands)** — set these environment variables to your Property Meld Nexus API client credentials, plus your own tenant id:
    ```bash
    export PM_CLIENT_ID=your_client_id
    export PM_CLIENT_SECRET=your_client_secret
+   export PM_MULTITENANT_ID=your_tenant_id    # REQUIRED — your Property Meld tenant id
    ```
+   > **Set `PM_MULTITENANT_ID` to your own tenant id.** It identifies *which* Property
+   > Meld account the CLI talks to. If you leave it unset, the CLI falls back to a
+   > built-in default that is **not yours**, and every command would silently run
+   > against the wrong account. Your tenant id is the number in your Property Meld URL
+   > (`app.propertymeld.com/<tenant-id>/...`).
 2. **Browser backend (assign-tech, comments) — only if you use those commands.** The
    Nexus read commands above need no browser. For the browser-backed commands, install
    a browser and point at your login session (the `playwright` command is available
@@ -56,9 +62,11 @@ pm probe --json
 
 ### Work Orders
 ```bash
-pm work-orders list --status open --json          # List open work orders
-pm work-orders list --status pending --json       # Pending completion
+pm work-orders list --status open --json          # Open (pending assignment, vendor, or mgmt availability)
+pm work-orders list --status pending --json       # Awaiting vendor (PENDING_VENDOR)
 pm work-orders list --limit 50 --json             # More results
+# Status slugs: open | pending | completed | canceled. Any other value is passed
+# through as a raw PM status (e.g. --status PENDING_COMPLETION).
 pm work-orders get <meld_id> --json               # Single work order detail
 pm work-orders comments <meld_id> --json          # Get comments/notes (browser)
 ```

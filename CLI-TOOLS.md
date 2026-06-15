@@ -39,7 +39,8 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
 4. **Add your own credentials.** Every connector talks to *your* account, so it needs *your* login
    or API keys — nothing is shared or pre-filled. The skill's page tells you exactly which
    environment variables or files to set (for Property Meld: `PM_CLIENT_ID`, `PM_CLIENT_SECRET`,
-   and `playwright install chromium` for tech assignment).
+   **and `PM_MULTITENANT_ID` set to your own Property Meld tenant id — required, or the CLI runs
+   against the wrong account** — plus `playwright install chromium` for tech assignment).
 5. **You're done.** Your agent can now use that tool.
 
 > Installing the command is not the same as it working — a connector does nothing until you give it
