@@ -89,13 +89,15 @@ pm probe --json                                    # Verify API credentials
 
 ## Backend Notes
 
+All Nexus API commands require the three Nexus env vars from the Credentials section above: `PM_CLIENT_ID`, `PM_CLIENT_SECRET`, and `PM_MULTITENANT_ID` (your own tenant id).
+
 | Command | Backend | Requires |
 |---------|---------|---------|
-| work-orders list | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
-| work-orders get | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
+| work-orders list | Nexus API | Nexus credentials (incl. PM_MULTITENANT_ID) |
+| work-orders get | Nexus API | Nexus credentials (incl. PM_MULTITENANT_ID) |
 | work-orders comments | Browser (Playwright) | PM_CREDS_PATH + cookies |
-| properties list | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
-| vendors list | Nexus API | PM_CLIENT_ID, PM_CLIENT_SECRET |
+| properties list | Nexus API | Nexus credentials (incl. PM_MULTITENANT_ID) |
+| vendors list | Nexus API | Nexus credentials (incl. PM_MULTITENANT_ID) |
 | assign-tech | Browser (Playwright) | PM_CREDS_PATH + cookies |
 
 ## Source
