@@ -64,11 +64,16 @@ content. The frontmatter at the top must include:
 
 ```yaml
 ---
-name: <your-tool>          # must match what people will type after --skill
+name: <your-tool>
 description: "One sentence on what the tool does and when to use it."
-user-invocable: false      # REQUIRED — see note below
+user-invocable: false
 ---
 ```
+
+`name` is what members type after `--skill`. Keep each value on its own line with
+**no inline `#` comments** — the framework reads these keys literally, so a trailing
+comment (e.g. on `user-invocable: false`) would be read as part of the value and
+break the opt-out.
 
 > **Always include `user-invocable: false`.** Your tool is something members opt
 > into with `npx skills add`, not a built-in command. Without this line, the
