@@ -33,16 +33,21 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
    That adds the tool's skill to your agent.
 
    > **Make sure it lands in the right place.** `npx skills add` installs into the
-   > current folder's `.claude/skills` by default (project scope). Each cortextOS
-   > agent loads skills from its **own** directory, so install into the agent you want
-   > by running the command **from that agent's directory** (e.g.
-   > `orgs/<org>/agents/<agent>`); repeat for each agent that needs it. The
-   > `-g`/`--global` flag installs at the user level instead of project-level.
+   > current folder's `.claude/skills` by default (project scope). For a **Claude Code**
+   > agent, install into the agent you want by running the command **from that agent's
+   > directory** (e.g. `orgs/<org>/agents/<agent>`); repeat for each agent that needs
+   > it. The `-g`/`--global` flag installs at the user level instead of project-level.
    >
-   > One gotcha: the skills CLI's own `--agent` flag selects which **coding-tool**
+   > **Codex-runtime agents are different.** An agent created with
+   > `--runtime codex-app-server` does **not** load `.claude/skills` — its skills live
+   > under `plugins/cortextos-agent-skills/skills` (linked into `~/.codex/skills`). So
+   > `npx skills add` into a Codex agent's directory looks like it worked but the agent
+   > never sees the skill; add it to that Codex skills path instead.
+   >
+   > One more gotcha: the skills CLI's own `--agent` flag selects which **coding-tool**
    > it installs for (e.g. `claude-code`, `cursor`) — **not** your cortextOS fleet
    > agents (collie, blue, …). So `--agent '*'` means "all coding tools," not "all my
-   > agents." Use the per-directory method above to target a specific fleet agent.
+   > agents."
 3. **Install the tool itself.** The skill's page (`skills/pm/SKILL.md`) lists the one command that
    installs the actual CLI. For Property Meld:
    ```bash
