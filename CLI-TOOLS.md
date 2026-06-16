@@ -36,8 +36,10 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
    > current folder's `.claude/skills` by default. If you run it from somewhere other
    > than your running agent's directory (for example, a framework checkout), the
    > skill goes there instead and your agent won't find it. Either run the command
-   > **from your agent's own directory** (e.g. `orgs/<org>/agents/<agent>`) or add
-   > `-g`/`--global` to install it for all your agents.
+   > **from your agent's own directory** (e.g. `orgs/<org>/agents/<agent>`) or target
+   > the agent explicitly with `--agent <agent-name>` (use `--agent '*'` to install
+   > for every agent). The `-g`/`--global` flag installs at the user level instead of
+   > project-level — it does **not** by itself install for all your agents.
 3. **Install the tool itself.** The skill's page (`skills/pm/SKILL.md`) lists the one command that
    installs the actual CLI. For Property Meld:
    ```bash

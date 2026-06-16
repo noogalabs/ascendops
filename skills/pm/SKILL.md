@@ -92,12 +92,13 @@ pm work-orders comments <meld_id> --json          # Get comments/notes (browser)
 ```bash
 pm properties list --json                          # Up to --limit (default 100)
 pm vendors list --json                             # Up to --limit (default 100)
-pm properties list --limit 1000 --json             # Raise the cap to fetch them all
+pm properties list --limit 5000 --json             # Set --limit above your total to fetch more
 ```
 > **Heads-up on the 100 default.** Both commands default to `--limit 100`. On an
 > account with more than 100 properties (or vendors) the plain command returns only
-> the first 100 — it is **not** "all" of them. Pass a higher `--limit` (the CLI
-> paginates under the hood to collect up to that number).
+> the first 100 — it is **not** "all" of them. The CLI paginates under the hood and
+> returns up to whatever `--limit` you pass, so set `--limit` comfortably above your
+> expected total to be sure you get everything.
 
 ### Tech Assignment (browser backend)
 ```bash
