@@ -193,7 +193,9 @@ describe('forge-candidates', () => {
       id: 'busid-evonly',
       agent: 'dane',
       org: 'ascendops',
-      timestamp: `${today}T08:00:00Z`,
+      // Past-of-cutoff, time-independent. A hardcoded UTC hour flaked when CI ran
+      // before that hour (event became future-of-now and got filtered out).
+      timestamp: new Date(Date.now() - 60_000).toISOString(),
       category: 'action',
       event: 'forge_candidate',
       severity: 'info',
@@ -213,7 +215,7 @@ describe('forge-candidates', () => {
   it('snapshot-binds consume to build-start: a candidate emitted AFTER the queue-read survives the next build (TOCTOU)', () => {
     const today = new Date().toISOString().split('T')[0];
     const t1Event = {
-      id: 'ev-t1', agent: 'dane', org: 'ascendops', timestamp: `${today}T01:00:00Z`,
+      id: 'ev-t1', agent: 'dane', org: 'ascendops', timestamp: new Date(Date.now() - 60_000).toISOString(), // past-of-cutoff, time-independent
       category: 'action', event: 'forge_candidate', severity: 'info',
       metadata: { id: 'fc-t1', skill: 'built-a', slippage: 's', verdict: 'create-new', incident: `PR #1 ${today}`, confidence: 'high' },
     };
