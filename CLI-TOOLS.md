@@ -38,13 +38,10 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
    > directory** (e.g. `orgs/<org>/agents/<agent>`); repeat for each agent that needs
    > it. The `-g`/`--global` flag installs at the user level instead of project-level.
    >
-   > **Codex-runtime agents are different.** This `npx skills add` / `.claude/skills`
-   > flow is for **Claude Code** agents. An agent created with
-   > `--runtime codex-app-server` does **not** load `.claude/skills`, and there isn't
-   > yet a supported step to add a shelf connector like this one to a Codex agent —
-   > `add-agent` only installs that runtime's built-in skill template. For now these
-   > shelf connectors target Claude Code agents; adding one to a Codex agent is a
-   > tracked framework gap.
+   > **Codex-runtime agents:** use the same command with the Codex adapter —
+   > `npx skills add noogalabs/ascendops --skill pm --agent codex -g` — which installs
+   > into `~/.codex/skills` where Codex discovers it (Codex agents do not read
+   > `.claude/skills`).
    >
    > One more gotcha: the skills CLI's own `--agent` flag selects which **coding-tool**
    > it installs for (e.g. `claude-code`, `cursor`) — **not** your cortextOS fleet
