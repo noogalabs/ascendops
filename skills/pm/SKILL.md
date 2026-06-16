@@ -66,6 +66,15 @@ pm probe
 > probe does **not** confirm `PM_MULTITENANT_ID` is correct — double-check you set
 > it to your own tenant, or commands will run against the wrong account.
 
+> **Running inside a hosted agent (not your own terminal)?** A shell `export` only
+> sets the variable for that one shell — a daemon-run agent builds its environment
+> from its own `.env` and your org's secrets file when it starts, so it never sees
+> your exported values. Write the keys (`PM_CLIENT_ID`, `PM_CLIENT_SECRET`,
+> `PM_MULTITENANT_ID`, and `PM_CREDS_PATH` if you use the browser commands) into the
+> agent's `.env` (or the org secrets file), then restart/reload the agent. Otherwise
+> `pm probe` can look green in your terminal while the agent's own PM commands fail
+> as unauthenticated.
+
 ## Commands
 
 ### Work Orders
@@ -81,9 +90,14 @@ pm work-orders comments <meld_id> --json          # Get comments/notes (browser)
 
 ### Properties & Vendors
 ```bash
-pm properties list --json                          # All properties
-pm vendors list --json                             # All vendors
+pm properties list --json                          # Up to --limit (default 100)
+pm vendors list --json                             # Up to --limit (default 100)
+pm properties list --limit 1000 --json             # Raise the cap to fetch them all
 ```
+> **Heads-up on the 100 default.** Both commands default to `--limit 100`. On an
+> account with more than 100 properties (or vendors) the plain command returns only
+> the first 100 — it is **not** "all" of them. Pass a higher `--limit` (the CLI
+> paginates under the hood to collect up to that number).
 
 ### Tech Assignment (browser backend)
 ```bash

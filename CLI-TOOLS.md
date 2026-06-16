@@ -31,6 +31,13 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
    npx skills add noogalabs/ascendops --skill pm
    ```
    That adds the tool's skill to your agent.
+
+   > **Make sure it lands in the right place.** `npx skills add` installs into the
+   > current folder's `.claude/skills` by default. If you run it from somewhere other
+   > than your running agent's directory (for example, a framework checkout), the
+   > skill goes there instead and your agent won't find it. Either run the command
+   > **from your agent's own directory** (e.g. `orgs/<org>/agents/<agent>`) or add
+   > `-g`/`--global` to install it for all your agents.
 3. **Install the tool itself.** The skill's page (`skills/pm/SKILL.md`) lists the one command that
    installs the actual CLI. For Property Meld:
    ```bash
