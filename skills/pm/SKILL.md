@@ -2,6 +2,10 @@
 name: pm
 description: "CLI for Property Meld work order management. Read work orders, properties, and vendors via the Nexus API; assign techs via browser automation. Use when working with Property Meld melds, work orders, or tech assignment."
 triggers: ["property meld", "work order", "meld", "pm work-orders", "pm assign-tech", "meld triage"]
+# Opt-in connector installed via `npx skills add` — not a built-in agent command.
+# Keeps the cortextOS framework from auto-registering a global Telegram /pm on
+# every bot that scans this repo's skills/ (see metrics.ts registerTelegramCommands).
+user-invocable: false
 ---
 
 # Property Meld CLI (pm)
