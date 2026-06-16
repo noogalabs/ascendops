@@ -38,11 +38,12 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
    > directory** (e.g. `orgs/<org>/agents/<agent>`); repeat for each agent that needs
    > it. The `-g`/`--global` flag installs at the user level instead of project-level.
    >
-   > **Codex-runtime agents are different.** An agent created with
-   > `--runtime codex-app-server` does **not** load `.claude/skills` — its skills live
-   > under `plugins/cortextos-agent-skills/skills` (linked into `~/.codex/skills`). So
-   > `npx skills add` into a Codex agent's directory looks like it worked but the agent
-   > never sees the skill; add it to that Codex skills path instead.
+   > **Codex-runtime agents are different.** This `npx skills add` / `.claude/skills`
+   > flow is for **Claude Code** agents. An agent created with
+   > `--runtime codex-app-server` does **not** load `.claude/skills` — the framework
+   > wires that agent's skills in when the agent is **created**. So adding a connector
+   > to a Codex agent isn't a copy-into-a-folder step; include the connector when you
+   > create the agent so the framework sets it up.
    >
    > One more gotcha: the skills CLI's own `--agent` flag selects which **coding-tool**
    > it installs for (e.g. `claude-code`, `cursor`) — **not** your cortextOS fleet
