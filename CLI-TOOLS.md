@@ -66,8 +66,15 @@ content. The frontmatter at the top must include:
 ---
 name: <your-tool>          # must match what people will type after --skill
 description: "One sentence on what the tool does and when to use it."
+user-invocable: false      # REQUIRED — see note below
 ---
 ```
+
+> **Always include `user-invocable: false`.** Your tool is something members opt
+> into with `npx skills add`, not a built-in command. Without this line, the
+> framework would auto-register your tool as a global `/<name>` Telegram command
+> on **every** AscendOps bot after an upgrade — even ones that never installed it.
+> The line keeps your tool installable while staying out of everyone's command menu.
 
 The body should cover: the one command to **install** the underlying CLI, the **credentials** the
 user must set themselves, and the **commands** the tool provides.
