@@ -40,10 +40,11 @@ A **Coming soon** tool isn't ready to install yet — check back later or ask in
    >
    > **Codex-runtime agents are different.** This `npx skills add` / `.claude/skills`
    > flow is for **Claude Code** agents. An agent created with
-   > `--runtime codex-app-server` does **not** load `.claude/skills` — the framework
-   > wires that agent's skills in when the agent is **created**. So adding a connector
-   > to a Codex agent isn't a copy-into-a-folder step; include the connector when you
-   > create the agent so the framework sets it up.
+   > `--runtime codex-app-server` does **not** load `.claude/skills`, and there isn't
+   > yet a supported step to add a shelf connector like this one to a Codex agent —
+   > `add-agent` only installs that runtime's built-in skill template. For now these
+   > shelf connectors target Claude Code agents; adding one to a Codex agent is a
+   > tracked framework gap.
    >
    > One more gotcha: the skills CLI's own `--agent` flag selects which **coding-tool**
    > it installs for (e.g. `claude-code`, `cursor`) — **not** your cortextOS fleet
