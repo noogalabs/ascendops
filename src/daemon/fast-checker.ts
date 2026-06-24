@@ -16,7 +16,7 @@ import {
 } from '../slack/slack-identity.js';
 import { KEYS } from '../pty/inject.js';
 import { stripControlChars, sanitizeForPtyInjection, wrapFenceSafe, validateOrgName } from '../utils/validate.js';
-import { resolve as pathResolve } from 'path';
+import { resolve as pathResolve, sep } from 'path';
 import { atomicWriteSync } from '../utils/atomic.js';
 // added 2026-04-29 by collie via dane dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
 import { loadHookRegistry, matchHooks, dispatchHook, type HookRegistry } from '../bus/hooks.js';
@@ -557,7 +557,7 @@ export class FastChecker {
     // even after symlink expansion. Defends against any path-traversal slip past validateOrgName.
     const orgsRoot = pathResolve(join(this.frameworkRoot, 'orgs'));
     const resolvedOrgPath = pathResolve(orgPath);
-    if (!resolvedOrgPath.startsWith(orgsRoot + '/') && resolvedOrgPath !== orgsRoot) {
+    if (!resolvedOrgPath.startsWith(orgsRoot + sep) && resolvedOrgPath !== orgsRoot) {
       this.log(`Hook dispatcher disabled — org path escaped frameworkRoot: ${orgPath}`);
       return;
     }
