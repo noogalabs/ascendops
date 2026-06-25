@@ -369,9 +369,12 @@ export class FastChecker {
     const agentName = this.agent.name;
     this.heartbeatTimer = setInterval(() => {
       const ts = new Date().toISOString();
+      // Invoke the built CLI via node directly rather than the bare `cortextos`
+      // command: on Windows the npm global is a `cortextos.cmd` shim that
+      // execFile (no shell) cannot resolve, yielding `spawn cortextos ENOENT`.
       execFile(
-        'cortextos',
-        ['bus', 'update-heartbeat', `[watchdog] ${agentName} alive — idle session ${ts}`],
+        process.execPath,
+        [join(this.frameworkRoot, 'dist', 'cli.js'), 'bus', 'update-heartbeat', `[watchdog] ${agentName} alive — idle session ${ts}`],
         { timeout: 10_000 },
         (err) => {
           if (!err) return;
@@ -1334,7 +1337,9 @@ export class FastChecker {
       rawJson = await new Promise<string>((resolve, reject) => {
         // Request JSON output — the CLI command doesn't accept the old shell
         // script's --warn-* flags. Alerting is handled here on tier transitions.
-        execFile('cortextos', ['bus', 'check-usage-api', '--json'], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
+        // Invoke via node + built CLI (not bare `cortextos`) so the Windows
+        // `cortextos.cmd` shim doesn't break execFile with `spawn ENOENT`.
+        execFile(process.execPath, [join(this.frameworkRoot, 'dist', 'cli.js'), 'bus', 'check-usage-api', '--json'], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
           if (err) { reject(err); return; }
           resolve(stdout);
         });
