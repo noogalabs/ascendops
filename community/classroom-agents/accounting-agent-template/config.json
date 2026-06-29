@@ -1,0 +1,64 @@
+{
+  "agent_name": "{{agent_name}}",
+  "enabled": false,
+  "runtime": "claude-code",
+  "startup_delay": 0,
+  "max_session_seconds": 255600,
+  "max_crashes_per_day": 10,
+  "tier": "sonnet",
+  "working_directory": "",
+  "timezone": "{{timezone}}",
+  "crons": [
+    {
+      "name": "heartbeat",
+      "type": "recurring",
+      "interval": "2h",
+      "prompt": "Read HEARTBEAT.md and follow its instructions. Update your heartbeat, check inbox, and work on your highest priority accounting task."
+    },
+    {
+      "name": "ar-digest",
+      "type": "recurring",
+      "cron": "0 8 * * 1-5",
+      "prompt": "Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, and prepare the delinquency-feed draft. Do not post adjustments or contact residents."
+    },
+    {
+      "name": "bank-rec-am",
+      "type": "recurring",
+      "cron": "0 8 * * 1-5",
+      "prompt": "Run trust-reconciliation in morning verify-and-flag mode. Bank=book=liability only; no ledger corrections or money movement."
+    },
+    {
+      "name": "bank-rec-pm",
+      "type": "recurring",
+      "cron": "0 17 * * 1-5",
+      "prompt": "Run trust-reconciliation in evening verify-and-flag mode. Surface changed breaks only; no ledger corrections or money movement."
+    },
+    {
+      "name": "owner-statements-monthly",
+      "type": "recurring",
+      "cron": "0 9 1 * *",
+      "prompt": "Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw recommendations. Draws are approval-gated."
+    },
+    {
+      "name": "deposit-deadline-watch",
+      "type": "recurring",
+      "cron": "30 8 * * *",
+      "prompt": "Run security-deposit-accounting deadline review. Draft alerts only; deposit returns are approval-gated."
+    }
+  ],
+  "communication_style": "precise-conservative",
+  "approval_rules": {
+    "always_ask": [
+      "external-comms",
+      "financial",
+      "ledger-adjustment",
+      "trust-transfer",
+      "owner-draw",
+      "vendor-payment",
+      "deposit-return",
+      "deployment",
+      "data-deletion"
+    ],
+    "never_ask": []
+  }
+}

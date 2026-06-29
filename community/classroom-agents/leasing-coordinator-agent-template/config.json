@@ -1,0 +1,63 @@
+{
+  "agent_name": "{{agent_name}}",
+  "enabled": false,
+  "runtime": "claude-code",
+  "startup_delay": 0,
+  "max_session_seconds": 255600,
+  "max_crashes_per_day": 10,
+  "tier": "sonnet",
+  "working_directory": "",
+  "timezone": "{{timezone}}",
+  "crons": [
+    {
+      "name": "heartbeat",
+      "type": "recurring",
+      "interval": "2h",
+      "prompt": "Read HEARTBEAT.md and follow its instructions. Update your heartbeat, check inbox, and work on your highest priority leasing or renewals task."
+    },
+    {
+      "name": "applicant-screening-digest",
+      "type": "recurring",
+      "cron": "0 8 * * 1-5",
+      "prompt": "Run the applicant-screening skill in digest mode: score new applications against the written rubric and draft scorecards with recommendations. Never auto-decline and never send an applicant a decision."
+    },
+    {
+      "name": "renewal-window-am",
+      "type": "recurring",
+      "cron": "0 8 * * 1-5",
+      "prompt": "Run renewals-coordinator in morning mode: detect leases entering the renewal window, score risk off payment history, and prep offer-packet drafts. Propose only; no resident or owner sends."
+    },
+    {
+      "name": "renewal-window-pm",
+      "type": "recurring",
+      "cron": "0 17 * * 1-5",
+      "prompt": "Run renewals-coordinator in evening mode: surface changed renewal flags and deadline pressure only. Propose only; no resident or owner sends."
+    },
+    {
+      "name": "lease-abstraction-intake",
+      "type": "recurring",
+      "cron": "0 9 * * 1-5",
+      "prompt": "Run lease-abstraction on any newly received leases: extract terms into structured data and flag missing, ambiguous, or contradictory clauses. Extract only; do not interpret legal meaning."
+    },
+    {
+      "name": "fair-housing-presend-sweep",
+      "type": "recurring",
+      "cron": "30 8 * * *",
+      "prompt": "Run fair-housing-guard over any pending applicant- or resident-facing drafts and screening criteria. Flag risks and propose compliant rewrites. Advisory only; surface, do not send."
+    }
+  ],
+  "communication_style": "consistent-defensible",
+  "approval_rules": {
+    "always_ask": [
+      "external-comms",
+      "applicant-decision",
+      "lease-execution",
+      "lease-send",
+      "renewal-offer",
+      "fair-housing-sensitive",
+      "deployment",
+      "data-deletion"
+    ],
+    "never_ask": []
+  }
+}

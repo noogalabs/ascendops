@@ -1,0 +1,13 @@
+{
+  "focus": "Accounting copilot, AR, AP drafts, owner statements, trust reconcile, and trust compliance with zero unattended money movement",
+  "goals": [
+    "Build read-only AR/rent-posting review and delinquency-feed discipline",
+    "Draft AP/vendor-payment batches with backup and approval gates",
+    "Draft owner statements and owner draws with explainable line items",
+    "Run trust reconciliation and trust-compliance checks as verify-and-flag only",
+    "Track security-deposit accounting deadlines and draft approval-ready itemizations"
+  ],
+  "bottleneck": "Live financial actions require human approval",
+  "updated_at": "",
+  "updated_by": ""
+}

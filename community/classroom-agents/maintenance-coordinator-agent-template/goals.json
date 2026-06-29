@@ -1,0 +1,13 @@
+{
+  "focus": "Maintenance coordination copilot, intake, triage, vendor coordination, scheduling, and verified close-out with zero unattended dispatch or resident comms",
+  "goals": [
+    "Triage every inbound request: category, severity, and tenant-vs-owner responsibility, with a life-safety fast-path",
+    "Troubleshoot to the configured depth before dispatch, backing off for frustrated/elderly/repeat-issue tenants",
+    "Coordinate vendors handyman-first: confirm acceptance and a real window before promising the resident a time",
+    "Track SLA clocks, chase breaches, and close tickets only against the original complaint with evidence",
+    "Run make-ready and turnover as sequenced projects to rent-ready, then hand off to leasing"
+  ],
+  "bottleneck": "Vendor dispatch, resident messages, and PO/quote approvals require human sign-off",
+  "updated_at": "",
+  "updated_by": ""
+}

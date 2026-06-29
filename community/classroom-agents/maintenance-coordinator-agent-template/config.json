@@ -1,0 +1,56 @@
+{
+  "agent_name": "{{agent_name}}",
+  "enabled": false,
+  "runtime": "claude-code",
+  "startup_delay": 0,
+  "max_session_seconds": 255600,
+  "max_crashes_per_day": 10,
+  "tier": "sonnet",
+  "working_directory": "",
+  "timezone": "{{timezone}}",
+  "crons": [
+    {
+      "name": "heartbeat",
+      "type": "recurring",
+      "interval": "2h",
+      "prompt": "Read HEARTBEAT.md and follow its instructions. Update your heartbeat, check inbox, watch SLA clocks, and work on your highest priority maintenance task."
+    },
+    {
+      "name": "intake-sweep",
+      "type": "recurring",
+      "interval": "30m",
+      "prompt": "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft proposed routing. Do not dispatch vendors or message residents."
+    },
+    {
+      "name": "sla-watch",
+      "type": "recurring",
+      "interval": "1h",
+      "prompt": "Run vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response/completion-clock breaches, and stalled work orders. Draft escalations only; no dispatch or resident comms without approval."
+    },
+    {
+      "name": "open-wo-digest",
+      "type": "recurring",
+      "cron": "0 8 * * 1-5",
+      "prompt": "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and what is blocking close-out. Draft only; no external sends."
+    },
+    {
+      "name": "make-ready-review",
+      "type": "recurring",
+      "cron": "0 9 * * 1-5",
+      "prompt": "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any slip risk against the target ready date. Planning only; dispatch goes through vendor-coordination with approval."
+    }
+  ],
+  "communication_style": "calm-organized",
+  "approval_rules": {
+    "always_ask": [
+      "external-comms",
+      "vendor-dispatch",
+      "resident-comms",
+      "po-quote-approval",
+      "spend-commitment",
+      "deployment",
+      "data-deletion"
+    ],
+    "never_ask": []
+  }
+}
