@@ -134,7 +134,7 @@ Open `goals.json` and `GOALS.md`. They already describe the leasing and renewals
 
 ## Step 7 (FINAL): Add the recommended crons
 
-Only now, after IDENTITY.md, the knowledge files, and goals are written, add the recurring jobs. Each schedule below has spaces, so it MUST stay quoted. Run these with your own agent name in place of `<your-agent-name>`:
+Only now, after IDENTITY.md, the knowledge files, and goals are written, add the recurring jobs. Each schedule below has spaces, so it MUST stay quoted. Run these with your own agent name in place of `"$CTX_AGENT_NAME"`:
 
 ```bash
 cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT."
@@ -153,7 +153,7 @@ cortextos bus add-cron "$CTX_AGENT_NAME" fair-housing-presend-sweep "30 8 * * *"
 Verify they registered:
 
 ```bash
-cortextos bus list-crons <your-agent-name>
+cortextos bus list-crons "$CTX_AGENT_NAME"
 ```
 
 ---
