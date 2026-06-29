@@ -68,7 +68,7 @@ echo "--- (C) secret-shape check ---"
 # Telegram bot token: <8-10 digits>:<35 token chars>
 TG=$(grep -rIinE '[0-9]{8,10}:[A-Za-z0-9_-]{35}' "$BUNDLE" 2>/dev/null | grep -vE '\.zip:')
 # OpenAI-style key (sk-...) and Google API key (AIza...)
-OAI=$(grep -rIinE 'sk-[A-Za-z0-9]{20,}' "$BUNDLE" 2>/dev/null | grep -vE '\.zip:')
+OAI=$(grep -rIinE 'sk-[A-Za-z0-9_-]{20,}' "$BUNDLE" 2>/dev/null | grep -vE '\.zip:')
 GK=$(grep -rIinE 'AIza[A-Za-z0-9_-]{35}' "$BUNDLE" 2>/dev/null | grep -vE '\.zip:')
 # Numeric telegram chat id / allowed-user: a 6+ digit value (groups may be -prefixed).
 # PLACEHOLDER_EXCLUDE deliberately avoids the bare word "example" - it would match
