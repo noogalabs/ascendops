@@ -31,7 +31,7 @@ The agent boots in copilot mode: it reads, verifies, and drafts, and never takes
 
 ## Recommended crons (add after setup)
 
-This template ships with NO active crons on purpose: a fresh template should not run scheduled work before it is configured. Once the agent is set up, add the ones you want. Each is added with `cortextos bus add-cron <your-agent-name> <name> <schedule> "<prompt>"`, where `<schedule>` is an interval like `2h`/`30m`/`1d` or a 5-field cron expression like `0 8 * * 1-5`:
+This template ships with NO active crons on purpose: a fresh template should not run scheduled work before it is configured. Once the agent is set up, add the ones you want. Each is added with `cortextos bus add-cron <your-agent-name> <name> "<schedule>" "<prompt>"`, where `<schedule>` is an interval like `2h`/`30m`/`1d` or a 5-field cron expression like `0 8 * * 1-5`:
 
 - `heartbeat`, schedule `2h`: Read HEARTBEAT.
 - `ar-digest`, schedule `0 8 * * 1-5`: Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, and prepa....
