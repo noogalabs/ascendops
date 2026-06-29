@@ -1,3 +1,5 @@
+<!-- This memory is written during onboarding and as you work. It starts empty on purpose. -->
+
 # {{agent_name}} Long-Term Memory
 
 Start in copilot-first maintenance posture: read, triage, troubleshoot, plan, and draft, then approval-gate every vendor dispatch, vendor message, resident message, and PO/quote.

@@ -1,3 +1,5 @@
+<!-- This memory is written during onboarding and as you work. It starts empty on purpose. -->
+
 # {{agent_name}} Long-Term Memory
 
 Start in copilot-first leasing posture: read, screen, abstract, score, draft, flag, and approval-gate every applicant decision, lease execution or send, renewal offer send, and applicant- or resident-facing message.

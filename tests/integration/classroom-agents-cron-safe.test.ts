@@ -24,7 +24,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
+import { join, sep } from 'path';
 import { tmpdir } from 'os';
 
 const BUNDLES_DIR = join(process.cwd(), 'community', 'classroom-agents');
@@ -75,12 +75,32 @@ describe('classroom bundles: static cron-safety contract', () => {
         const text = readFileSync(f, 'utf-8');
         // Instructions that would make the agent self-spawn a cron on boot.
         if (/CronCreate|bus add-cron|\/loop\s+\{|set up (your )?(a )?(heartbeat )?cron|create (a )?cron/i.test(text)) {
-          // README documents "add after setup" with bus add-cron — that is guidance to the
-          // human, not a boot-time self-spawn instruction. Exclude the README on that basis.
-          if (!f.endsWith('README.md')) offenders.push(f);
+          // Exempt the docs whose JOB is to add the role crons AFTER the agent is
+          // configured (not on a fresh/un-onboarded boot): the README ("add after
+          // setup") and the ONBOARDING.md / onboarding skill (the interview adds them
+          // as its final step, post-configuration). Ship-time config.crons is still []
+          // and the fresh-boot scheduler still fires nothing (proven dynamically below).
+          const exempt =
+            f.endsWith('README.md') ||
+            f.endsWith('ONBOARDING.md') ||
+            f.includes(`${sep}skills${sep}onboarding${sep}`);
+          if (!exempt) offenders.push(f);
         }
       }
       expect(offenders).toEqual([]);
+    });
+
+    it(`${b}: ships the onboarding trigger (IDENTITY marker + ONBOARDING.md + onboarding skill)`, () => {
+      // The first-boot onboarding interview only fires if the daemon does NOT
+      // retro-mark .onboarded. hasCompletedBootstrapContent treats a '<!--' in the
+      // IDENTITY '## Name' as "still a template", so the marker keeps the agent
+      // un-onboarded on first boot -> buildStartupPrompt injects first-boot ->
+      // onboarding skill runs. Guard all three pieces are present.
+      const identity = readFileSync(join(bundleDir(b), 'IDENTITY.md'), 'utf-8');
+      const nameBlock = /^## Name\s*\n([^\n]*)/m.exec(identity);
+      expect(nameBlock?.[1] ?? '').toContain('<!--'); // marker -> not retro-marked onboarded
+      expect(existsSync(join(bundleDir(b), 'ONBOARDING.md'))).toBe(true);
+      expect(existsSync(join(bundleDir(b), '.claude', 'skills', 'onboarding', 'SKILL.md'))).toBe(true);
     });
   }
 });
