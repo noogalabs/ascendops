@@ -31,11 +31,11 @@ The agent boots in copilot mode: it reads, verifies, and drafts, and never takes
 
 ## Recommended crons (add after setup)
 
-This template ships with NO active crons on purpose: a fresh template should not run scheduled work before it is configured. Once the agent is set up, add the ones you want with `cortextos bus add-cron`:
+This template ships with NO active crons on purpose: a fresh template should not run scheduled work before it is configured. Once the agent is set up, add the ones you want. Each is added with `cortextos bus add-cron <your-agent-name> <name> <schedule> "<prompt>"`, where `<schedule>` is an interval like `2h`/`30m`/`1d` or a 5-field cron expression like `0 8 * * 1-5`:
 
-- `heartbeat` (``), Read HEARTBEAT.
-- `ar-digest` (`0 8 * * 1-5`), Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, and prepare the del....
-- `bank-rec-am` (`0 8 * * 1-5`), Run trust-reconciliation in morning verify-and-flag mode.
-- `bank-rec-pm` (`0 17 * * 1-5`), Run trust-reconciliation in evening verify-and-flag mode.
-- `owner-statements-monthly` (`0 9 1 * *`), Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw recommendations.
-- `deposit-deadline-watch` (`30 8 * * *`), Run security-deposit-accounting deadline review.
+- `heartbeat`, schedule `2h`: Read HEARTBEAT.
+- `ar-digest`, schedule `0 8 * * 1-5`: Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, and prepa....
+- `bank-rec-am`, schedule `0 8 * * 1-5`: Run trust-reconciliation in morning verify-and-flag mode.
+- `bank-rec-pm`, schedule `0 17 * * 1-5`: Run trust-reconciliation in evening verify-and-flag mode.
+- `owner-statements-monthly`, schedule `0 9 1 * *`: Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw rec....
+- `deposit-deadline-watch`, schedule `30 8 * * *`: Run security-deposit-accounting deadline review.
