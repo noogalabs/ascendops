@@ -24,6 +24,7 @@ import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-stat
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
 import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
+import { fetchAppfolioReport } from '../bus/appfolio.js';
 import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
 import { createSkillPr } from '../bus/skill-autopr.js';
 import { atomicWriteSync } from '../utils/atomic.js';
@@ -1723,6 +1724,56 @@ busCommand
       });
     } catch {
       // python printed error already
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// AppFolio (read-only data connector)
+// ---------------------------------------------------------------------------
+busCommand
+  .command('appfolio-report <report>')
+  .description('Fetch a read-only AppFolio report by name (e.g. rent_roll, delinquency, unit_directory)')
+  .option('--org <org>', 'Organization name (defaults to CTX_ORG)')
+  .option('--filters <json>', 'Report filter params as a JSON object', '{}')
+  .option('--max-pages <n>', 'Stop after N pages (default 20)')
+  .option('--max-rows <n>', 'Stop after N rows')
+  .option('--rows-only', 'Print just the array of row objects (omit metadata)')
+  .action(async (
+    report: string,
+    opts: { org?: string; filters: string; maxPages?: string; maxRows?: string; rowsOnly?: boolean },
+  ) => {
+    const env = resolveEnv();
+    const org = opts.org || env.org;
+    if (!org) {
+      console.error('ERROR: --org or CTX_ORG required');
+      process.exit(1);
+    }
+    const frameworkRoot = env.frameworkRoot || process.cwd();
+
+    let filters: Record<string, unknown>;
+    try {
+      filters = JSON.parse(opts.filters);
+      if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
+        throw new Error('filters must be a JSON object');
+      }
+    } catch (e) {
+      console.error(`ERROR: --filters is not valid JSON object: ${(e as Error).message}`);
+      process.exit(1);
+    }
+
+    try {
+      const result = await fetchAppfolioReport(frameworkRoot, org, report, filters, {
+        maxPages: opts.maxPages ? Number(opts.maxPages) : undefined,
+        maxRows: opts.maxRows ? Number(opts.maxRows) : undefined,
+      });
+      if (opts.rowsOnly) {
+        console.log(JSON.stringify(result.rows, null, 2));
+      } else {
+        console.log(JSON.stringify(result, null, 2));
+      }
+    } catch (e) {
+      console.error(`ERROR: ${(e as Error).message}`);
       process.exit(1);
     }
   });
