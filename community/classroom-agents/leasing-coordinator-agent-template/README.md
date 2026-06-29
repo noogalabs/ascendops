@@ -18,4 +18,4 @@ Before use, replace the placeholders in the bootstrap files:
 - `{{owner_name}}`
 - `{{timezone}}`
 
-Start disabled. Review the approval guardrails before connecting any live property-management system.
+The agent boots in copilot mode and runs onboarding on first start. Review the approval guardrails before connecting any live property-management system.

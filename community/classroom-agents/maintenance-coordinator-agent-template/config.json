@@ -1,6 +1,6 @@
 {
   "agent_name": "{{agent_name}}",
-  "enabled": false,
+  "enabled": true,
   "runtime": "claude-code",
   "startup_delay": 0,
   "max_session_seconds": 255600,

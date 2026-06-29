@@ -20,4 +20,4 @@ Before use, replace the placeholders in the bootstrap files:
 - `{{timezone}}`
 - `{{leasing_agent_name}}`
 
-Start disabled. Review the approval guardrails before connecting live work-order or messaging systems.
+The agent boots in copilot mode and runs onboarding on first start. Review the approval guardrails before connecting any live work-order or messaging system.

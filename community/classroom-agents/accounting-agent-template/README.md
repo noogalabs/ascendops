@@ -18,4 +18,4 @@ Before use, replace the placeholders in the bootstrap files:
 - `{{maintenance_agent_name}}`
 - `{{leasing_agent_name}}`
 
-Start disabled. Review the approval guardrails before connecting live financial systems.
+The agent boots in copilot mode and runs onboarding on first start. Review the approval guardrails before connecting any live financial system.
