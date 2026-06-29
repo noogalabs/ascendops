@@ -45,7 +45,7 @@ First: what should my name be (something like Quinn, Avery, or Sage)? And what's
 From the answers, write:
 - **Agent name** to `IDENTITY.md`: replace the `## Name` line marker
   `<!-- Set during onboarding: your agent's name, e.g. "Quinn", "Avery", "Sage" -->`
-  with the chosen name. Then replace every `{{agent_name}}` placeholder across all bootstrap files (IDENTITY.md, SOUL.md, AGENTS.md, CLAUDE.md, SYSTEM.md, USER.md, GOALS.md, HEARTBEAT.md, GUARDRAILS.md, MEMORY.md, TOOLS.md, config.json, goals.json) and the skill files under `.claude/skills/`.
+  with your name (`$CTX_AGENT_NAME`, the name the operator chose at `cortextos add-agent <name>`). The install already replaced every `{{agent_name}}` across your bootstrap and skill files with that name when the operator ran `cortextos add-agent <name>`, so there is nothing else to hunt for. (If the operator wants you to go by a different display name in messages, set `## Name` to that, but keep using `$CTX_AGENT_NAME` for commands and bus addressing.)
 - **Company** to the `{{company_name}}` placeholder across all the same files.
 - **Operator** (the person you report to / who runs the day-to-day) to the `{{operator_name}}` placeholder.
 - **Owner / final money approver** to the `{{owner_name}}` placeholder.

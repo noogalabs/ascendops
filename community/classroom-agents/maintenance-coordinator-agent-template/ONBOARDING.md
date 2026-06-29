@@ -35,7 +35,7 @@ First: what would you like to name me, what's the name of your company, and what
 ```
 
 Save from the answer:
-- **Agent name** -> open `IDENTITY.md` and replace the `## Name` marker line `<!-- Set during onboarding: your agent's name, e.g. "Quinn", "Avery", "Sage" -->` with the chosen name. Then replace every `{{agent_name}}` placeholder across `IDENTITY.md`, `SOUL.md`, `SYSTEM.md`, `GOALS.md`, `goals.json`, and `config.json` with that name.
+- **Agent name** -> open `IDENTITY.md` and replace the `## Name` marker line `<!-- Set during onboarding: your agent's name, e.g. "Quinn", "Avery", "Sage" -->` with your name (`$CTX_AGENT_NAME`, the name the operator chose at `cortextos add-agent <name>`). The install already replaced every `{{agent_name}}` across your bootstrap and skill files with that name when the operator ran `cortextos add-agent <name>`, so there is nothing else to hunt for. (If the operator wants you to go by a different display name in messages, set `## Name` to that, but keep using `$CTX_AGENT_NAME` for commands and bus addressing.)
 - **Company name** -> replace `{{company_name}}` across `IDENTITY.md`, `SOUL.md`, `SYSTEM.md`, and `config.json`.
 - **Operator name** (the person running you day to day) -> replace `{{operator_name}}` across `IDENTITY.md`, `SYSTEM.md`, and `USER.md`.
 - **Owner / approver name** (who signs off on dispatch, comms, and spend) -> replace `{{owner_name}}` across `IDENTITY.md` and `USER.md`. If the operator is also the approver, use the same name.
@@ -169,21 +169,21 @@ Fold any standing rules into the `SOUL.md` rules so they bind every session.
 
 2. Set `updated_at` (today's date) and `updated_by` (the agent name) in `goals.json`.
 
-3. Add the recommended maintenance crons. This template ships with no active crons on purpose; add them now that you're configured. Each is added with `cortextos bus add-cron <this-agent-name> <name> "<schedule>" "<prompt>"`. Quote the schedule: interval forms like `30m`/`1h`/`2h` are single tokens, and 5-field cron expressions contain spaces. Substitute this agent's real name for `<this-agent-name>`:
+3. Add the recommended maintenance crons. This template ships with no active crons on purpose; add them now that you're configured. Each is added with `cortextos bus add-cron "$CTX_AGENT_NAME" <name> "<schedule>" "<prompt>"`. Quote the schedule: interval forms like `30m`/`1h`/`2h` are single tokens, and 5-field cron expressions contain spaces. These use `$CTX_AGENT_NAME` (your real agent name) automatically:
 
    ```bash
-   cortextos bus add-cron <this-agent-name> heartbeat "2h" "Read HEARTBEAT and update your status so the dashboard shows you alive. Sweep for anything stalled."
+   cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status so the dashboard shows you alive. Sweep for anything stalled."
 
-   cortextos bus add-cron <this-agent-name> intake-sweep "30m" "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft routing. Surface emergencies immediately. Send nothing without approval."
+   cortextos bus add-cron "$CTX_AGENT_NAME" intake-sweep "30m" "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft routing. Surface emergencies immediately. Send nothing without approval."
 
-   cortextos bus add-cron <this-agent-name> sla-watch "1h" "Run a vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response and completion clocks at risk, and any ticket promised to a resident without a confirmed vendor time. Draft chase messages for approval."
+   cortextos bus add-cron "$CTX_AGENT_NAME" sla-watch "1h" "Run a vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response and completion clocks at risk, and any ticket promised to a resident without a confirmed vendor time. Draft chase messages for approval."
 
-   cortextos bus add-cron <this-agent-name> open-wo-digest "0 8 * * 1-5" "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and the next action needed. Flag anything stuck or unverified against the original complaint."
+   cortextos bus add-cron "$CTX_AGENT_NAME" open-wo-digest "0 8 * * 1-5" "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and the next action needed. Flag anything stuck or unverified against the original complaint."
 
-   cortextos bus add-cron <this-agent-name> make-ready-review "0 9 * * 1-5" "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any unit at risk of slipping its rent-ready target."
+   cortextos bus add-cron "$CTX_AGENT_NAME" make-ready-review "0 9 * * 1-5" "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any unit at risk of slipping its rent-ready target."
    ```
 
-   Confirm they were created: `cortextos bus list-crons <this-agent-name>` (or `CronList`).
+   Confirm they were created: `cortextos bus list-crons "$CTX_AGENT_NAME"` (or `CronList`).
 
 4. Create the `.onboarded` marker:
    ```bash

@@ -38,8 +38,7 @@ First, the basics:
 ```
 
 Write the answers:
-- Agent name: in `IDENTITY.md`, replace the `## Name` placeholder line (the line that begins `<!-- Set during onboarding`) with the chosen name on its own line.
-- Replace `{{agent_name}}` everywhere it appears in `IDENTITY.md`, `SYSTEM.md`, and other bootstrap files with the chosen name.
+- Agent name: in `IDENTITY.md`, replace the `## Name` marker line (the line that begins `<!-- Set during onboarding`) with your name (`$CTX_AGENT_NAME`, the name the operator chose at `cortextos add-agent <name>`) on its own line. The install already replaced every `{{agent_name}}` across your bootstrap and skill files with that name when the operator ran `cortextos add-agent <name>`, so there is nothing else to hunt for. (If the operator wants you to go by a different display name in messages, set `## Name` to that, but keep using `$CTX_AGENT_NAME` for commands and bus addressing.)
 - Replace `{{company_name}}` across `IDENTITY.md`, `USER.md`, `SYSTEM.md`, `GOALS.md`, and `config.json`.
 - Replace `{{operator_name}}` across `IDENTITY.md`, `USER.md`, and `SYSTEM.md` with what they want to be called.
 - Replace `{{owner_name}}` in `USER.md` with the owner or final approver.
@@ -138,17 +137,17 @@ Open `goals.json` and `GOALS.md`. They already describe the leasing and renewals
 Only now, after IDENTITY.md, the knowledge files, and goals are written, add the recurring jobs. Each schedule below has spaces, so it MUST stay quoted. Run these with your own agent name in place of `<your-agent-name>`:
 
 ```bash
-cortextos bus add-cron <your-agent-name> heartbeat "2h" "Read HEARTBEAT."
+cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT."
 
-cortextos bus add-cron <your-agent-name> applicant-screening-digest "0 8 * * 1-5" "Run the applicant-screening skill in digest mode: score new applications against the written rubric, write a reason on every line, never auto-decline, and surface results for the operator's decision."
+cortextos bus add-cron "$CTX_AGENT_NAME" applicant-screening-digest "0 8 * * 1-5" "Run the applicant-screening skill in digest mode: score new applications against the written rubric, write a reason on every line, never auto-decline, and surface results for the operator's decision."
 
-cortextos bus add-cron <your-agent-name> renewal-window-am "0 8 * * 1-5" "Run renewals-coordinator in morning mode: detect leases entering the renewal window, score risk off payment history, recommend a path, and draft approval-ready renewal offers."
+cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-am "0 8 * * 1-5" "Run renewals-coordinator in morning mode: detect leases entering the renewal window, score risk off payment history, recommend a path, and draft approval-ready renewal offers."
 
-cortextos bus add-cron <your-agent-name> renewal-window-pm "0 17 * * 1-5" "Run renewals-coordinator in evening mode: surface changed renewal flags and deadline pressure only."
+cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-pm "0 17 * * 1-5" "Run renewals-coordinator in evening mode: surface changed renewal flags and deadline pressure only."
 
-cortextos bus add-cron <your-agent-name> lease-abstraction-intake "0 9 * * 1-5" "Run lease-abstraction on any newly received leases: extract terms into structured data and flag missing, ambiguous, or contradictory clauses."
+cortextos bus add-cron "$CTX_AGENT_NAME" lease-abstraction-intake "0 9 * * 1-5" "Run lease-abstraction on any newly received leases: extract terms into structured data and flag missing, ambiguous, or contradictory clauses."
 
-cortextos bus add-cron <your-agent-name> fair-housing-presend-sweep "30 8 * * *" "Run fair-housing-guard over any pending applicant- or resident-facing drafts and screening criteria before anything is surfaced."
+cortextos bus add-cron "$CTX_AGENT_NAME" fair-housing-presend-sweep "30 8 * * *" "Run fair-housing-guard over any pending applicant- or resident-facing drafts and screening criteria before anything is surfaced."
 ```
 
 Verify they registered:
