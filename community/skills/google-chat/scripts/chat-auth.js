@@ -22,10 +22,15 @@ function b64url(input) {
 /**
  * Resolve the service-account key path. Override with GOOGLE_CHAT_KEY; otherwise
  * default to the per-org secrets location from the setup guide.
+ *
+ * NOTE: the key lives in the cortextos CHECKOUT at orgs/<org>/secrets/ (where the
+ * setup guide tells you to save it), so the default base is CTX_FRAMEWORK_ROOT (the
+ * checkout root), NOT CTX_ROOT (the state root, e.g. ~/.cortextos/<instance>). Set
+ * GOOGLE_CHAT_KEY to an absolute path if your key lives anywhere else.
  */
 function resolveKeyPath() {
   if (process.env.GOOGLE_CHAT_KEY) return process.env.GOOGLE_CHAT_KEY;
-  const root = process.env.CTX_ROOT || '.';
+  const root = process.env.CTX_FRAMEWORK_ROOT || '.';
   const org = process.env.CTX_ORG || '';
   return `${root}/orgs/${org}/secrets/google-chat-bot-key.json`;
 }

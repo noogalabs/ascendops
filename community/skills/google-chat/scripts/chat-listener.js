@@ -75,7 +75,12 @@ async function main() {
     }
     try {
       const body = `[Google Chat] ${sender} in ${spaceName}: ${text}`;
-      execFileSync('cortextos', ['bus', 'send-message', agent, 'normal', body], { stdio: 'inherit' });
+      // --skip-lint: the body is a verbatim quote of an external person's Chat message,
+      // which is exactly the legitimate-quoted case comms-lint exempts. Without it,
+      // ordinary user wording would trip the outbound lint, throw, and (now that we ack
+      // only after a successful route) loop forever on Pub/Sub redelivery. The agent's
+      // OWN outbound messages are still linted; only this inbound relay is exempt.
+      execFileSync('cortextos', ['bus', 'send-message', agent, 'normal', body, '--skip-lint'], { stdio: 'inherit' });
       ackIds.push(rm.ackId); // ack ONLY after a successful route
     } catch (err) {
       // Transient route failure (CLI down, agent misconfigured): leave the message
