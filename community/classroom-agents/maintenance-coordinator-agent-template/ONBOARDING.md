@@ -156,45 +156,24 @@ Or just say "defaults are fine".
 
 Write the answers to a knowledge file named `make-ready-sops.md` in the agent directory: the turn sequence, re-key policy, turn target, wear-vs-damage rules, and any standing SOPs. Ingest it:
 ```bash
-cortextos bus kb-ingest ./make-ready-sops.md --org $CTX_ORG --scope private
+# FINAL GATE: do not add crons or write .onboarded while any placeholder OR the
+# unfilled ## Name marker remains. The crons live in the else branch, so they are
+# persisted ONLY when everything is filled (never against a still-templated agent).
+if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
+  echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
+else
+  cortextos bus add-cron "$CTX_AGENT_NAME" <name> "<schedule>" "<prompt>"`. Quote the schedule: interval forms like `30m`/`1h`/`2h` are single tokens, and 5-field cron expressions contain spaces. These use `$CTX_AGENT_NAME` (your real agent name) automatically:
+  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status so the dashboard shows you alive. Sweep for anything stalled."
+  cortextos bus add-cron "$CTX_AGENT_NAME" intake-sweep "30m" "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft routing. Surface emergencies immediately. Send nothing without approval."
+  cortextos bus add-cron "$CTX_AGENT_NAME" sla-watch "1h" "Run a vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response and completion clocks at risk, and any ticket promised to a resident without a confirmed vendor time. Draft chase messages for approval."
+  cortextos bus add-cron "$CTX_AGENT_NAME" open-wo-digest "0 8 * * 1-5" "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and the next action needed. Flag anything stuck or unverified against the original complaint."
+  cortextos bus add-cron "$CTX_AGENT_NAME" make-ready-review "0 9 * * 1-5" "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any unit at risk of slipping its rent-ready target."
+  cortextos bus list-crons "$CTX_AGENT_NAME"
+  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
+  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+  echo "onboarding complete: configured, crons added, online"
+fi
 ```
-
-Fold any standing rules into the `SOUL.md` rules so they bind every session.
-
----
-
-## Step 7: Finalize
-
-1. Replace EVERY remaining `{{...}}` placeholder across ALL files: the bootstrap docs, `CLAUDE.md`, AND every file under `.claude/skills/` (the sibling-agent names like `{{leasing_agent_name}}` live in skill files). Do a recursive sweep, not a fixed list. Confirm the `## Name` marker in `IDENTITY.md` is gone. The hard gate below refuses to complete while any `{{...}}` remains.
-
-2. Set `updated_at` (today's date) and `updated_by` (the agent name) in `goals.json`.
-
-3. Add the recommended maintenance crons. This template ships with no active crons on purpose; add them now that you're configured. Each is added with `cortextos bus add-cron "$CTX_AGENT_NAME" <name> "<schedule>" "<prompt>"`. Quote the schedule: interval forms like `30m`/`1h`/`2h` are single tokens, and 5-field cron expressions contain spaces. These use `$CTX_AGENT_NAME` (your real agent name) automatically:
-
-   ```bash
-   cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status so the dashboard shows you alive. Sweep for anything stalled."
-
-   cortextos bus add-cron "$CTX_AGENT_NAME" intake-sweep "30m" "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft routing. Surface emergencies immediately. Send nothing without approval."
-
-   cortextos bus add-cron "$CTX_AGENT_NAME" sla-watch "1h" "Run a vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response and completion clocks at risk, and any ticket promised to a resident without a confirmed vendor time. Draft chase messages for approval."
-
-   cortextos bus add-cron "$CTX_AGENT_NAME" open-wo-digest "0 8 * * 1-5" "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and the next action needed. Flag anything stuck or unverified against the original complaint."
-
-   cortextos bus add-cron "$CTX_AGENT_NAME" make-ready-review "0 9 * * 1-5" "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any unit at risk of slipping its rent-ready target."
-   ```
-
-   Confirm they were created: `cortextos bus list-crons "$CTX_AGENT_NAME"` (or `CronList`).
-
-4. Create the `.onboarded` marker:
-   ```bash
-   if grep -rlE '\{\{[^{}]+\}\}' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
-     echo "STOP: the files above still contain {{...}} placeholders. Replace EVERY remaining {{...}} (company, operator, owner, timezone, any sibling-agent names, and role criteria) from the operator answers across ALL files including CLAUDE.md and every .claude/skills/**/SKILL.md, then re-run this check."
-   else
-     mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-     touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
-     echo "onboarding complete"
-   fi
-   ```
 
 5. Log the event:
    ```bash

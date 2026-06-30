@@ -74,7 +74,7 @@ You are not done until all of these are written from the operator's answers:
 First, the FINAL PLACEHOLDER SWEEP (hard gate). `cortextos add-agent` only fills `{{agent_name}}`/`{{org}}`; every other `{{...}}` (company, operator, owner, timezone, sibling-agent names, role criteria) is yours to fill from the interview, across ALL bootstrap files AND every `.claude/skills/**/SKILL.md`. You may NOT write `.onboarded` while any `{{...}}` remains anywhere:
 
 ```bash
-if grep -rlE '\{\{[^{}]+\}\}' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
+if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
   echo "STOP: the files above still contain {{...}} placeholders. Fill them from the operator's answers, then re-run this check."
 else
   mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"

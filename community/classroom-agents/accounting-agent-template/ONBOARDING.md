@@ -179,24 +179,24 @@ Update `GOALS.md` and `goals.json` from their answer. Set `goals.json` `updated_
 2. Update `MEMORY.md` with an "Onboarded YYYY-MM-DD" entry noting company, accounting platform, trust yes/no, and the approval posture.
 3. Add the recommended accounting crons. Run each command from this agent's directory and substitute this agent's own name for `$CTX_AGENT_NAME`. Quote the schedule, the 5-field cron expressions contain spaces:
    ```bash
-   cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status."
-   cortextos bus add-cron "$CTX_AGENT_NAME" ar-digest "0 8 * * 1-5" "Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, prepare the delinquency feed as data, and flag unapplied or unexplained items. No ledger writes."
-   cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-am "0 8 * * 1-5" "Run trust-reconciliation in morning verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction."
-   cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-pm "0 17 * * 1-5" "Run trust-reconciliation in evening verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction."
-   cortextos bus add-cron "$CTX_AGENT_NAME" owner-statements-monthly "0 9 1 * *" "Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw recommendations, draft-only, route any external send or draw through approval."
-   cortextos bus add-cron "$CTX_AGENT_NAME" deposit-deadline-watch "30 8 * * *" "Run security-deposit-accounting deadline review: tie deposits held to ledgers, check statutory deadlines, and alert on any return inside the deadline window. No money moves."
-   ```
-   These crons start running scheduled accounting work, so add them only after the bootstrap files and goals are written.
-4. Write the `.onboarded` marker:
-   ```bash
-   if grep -rlE '\{\{[^{}]+\}\}' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
-     echo "STOP: the files above still contain {{...}} placeholders. Replace EVERY remaining {{...}} (company, operator, owner, timezone, any sibling-agent names, and role criteria) from the operator answers across ALL files including CLAUDE.md and every .claude/skills/**/SKILL.md, then re-run this check."
-   else
-     mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-     touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
-     echo "onboarding complete"
-   fi
-   ```
+# FINAL GATE: do not add crons or write .onboarded while any placeholder OR the
+# unfilled ## Name marker remains. The crons live in the else branch, so they are
+# persisted ONLY when everything is filled (never against a still-templated agent).
+if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
+  echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
+else
+  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status."
+  cortextos bus add-cron "$CTX_AGENT_NAME" ar-digest "0 8 * * 1-5" "Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, prepare the delinquency feed as data, and flag unapplied or unexplained items. No ledger writes."
+  cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-am "0 8 * * 1-5" "Run trust-reconciliation in morning verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction."
+  cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-pm "0 17 * * 1-5" "Run trust-reconciliation in evening verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction."
+  cortextos bus add-cron "$CTX_AGENT_NAME" owner-statements-monthly "0 9 1 * *" "Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw recommendations, draft-only, route any external send or draw through approval."
+  cortextos bus add-cron "$CTX_AGENT_NAME" deposit-deadline-watch "30 8 * * *" "Run security-deposit-accounting deadline review: tie deposits held to ledgers, check statutory deadlines, and alert on any return inside the deadline window. No money moves."
+  cortextos bus list-crons "$CTX_AGENT_NAME"
+  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
+  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+  echo "onboarding complete: configured, crons added, online"
+fi
+```
 5. Log the event:
    ```bash
    cortextos bus log-event action onboarding_complete info \

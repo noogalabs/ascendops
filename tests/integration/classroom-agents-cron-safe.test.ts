@@ -113,28 +113,37 @@ describe('classroom bundles: static cron-safety contract', () => {
       const onb = readFileSync(join(bundleDir(b), 'ONBOARDING.md'), 'utf-8');
       const skill = readFileSync(join(bundleDir(b), '.claude', 'skills', 'onboarding', 'SKILL.md'), 'utf-8');
       for (const doc of [onb, skill]) {
-        // a recursive, FORMAT-COMPLETE {{...}} grep gates the .onboarded write
-        // ({{[^{}]+}} catches any placeholder format, not just lowercase_underscore)
-        expect(doc).toContain("grep -rlE '\\{\\{[^{}]+\\}\\}'");
+        // the gate greps BOTH {{...}} (format-complete: any placeholder shape) AND the
+        // ## Name '<!-- Set during onboarding' marker - it must cover every signal the
+        // daemon's hasCompletedBootstrapContent keys on, else a filled-but-unnamed agent
+        // could write .onboarded with a template marker as its name.
+        expect(doc).toContain("grep -rlE '\\{\\{[^{}]+\\}\\}|<!-- Set during onboarding'");
         // the touch .onboarded sits inside the if/grep ... fi gate
         expect(doc).toMatch(/if grep -rlE[\s\S]*?touch[^\n]*\.onboarded[\s\S]*?fi/);
-        // the gate MUST exclude the self-referencing setup docs (ONBOARDING.md /
-        // README.md / the onboarding skill all mention {{...}} in their prose), else
-        // it would always halt and onboarding could never complete (pass-when-clean).
+        // the gate MUST exclude the self-referencing setup docs (else always-halt)
         expect(doc).toMatch(/grep -vE '[^']*ONBOARDING\\.md[^']*README\\.md[^']*skills\/onboarding/);
       }
+      // ORDERING (ONBOARDING.md): the add-cron commands live INSIDE the gate's else,
+      // AFTER the gate and BEFORE .onboarded - so crons are persisted only when clean,
+      // never against a still-templated agent (no cron-persist-before-gate).
+      expect(onb).toMatch(/if grep -rlE[\s\S]*?\nelse\n[\s\S]*?add-cron[\s\S]*?touch[^\n]*\.onboarded[\s\S]*?\nfi/);
+      // and there is no add-cron OUTSIDE/BEFORE the gate (all crons are in the else)
+      const beforeGate = onb.slice(0, onb.indexOf('if grep -rlE'));
+      expect(beforeGate).not.toMatch(/cortextos bus add-cron/);
     });
   }
 
-  it('placeholder hard-gate regex is FORMAT-COMPLETE: catches any placeholder, passes clean', () => {
-    // the gate uses {{[^{}]+}} - prove it HALTS on the current inventory AND on a
-    // future-format placeholder (digit/hyphen/uppercase), and PASSES clean text.
-    // Guards against the membership-vs-completeness gap ([a-z_]+ would fail open on
-    // {{Future-Var2}}).
-    const gate = /\{\{[^{}]+\}\}/;
-    expect(gate.test('Owner statements go to {{company_name}} monthly.')).toBe(true);   // current inventory -> refuses
-    expect(gate.test('A future placeholder {{Future-Var2}} must be caught too.')).toBe(true); // digit+hyphen+uppercase -> refuses
-    expect(gate.test('Owner statements go to Acme Property monthly.')).toBe(false);     // clean -> allows .onboarded
+  it('onboarding hard-gate regex covers all trigger signals + is format-complete', () => {
+    // the gate greps {{[^{}]+}} OR the ## Name marker - it must HALT on (1) any
+    // placeholder format incl future digit/hyphen/uppercase, (2) the unfilled
+    // ## Name '<!-- Set during onboarding' marker (the other signal the daemon keys
+    // on), and PASS clean text. Guards the membership-vs-completeness gap AND the
+    // signal-set-vs-daemon-trigger gap.
+    const gate = /\{\{[^{}]+\}\}|<!-- Set during onboarding/;
+    expect(gate.test('Owner statements go to {{company_name}} monthly.')).toBe(true);    // placeholder -> refuses
+    expect(gate.test('A future placeholder {{Future-Var2}} must be caught too.')).toBe(true); // future format -> refuses
+    expect(gate.test('## Name\n<!-- Set during onboarding: pick a name -->')).toBe(true); // unfilled name marker -> refuses
+    expect(gate.test('## Name\nQuinn\n\nOwner is Acme Property.')).toBe(false);           // all filled -> allows .onboarded
   });
 });
 

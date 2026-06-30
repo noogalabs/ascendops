@@ -137,38 +137,22 @@ Open `goals.json` and `GOALS.md`. They already describe the leasing and renewals
 Only now, after IDENTITY.md, the knowledge files, and goals are written, add the recurring jobs. Each schedule below has spaces, so it MUST stay quoted. Run these with your own agent name in place of `"$CTX_AGENT_NAME"`:
 
 ```bash
-cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT."
-
-cortextos bus add-cron "$CTX_AGENT_NAME" applicant-screening-digest "0 8 * * 1-5" "Run the applicant-screening skill in digest mode: score new applications against the written rubric, write a reason on every line, never auto-decline, and surface results for the operator's decision."
-
-cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-am "0 8 * * 1-5" "Run renewals-coordinator in morning mode: detect leases entering the renewal window, score risk off payment history, recommend a path, and draft approval-ready renewal offers."
-
-cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-pm "0 17 * * 1-5" "Run renewals-coordinator in evening mode: surface changed renewal flags and deadline pressure only."
-
-cortextos bus add-cron "$CTX_AGENT_NAME" lease-abstraction-intake "0 9 * * 1-5" "Run lease-abstraction on any newly received leases: extract terms into structured data and flag missing, ambiguous, or contradictory clauses."
-
-cortextos bus add-cron "$CTX_AGENT_NAME" fair-housing-presend-sweep "30 8 * * *" "Run fair-housing-guard over any pending applicant- or resident-facing drafts and screening criteria before anything is surfaced."
-```
-
-Verify they registered:
-
-```bash
-cortextos bus list-crons "$CTX_AGENT_NAME"
-```
-
----
-
-## Step 8: Mark complete and go online
-
-Write the onboarded marker:
-
-```bash
-if grep -rlE '\{\{[^{}]+\}\}' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
-  echo "STOP: the files above still contain {{...}} placeholders. Replace EVERY remaining {{...}} (company, operator, owner, timezone, any sibling-agent names, and role criteria) from the operator answers across ALL files including CLAUDE.md and every .claude/skills/**/SKILL.md, then re-run this check."
+# FINAL GATE: do not add crons or write .onboarded while any placeholder OR the
+# unfilled ## Name marker remains. The crons live in the else branch, so they are
+# persisted ONLY when everything is filled (never against a still-templated agent).
+if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
+  echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
 else
+  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT."
+  cortextos bus add-cron "$CTX_AGENT_NAME" applicant-screening-digest "0 8 * * 1-5" "Run the applicant-screening skill in digest mode: score new applications against the written rubric, write a reason on every line, never auto-decline, and surface results for the operator's decision."
+  cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-am "0 8 * * 1-5" "Run renewals-coordinator in morning mode: detect leases entering the renewal window, score risk off payment history, recommend a path, and draft approval-ready renewal offers."
+  cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-pm "0 17 * * 1-5" "Run renewals-coordinator in evening mode: surface changed renewal flags and deadline pressure only."
+  cortextos bus add-cron "$CTX_AGENT_NAME" lease-abstraction-intake "0 9 * * 1-5" "Run lease-abstraction on any newly received leases: extract terms into structured data and flag missing, ambiguous, or contradictory clauses."
+  cortextos bus add-cron "$CTX_AGENT_NAME" fair-housing-presend-sweep "30 8 * * *" "Run fair-housing-guard over any pending applicant- or resident-facing drafts and screening criteria before anything is surfaced."
+  cortextos bus list-crons "$CTX_AGENT_NAME"
   mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
   touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
-  echo "onboarding complete"
+  echo "onboarding complete: configured, crons added, online"
 fi
 ```
 
