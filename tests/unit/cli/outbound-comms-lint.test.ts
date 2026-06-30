@@ -40,6 +40,7 @@ let originalAgentName: string | undefined;
 let originalBotToken: string | undefined;
 let originalInstanceId: string | undefined;
 let originalHome: string | undefined;
+let originalUserProfile: string | undefined;
 let originalFrameworkRoot: string | undefined;
 let originalProjectRoot: string | undefined;
 let originalOrg: string | undefined;
@@ -61,6 +62,7 @@ beforeEach(() => {
   originalBotToken = process.env.BOT_TOKEN;
   originalInstanceId = process.env.CTX_INSTANCE_ID;
   originalHome = process.env.HOME;
+  originalUserProfile = process.env.USERPROFILE;
   originalFrameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
   originalProjectRoot = process.env.CTX_PROJECT_ROOT;
   originalOrg = process.env.CTX_ORG;
@@ -71,6 +73,9 @@ beforeEach(() => {
   process.env.BOT_TOKEN = 'fake-token';
   process.env.CTX_INSTANCE_ID = 'default';
   process.env.HOME = tempCtx;
+  // os.homedir() reads USERPROFILE on Windows (not HOME), so the outbound-log
+  // sandbox leaks to the real home dir unless we pin USERPROFILE too.
+  process.env.USERPROFILE = tempCtx;
   process.env.CTX_FRAMEWORK_ROOT = fwRoot;
   // Keep the isolation guard in resolveEnv (issue #313) satisfied: projectRoot
   // must EQUAL frameworkRoot and the derived agentDir must sit UNDER it. Pin
@@ -99,6 +104,9 @@ afterEach(() => {
 
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
+
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
 
   if (originalFrameworkRoot === undefined) delete process.env.CTX_FRAMEWORK_ROOT;
   else process.env.CTX_FRAMEWORK_ROOT = originalFrameworkRoot;
