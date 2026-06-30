@@ -21,6 +21,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+
+const isWindows = process.platform === 'win32';
 import { WsUnixJsonRpcClient } from '../../src/utils/ws-unix-client.js';
 
 const { MockCodexServer } = require('./mock-codex.js') as {
@@ -41,7 +43,7 @@ interface MockCodexServerInstance {
   requestLog: Array<{ method: string; params: unknown; notification?: boolean }>;
 }
 
-describe('E2E codex lifecycle (mock-codex.js + WsUnixJsonRpcClient)', () => {
+describe.skipIf(isWindows)('E2E codex lifecycle (mock-codex.js + WsUnixJsonRpcClient)', () => {
   let testDir: string;
   let socketPath: string;
   let server: MockCodexServerInstance;

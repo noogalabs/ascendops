@@ -19,12 +19,14 @@
  * host-wide skill discovery sees the per-agent set without collisions.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+const isWindows = process.platform === 'win32';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, lstatSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import { addAgentCommand } from '../../../src/cli/add-agent';
 
-describe('PR-02: add-agent --runtime codex-app-server', () => {
+describe.skipIf(isWindows)('PR-02: add-agent --runtime codex-app-server', () => {
   let tempRoot: string;
   let tempHome: string;
   let originalHome: string | undefined;
@@ -233,7 +235,7 @@ describe('PR-02: add-agent --runtime codex-app-server', () => {
  * (`.claude/skills/`, `CLAUDE_CODE_OAUTH_TOKEN`, `/loop`) — silently broken
  * on first boot. Surface a clean error instead.
  */
-describe('PR-10: add-agent rejects codex+claude-only-template combos', () => {
+describe.skipIf(isWindows)('PR-10: add-agent rejects codex+claude-only-template combos', () => {
   let tempRoot: string;
   let tempHome: string;
   let originalHome: string | undefined;
