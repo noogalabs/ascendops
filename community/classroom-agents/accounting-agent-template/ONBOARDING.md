@@ -182,7 +182,7 @@ Update `GOALS.md` and `goals.json` from their answer. Set `goals.json` `updated_
 ## Step 8: Finalize and add the recommended crons
 
 1. Replace EVERY remaining `{{...}}` placeholder across ALL files: the bootstrap docs, `CLAUDE.md`, AND every file under `.claude/skills/`. Do a recursive sweep, not a fixed list. The hard gate below refuses to complete onboarding while any `{{...}}` remains anywhere.
-2. Update `MEMORY.md` with an "Onboarded YYYY-MM-DD" entry noting company, accounting platform, trust yes/no, and the approval posture.
+2. Append an "Onboarded YYYY-MM-DD" entry to `MEMORY.md` (company, accounting platform, trust yes/no, approval posture). Keep the line-1 `<!-- This memory ... -->` comment EXACTLY as-is - the final block below strips it atomically when it writes `.onboarded`. Do NOT remove it early, and do NOT run `update-heartbeat` or any session-start heartbeat before that block, or the daemon retro-write will mark you onboarded and skip your role crons.
 3. Add the recommended accounting crons. Run each command from this agent's directory and substitute this agent's own name for `$CTX_AGENT_NAME`. Quote the schedule, the 5-field cron expressions contain spaces:
    ```bash
 # FINAL GATE: do not add crons or write .onboarded while any placeholder OR the
@@ -191,6 +191,13 @@ Update `GOALS.md` and `goals.json` from their answer. Set `goals.json` `updated_
 if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
   echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
 else
+  # INVARIANT (do not weaken): completion stays ATOMIC and last. Do NOT add any
+  # heartbeat write (cortextos bus update-heartbeat, or an early AGENTS.md
+  # session-start heartbeat) anywhere before this block finishes. A heartbeat.json
+  # that exists pre-completion reopens the daemon retro-write trigger
+  # (agent-process.ts existsSync(heartbeatPath)) and the agent is marked onboarded
+  # WITHOUT its role crons. The MEMORY.md <!-- --> strip + touch .onboarded are the
+  # final &&-chained steps on purpose.
   # Idempotent: clear any crons left by a prior partial run so re-running this
   # block is safe (add-cron errors on a duplicate name).
   for c in heartbeat ar-digest bank-rec-am bank-rec-pm owner-statements-monthly deposit-deadline-watch; do cortextos bus remove-cron "$CTX_AGENT_NAME" "$c" 2>/dev/null; done
@@ -201,6 +208,7 @@ else
     && cortextos bus add-cron "$CTX_AGENT_NAME" owner-statements-monthly "0 9 1 * *" "Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw recommendations, draft-only, route any external send or draw through approval." \
     && cortextos bus add-cron "$CTX_AGENT_NAME" deposit-deadline-watch "30 8 * * *" "Run security-deposit-accounting deadline review: tie deposits held to ledgers, check statutory deadlines, and alert on any return inside the deadline window. No money moves." \
     && cortextos bus list-crons "$CTX_AGENT_NAME" \
+    && grep -vF '<!-- This memory is written during onboarding and as you work. It starts empty on purpose. -->' MEMORY.md > MEMORY.md.tmp && mv MEMORY.md.tmp MEMORY.md \
     && mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME" \
     && touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded" \
     && echo "onboarding complete: configured, crons added, online" \

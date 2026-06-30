@@ -176,6 +176,13 @@ Fill every remaining placeholder and the `## Name` marker, then run this block. 
 if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
   echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
 else
+  # INVARIANT (do not weaken): completion stays ATOMIC and last. Do NOT add any
+  # heartbeat write (cortextos bus update-heartbeat, or an early AGENTS.md
+  # session-start heartbeat) anywhere before this block finishes. A heartbeat.json
+  # that exists pre-completion reopens the daemon retro-write trigger
+  # (agent-process.ts existsSync(heartbeatPath)) and the agent is marked onboarded
+  # WITHOUT its role crons. The MEMORY.md <!-- --> strip + touch .onboarded are the
+  # final &&-chained steps on purpose.
   # Idempotent: clear any crons left by a prior partial run so re-running this
   # block is safe (add-cron errors on a duplicate name).
   for c in heartbeat intake-sweep sla-watch open-wo-digest make-ready-review; do cortextos bus remove-cron "$CTX_AGENT_NAME" "$c" 2>/dev/null; done
@@ -185,6 +192,7 @@ else
     && cortextos bus add-cron "$CTX_AGENT_NAME" open-wo-digest "0 8 * * 1-5" "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and the next action needed. Flag anything stuck or unverified against the original complaint." \
     && cortextos bus add-cron "$CTX_AGENT_NAME" make-ready-review "0 9 * * 1-5" "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any unit at risk of slipping its rent-ready target." \
     && cortextos bus list-crons "$CTX_AGENT_NAME" \
+    && grep -vF '<!-- This memory is written during onboarding and as you work. It starts empty on purpose. -->' MEMORY.md > MEMORY.md.tmp && mv MEMORY.md.tmp MEMORY.md \
     && mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME" \
     && touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded" \
     && echo "onboarding complete: configured, crons added, online" \

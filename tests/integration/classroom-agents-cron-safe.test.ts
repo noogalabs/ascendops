@@ -138,6 +138,28 @@ describe('classroom bundles: static cron-safety contract', () => {
       const beforeGate = onb.slice(0, onb.indexOf('if grep -rlE'));
       expect(beforeGate).not.toMatch(/cortextos bus add-cron/);
     });
+
+    it(`${b}: MEMORY.md ships with <!-- and ONBOARDING.md strips it atomically between crons and .onboarded`, () => {
+      // The daemon retro-write (agent-process.ts:1006-1029) marks an agent onboarded when
+      // MEMORY.md is >80 chars AND has no <!--, OR a heartbeat.json exists. The interview
+      // fills IDENTITY ## Name early, so MEMORY.md's <!-- comment is the remaining
+      // content-guard mid-onboarding. SHIP-TIME the comment MUST be present (the bundle is
+      // un-onboarded by content), and it is stripped ONLY in the final &&-chain, AFTER the
+      // role crons register and right BEFORE touch .onboarded, so the
+      // hasCompletedBootstrapContent window stays closed until the crons exist.
+      const memory = readFileSync(join(bundleDir(b), 'MEMORY.md'), 'utf-8');
+      expect(memory).toContain('<!--'); // shipped un-onboarded by content
+
+      const onb = readFileSync(join(bundleDir(b), 'ONBOARDING.md'), 'utf-8');
+      // the strip targets the EXACT committed comment line (no whitespace drift) so it fires
+      const STRIP = "grep -vF '<!-- This memory is written during onboarding and as you work. It starts empty on purpose. -->' MEMORY.md";
+      expect(onb).toContain(STRIP);
+      // ORDERING: crons (list-crons sits after the last add-cron) -> strip -> touch .onboarded
+      expect(onb).toMatch(/list-crons[\s\S]*?grep -vF[^\n]*MEMORY\.md[\s\S]*?touch[^\n]*\.onboarded/);
+      // NEGATIVE-CONTROL guard: the strip must NOT sit before the crons - moving it ahead
+      // of list-crons reopens the content window mid-onboarding and fails this assertion.
+      expect(onb.slice(0, onb.indexOf('list-crons'))).not.toMatch(/grep -vF[^\n]*MEMORY/);
+    });
   }
 
   it('onboarding hard-gate regex covers all trigger signals + is format-complete', () => {
