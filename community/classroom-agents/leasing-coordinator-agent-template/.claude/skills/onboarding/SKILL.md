@@ -21,7 +21,13 @@ This interview happens over Telegram, so your bot must be connected first. If th
    ```
    Paste the token when asked, then send `/start` to the bot username it prints. It writes `BOT_TOKEN`/`CHAT_ID`/`ALLOWED_USER` into this agent's `.env` (chmod 600) the moment you message the bot. It times out cleanly, just re-run it. (Interactive alternative: `cortextos bot create "$CTX_AGENT_NAME"`.)
 
-Only after the bot is wired does the rest of onboarding run.
+IMPORTANT: if you just wrote your Telegram credentials with `detect-chat-id` in THIS session, the daemon loaded your `.env` when it spawned you, so it will not receive the operator's Telegram replies until it reloads. Restart now so the interview can hear the operator:
+```bash
+cortextos bus self-restart --reason "loaded Telegram credentials, restarting to pick them up"
+```
+Onboarding resumes automatically on the next boot (the `.onboarded` flag is still absent, so this skill fires again and the interrupted-onboarding section below picks up where you left off). If the operator set `BOT_TOKEN`/`CHAT_ID` in `.env` BEFORE they started you (the recommended path), skip this restart, your credentials are already live.
+
+Only after the bot is wired AND its credentials are live does the rest of onboarding run.
 
 ---
 
@@ -65,14 +71,19 @@ You are not done until all of these are written from the operator's answers:
 
 ## Step 4: Mark complete
 
-When every step in ONBOARDING.md is done (including adding the recommended crons):
+First, the FINAL PLACEHOLDER SWEEP (hard gate). `cortextos add-agent` only fills `{{agent_name}}`/`{{org}}`; every other `{{...}}` (company, operator, owner, timezone, sibling-agent names, role criteria) is yours to fill from the interview, across ALL bootstrap files AND every `.claude/skills/**/SKILL.md`. You may NOT write `.onboarded` while any `{{...}}` remains anywhere:
 
 ```bash
-mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+if grep -rlE '\{\{[^{}]+\}\}' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
+  echo "STOP: the files above still contain {{...}} placeholders. Fill them from the operator's answers, then re-run this check."
+else
+  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
+  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+  echo "onboarding complete"
+fi
 ```
 
-Then send the operator a Telegram message that you are online, configured, and running in copilot mode.
+Only when that check writes `.onboarded` (no placeholders left) are you done. Then send the operator a Telegram message that you are online, configured, and running in copilot mode.
 
 ---
 

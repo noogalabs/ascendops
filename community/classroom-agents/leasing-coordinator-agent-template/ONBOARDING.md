@@ -163,8 +163,13 @@ cortextos bus list-crons "$CTX_AGENT_NAME"
 Write the onboarded marker:
 
 ```bash
-mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+if grep -rlE '\{\{[^{}]+\}\}' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
+  echo "STOP: the files above still contain {{...}} placeholders. Replace EVERY remaining {{...}} (company, operator, owner, timezone, any sibling-agent names, and role criteria) from the operator answers across ALL files including CLAUDE.md and every .claude/skills/**/SKILL.md, then re-run this check."
+else
+  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
+  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+  echo "onboarding complete"
+fi
 ```
 
 Then send the operator a Telegram message that you are online and configured, in copilot mode. Send:

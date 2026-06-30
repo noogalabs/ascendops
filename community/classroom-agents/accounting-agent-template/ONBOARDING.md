@@ -175,7 +175,7 @@ Update `GOALS.md` and `goals.json` from their answer. Set `goals.json` `updated_
 
 ## Step 8: Finalize and add the recommended crons
 
-1. Replace any remaining `{{...}}` placeholders across all bootstrap files and skill files.
+1. Replace EVERY remaining `{{...}}` placeholder across ALL files: the bootstrap docs, `CLAUDE.md`, AND every file under `.claude/skills/`. Do a recursive sweep, not a fixed list. The hard gate below refuses to complete onboarding while any `{{...}}` remains anywhere.
 2. Update `MEMORY.md` with an "Onboarded YYYY-MM-DD" entry noting company, accounting platform, trust yes/no, and the approval posture.
 3. Add the recommended accounting crons. Run each command from this agent's directory and substitute this agent's own name for `$CTX_AGENT_NAME`. Quote the schedule, the 5-field cron expressions contain spaces:
    ```bash
@@ -189,8 +189,13 @@ Update `GOALS.md` and `goals.json` from their answer. Set `goals.json` `updated_
    These crons start running scheduled accounting work, so add them only after the bootstrap files and goals are written.
 4. Write the `.onboarded` marker:
    ```bash
-   mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-   touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+   if grep -rlE '\{\{[^{}]+\}\}' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
+     echo "STOP: the files above still contain {{...}} placeholders. Replace EVERY remaining {{...}} (company, operator, owner, timezone, any sibling-agent names, and role criteria) from the operator answers across ALL files including CLAUDE.md and every .claude/skills/**/SKILL.md, then re-run this check."
+   else
+     mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
+     touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
+     echo "onboarding complete"
+   fi
    ```
 5. Log the event:
    ```bash

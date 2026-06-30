@@ -102,7 +102,40 @@ describe('classroom bundles: static cron-safety contract', () => {
       expect(existsSync(join(bundleDir(b), 'ONBOARDING.md'))).toBe(true);
       expect(existsSync(join(bundleDir(b), '.claude', 'skills', 'onboarding', 'SKILL.md'))).toBe(true);
     });
+
+    it(`${b}: ONBOARDING.md carries the placeholder hard-gate around .onboarded`, () => {
+      // add-agent only fills {{agent_name}}/{{org}}; every other {{...}} (company,
+      // operator, owner, timezone, sibling-agent names, role criteria) is filled by
+      // the interview, including ones in CLAUDE.md and .claude/skills/**. The hard
+      // gate refuses to write .onboarded while any {{...}} remains, so a member can
+      // never end up onboarded with a literal placeholder in Claude's prompt or a
+      // scheduled skill. Regression guard: the gate must be present and wrap .onboarded.
+      const onb = readFileSync(join(bundleDir(b), 'ONBOARDING.md'), 'utf-8');
+      const skill = readFileSync(join(bundleDir(b), '.claude', 'skills', 'onboarding', 'SKILL.md'), 'utf-8');
+      for (const doc of [onb, skill]) {
+        // a recursive, FORMAT-COMPLETE {{...}} grep gates the .onboarded write
+        // ({{[^{}]+}} catches any placeholder format, not just lowercase_underscore)
+        expect(doc).toContain("grep -rlE '\\{\\{[^{}]+\\}\\}'");
+        // the touch .onboarded sits inside the if/grep ... fi gate
+        expect(doc).toMatch(/if grep -rlE[\s\S]*?touch[^\n]*\.onboarded[\s\S]*?fi/);
+        // the gate MUST exclude the self-referencing setup docs (ONBOARDING.md /
+        // README.md / the onboarding skill all mention {{...}} in their prose), else
+        // it would always halt and onboarding could never complete (pass-when-clean).
+        expect(doc).toMatch(/grep -vE '[^']*ONBOARDING\\.md[^']*README\\.md[^']*skills\/onboarding/);
+      }
+    });
   }
+
+  it('placeholder hard-gate regex is FORMAT-COMPLETE: catches any placeholder, passes clean', () => {
+    // the gate uses {{[^{}]+}} - prove it HALTS on the current inventory AND on a
+    // future-format placeholder (digit/hyphen/uppercase), and PASSES clean text.
+    // Guards against the membership-vs-completeness gap ([a-z_]+ would fail open on
+    // {{Future-Var2}}).
+    const gate = /\{\{[^{}]+\}\}/;
+    expect(gate.test('Owner statements go to {{company_name}} monthly.')).toBe(true);   // current inventory -> refuses
+    expect(gate.test('A future placeholder {{Future-Var2}} must be caught too.')).toBe(true); // digit+hyphen+uppercase -> refuses
+    expect(gate.test('Owner statements go to Acme Property monthly.')).toBe(false);     // clean -> allows .onboarded
+  });
 });
 
 // ---------------------------------------------------------------------------
