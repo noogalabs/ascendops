@@ -176,15 +176,16 @@ Fill every remaining placeholder and the `## Name` marker, then run this block. 
 if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
   echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
 else
-  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status so the dashboard shows you alive. Sweep for anything stalled."
-  cortextos bus add-cron "$CTX_AGENT_NAME" intake-sweep "30m" "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft routing. Surface emergencies immediately. Send nothing without approval."
-  cortextos bus add-cron "$CTX_AGENT_NAME" sla-watch "1h" "Run a vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response and completion clocks at risk, and any ticket promised to a resident without a confirmed vendor time. Draft chase messages for approval."
-  cortextos bus add-cron "$CTX_AGENT_NAME" open-wo-digest "0 8 * * 1-5" "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and the next action needed. Flag anything stuck or unverified against the original complaint."
-  cortextos bus add-cron "$CTX_AGENT_NAME" make-ready-review "0 9 * * 1-5" "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any unit at risk of slipping its rent-ready target."
-  cortextos bus list-crons "$CTX_AGENT_NAME"
-  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
-  echo "onboarding complete: configured, crons added, online"
+  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status so the dashboard shows you alive. Sweep for anything stalled." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" intake-sweep "30m" "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft routing. Surface emergencies immediately. Send nothing without approval." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" sla-watch "1h" "Run a vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response and completion clocks at risk, and any ticket promised to a resident without a confirmed vendor time. Draft chase messages for approval." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" open-wo-digest "0 8 * * 1-5" "Run an open work-order digest: list every open ticket with severity, vendor status, SLA state, and the next action needed. Flag anything stuck or unverified against the original complaint." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" make-ready-review "0 9 * * 1-5" "Run make-ready-scheduling for active turns: refresh the trade sequence, recompute the critical path, and flag any unit at risk of slipping its rent-ready target." \
+    && cortextos bus list-crons "$CTX_AGENT_NAME" \
+    && mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME" \
+    && touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded" \
+    && echo "onboarding complete: configured, crons added, online" \
+    || echo "STOP: a cron failed to register (see the error above). .onboarded was NOT written - fix the issue and re-run this block."
 fi
 ```
 

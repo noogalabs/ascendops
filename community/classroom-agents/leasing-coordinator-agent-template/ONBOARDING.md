@@ -8,6 +8,27 @@ Work through the steps in order. Ask ONE topic at a time, wait for the answer, w
 
 ---
 
+## Before you start: confirm your Telegram bot is wired
+
+This interview happens over Telegram, so the bot must be connected and live first. If `${CTX_TELEGRAM_CHAT_ID}` is set and you can send a test message, continue to the intro below.
+
+Otherwise, wire the bot:
+
+1. In Telegram, message @BotFather, send `/newbot`, pick a display name, then a username ending in `bot`. Copy the BOT_TOKEN it returns (looks like `123456789:AA...`).
+2. Capture the chat id without manual hunting:
+   ```bash
+   cortextos detect-chat-id --agent "$CTX_AGENT_NAME" --org "$CTX_ORG"
+   ```
+   Paste the token when asked, then send `/start` to the bot username it prints. It writes `BOT_TOKEN`/`CHAT_ID`/`ALLOWED_USER` into this agent's `.env` (chmod 600) the moment you message the bot. It times out cleanly, just re-run it.
+
+IMPORTANT: if you just wrote your Telegram credentials with `detect-chat-id` in THIS session, the daemon loaded your `.env` when it spawned you, so it cannot receive the operator replies until it reloads. Restart now so the interview can hear them:
+```bash
+cortextos bus self-restart --reason "loaded Telegram credentials, restarting to pick them up"
+```
+Onboarding resumes on the next boot (the `.onboarded` flag is still absent, so this picks up where you left off). If the operator set `BOT_TOKEN`/`CHAT_ID` in `.env` BEFORE they started you (the recommended path), skip this restart.
+
+---
+
 ## Step 0: Intro and how you work
 
 Send this, then wait for a reply before asking anything else:
@@ -143,16 +164,17 @@ Only now, after IDENTITY.md, the knowledge files, and goals are written, add the
 if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
   echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
 else
-  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT."
-  cortextos bus add-cron "$CTX_AGENT_NAME" applicant-screening-digest "0 8 * * 1-5" "Run the applicant-screening skill in digest mode: score new applications against the written rubric, write a reason on every line, never auto-decline, and surface results for the operator's decision."
-  cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-am "0 8 * * 1-5" "Run renewals-coordinator in morning mode: detect leases entering the renewal window, score risk off payment history, recommend a path, and draft approval-ready renewal offers."
-  cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-pm "0 17 * * 1-5" "Run renewals-coordinator in evening mode: surface changed renewal flags and deadline pressure only."
-  cortextos bus add-cron "$CTX_AGENT_NAME" lease-abstraction-intake "0 9 * * 1-5" "Run lease-abstraction on any newly received leases: extract terms into structured data and flag missing, ambiguous, or contradictory clauses."
-  cortextos bus add-cron "$CTX_AGENT_NAME" fair-housing-presend-sweep "30 8 * * *" "Run fair-housing-guard over any pending applicant- or resident-facing drafts and screening criteria before anything is surfaced."
-  cortextos bus list-crons "$CTX_AGENT_NAME"
-  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
-  echo "onboarding complete: configured, crons added, online"
+  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" applicant-screening-digest "0 8 * * 1-5" "Run the applicant-screening skill in digest mode: score new applications against the written rubric, write a reason on every line, never auto-decline, and surface results for the operator's decision." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-am "0 8 * * 1-5" "Run renewals-coordinator in morning mode: detect leases entering the renewal window, score risk off payment history, recommend a path, and draft approval-ready renewal offers." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" renewal-window-pm "0 17 * * 1-5" "Run renewals-coordinator in evening mode: surface changed renewal flags and deadline pressure only." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" lease-abstraction-intake "0 9 * * 1-5" "Run lease-abstraction on any newly received leases: extract terms into structured data and flag missing, ambiguous, or contradictory clauses." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" fair-housing-presend-sweep "30 8 * * *" "Run fair-housing-guard over any pending applicant- or resident-facing drafts and screening criteria before anything is surfaced." \
+    && cortextos bus list-crons "$CTX_AGENT_NAME" \
+    && mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME" \
+    && touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded" \
+    && echo "onboarding complete: configured, crons added, online" \
+    || echo "STOP: a cron failed to register (see the error above). .onboarded was NOT written - fix the issue and re-run this block."
 fi
 ```
 

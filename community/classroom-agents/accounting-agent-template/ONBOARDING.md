@@ -191,16 +191,17 @@ Update `GOALS.md` and `goals.json` from their answer. Set `goals.json` `updated_
 if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
   echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
 else
-  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status."
-  cortextos bus add-cron "$CTX_AGENT_NAME" ar-digest "0 8 * * 1-5" "Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, prepare the delinquency feed as data, and flag unapplied or unexplained items. No ledger writes."
-  cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-am "0 8 * * 1-5" "Run trust-reconciliation in morning verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction."
-  cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-pm "0 17 * * 1-5" "Run trust-reconciliation in evening verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction."
-  cortextos bus add-cron "$CTX_AGENT_NAME" owner-statements-monthly "0 9 1 * *" "Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw recommendations, draft-only, route any external send or draw through approval."
-  cortextos bus add-cron "$CTX_AGENT_NAME" deposit-deadline-watch "30 8 * * *" "Run security-deposit-accounting deadline review: tie deposits held to ledgers, check statutory deadlines, and alert on any return inside the deadline window. No money moves."
-  cortextos bus list-crons "$CTX_AGENT_NAME"
-  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
-  echo "onboarding complete: configured, crons added, online"
+  cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" ar-digest "0 8 * * 1-5" "Run the ar-rent-posting skill in digest mode: read ledgers, verify payment application, prepare the delinquency feed as data, and flag unapplied or unexplained items. No ledger writes." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-am "0 8 * * 1-5" "Run trust-reconciliation in morning verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" bank-rec-pm "0 17 * * 1-5" "Run trust-reconciliation in evening verify-and-flag mode. Compute bank = book = liability, surface changed breaks only, and stop before any correction." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" owner-statements-monthly "0 9 1 * *" "Run owner-statement-drafting for the prior month: draft explainable statements and owner-draw recommendations, draft-only, route any external send or draw through approval." \
+    && cortextos bus add-cron "$CTX_AGENT_NAME" deposit-deadline-watch "30 8 * * *" "Run security-deposit-accounting deadline review: tie deposits held to ledgers, check statutory deadlines, and alert on any return inside the deadline window. No money moves." \
+    && cortextos bus list-crons "$CTX_AGENT_NAME" \
+    && mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME" \
+    && touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded" \
+    && echo "onboarding complete: configured, crons added, online" \
+    || echo "STOP: a cron failed to register (see the error above). .onboarded was NOT written - fix the issue and re-run this block."
 fi
 ```
 5. Log the event:
