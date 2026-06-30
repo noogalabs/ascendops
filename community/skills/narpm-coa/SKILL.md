@@ -11,7 +11,7 @@ This skill takes an operator's **current** general-ledger accounts and maps them
 
 You bring the standard and the method; the operator brings their GL export. You do the mapping.
 
-> **What this is, and what it is not.** This is a standardized chart of accounts and a migration methodology, reproduced here so an operator can adopt it. It is a **snapshot of the NARPM® Trust COA standard captured in June 2026**, not the live source of truth. The standard is maintained and can change, so always verify account numbers and names against the **current** official standard at **pmtrustcoa.com** before an operator commits changes, and tell the operator to do the same. Source: NARPM® Trust Chart of Accounts Standard (pmtrustcoa.com). NARPM® is a registered trademark of the National Association of Residential Property Managers; this skill is an adoption aid, not an official NARPM product.
+> **What this is, and what it is not.** This is a standardized chart of accounts and a migration methodology, reproduced here so an operator can adopt it. It is a **snapshot of the NARPM® Trust COA standard captured in June 2026**, not the live source of truth. The standard is maintained and can change, so always verify account numbers and names against the **current** official standard at **pmtrustcoa.com** before an operator commits changes, and tell the operator to do the same. Source: NARPM® Trust Chart of Accounts Standard, **produced by ProfitCoach & Crane and presented by NARPM®** (pmtrustcoa.com). © 2026 ProfitCoach & Crane. All rights reserved. NARPM® is a registered trademark of the National Association of Residential Property Managers; this skill is an adoption aid, not an official NARPM, ProfitCoach, or Crane product.
 
 ---
 
@@ -19,7 +19,7 @@ You bring the standard and the method; the operator brings their GL export. You 
 
 1. **Get the operator's current GL accounts.** Ask them to export their chart of accounts from their accounting system as a spreadsheet (number, name, type, and ideally 12-month activity). In **AppFolio** this is `Accounting > GL Accounts`; other systems have an equivalent GL-accounts or chart-of-accounts screen.
 2. **Map each current account** to a NARPM account from the standard below. Match on meaning, not on the operator's existing number. Mark every line with one legend symbol (below).
-3. **Flag what has no NARPM equivalent.** Custom or statistical accounts that do not map go to a separate review list: keep as a subaccount under the nearest NARPM parent, archive after a 12-month activity check, or refer to the operator's CPA (capital accounts, escrow specifics, and tax-authority accounts are common here).
+3. **Flag what has no NARPM equivalent.** Custom or statistical accounts that do not map go to a separate review list: keep as a subaccount under the nearest NARPM account, archive after a 12-month activity check, or refer to the operator's CPA (capital accounts, escrow specifics, and tax-authority accounts are common here).
 4. **Produce the migration plan** as a table the operator can work from, grouped by section (Assets, Liabilities, Equity, Income, Expenses), plus an "archive candidates" list and the system-default reminders.
 5. **Hand it back for the operator to execute.** This skill does not change anyone's books. The operator (or their bookkeeper) makes the edits and approves them. Renumbering a trust chart of accounts is a money-adjacent change; it stays operator-approved.
 
@@ -29,7 +29,7 @@ You bring the standard and the method; the operator brings their GL export. You 
 2. **Edit existing accounts** to the NARPM number and name where there is a direct match. Editing (rather than deleting and recreating) keeps the account's transaction history attached.
 3. **Add new NARPM accounts** that do not exist yet.
 4. **Archive unused accounts** with no recent activity. Run a 12-month GL report for each before archiving; if it is active, reclassify its transactions to the right NARPM account first.
-5. **Mark parent / category accounts `DO NOT USE`** in the notes field so postings land on the numbered subaccounts, not the rollup.
+5. **Mark the operator's old category / rollup accounts `DO NOT USE`** in the notes field so nothing posts to them. This applies to the PRIOR chart's parent and category accounts (by their own old numbers and names), not to the NARPM standard numbers, which are all postable leaves.
 
 > **Timing.** Do the migration mid-month, well before the next owner-statement run, and notify owners before statements go out so a renumbered statement is not a surprise.
 
@@ -237,15 +237,14 @@ When you renumber, the operator's accounting system may have default account ass
 
 A default left pointing at an archived account will silently misroute postings, so check every one after the renumber.
 
-## Parent accounts to mark DO NOT USE
+## Category headers and DO NOT USE
 
-If the operator uses a parent/child structure, mark the section parents `DO NOT USE` in the account notes so transactions land on the numbered subaccounts:
+Mark an account `DO NOT USE` only when it is a non-posting rollup the operator is retiring. Two cautions:
 
-- `5100` Repairs & Maintenance parent (postings go to 5100–5180)
-- `5200` Property Services parent (postings go to 5200–5250)
-- `5300` Utilities parent (postings go to 5300–5350)
-- `5500` Fixed/Recurring parent (postings go to 5400–5520)
-- Any old category-parent accounts from the prior COA
+- **Never disable a NARPM standard account.** Every number in the standard above is a real posting account, including the range-leading ones: `5100` (Repairs & Maintenance - Interior), `5200` (Landscaping / Yard Care), `5300` (Utilities - Water/Sewer), and `5500` (Property Taxes) are postable leaves, not parents. Marking them `DO NOT USE` would leave anything mapped to them, for example key/lock replacement at 5100, with nowhere to post.
+- **Do mark the operator's old prior-COA category parents `DO NOT USE`.** The rollup and category accounts from the chart they are migrating away from (by their own old numbers and names) should be archived or marked `DO NOT USE` so nothing posts to them.
+
+If the operator's system shows a parent/child tree, group the NARPM accounts under unnumbered or separately-numbered NON-POSTING header rows for readability, but keep every numbered NARPM account postable.
 
 ---
 
@@ -255,4 +254,4 @@ If the operator uses a parent/child structure, mark the section parents `DO NOT 
 - **This skill ships no scripts.** The mapping is judgment over the operator's GL export, which the agent does directly. A future version could add a helper that parses a GL-export CSV and pre-suggests matches; until then, do the mapping by reading the export.
 - **Verify against the live standard.** This account list is a snapshot. Confirm numbers and names against **pmtrustcoa.com** before the operator commits, and surface any difference rather than trusting this copy.
 
-*Reference: NARPM® Trust Chart of Accounts Standard, pmtrustcoa.com. Account list captured June 2026; verify against the current standard before use.*
+*Reference: NARPM® Trust Chart of Accounts Standard, produced by ProfitCoach & Crane, presented by NARPM® (pmtrustcoa.com). © 2026 ProfitCoach & Crane, all rights reserved. Account list captured June 2026; verify against the current standard before use.*
