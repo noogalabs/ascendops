@@ -221,21 +221,39 @@ These come up on almost every migration. Use them as defaults, not rules.
 
 ---
 
-## System default accounts (verify after renumbering)
+## System default accounts (re-point EVERY one after renumbering)
 
-When you renumber, the operator's accounting system may have default account assignments that point at the old numbers. After the migration, verify these defaults still point at the right NARPM accounts (in **AppFolio** these live under `Settings > Trust Account Settings` and within individual lease/owner settings; other systems have an equivalent defaults area):
+This is where renumbering misroutes money if you are not careful. The operator's accounting system holds **default account assignments** that auto-route postings, rent, fees, deposits, owner draws, to specific GL numbers. If a default still points at an old number after you rename or archive it, every future posting through that default silently lands on the wrong or a dead account. So after the migration, walk EVERY default and re-point it to the right NARPM account. In **AppFolio** the defaults live under `Settings > Trust Account Settings`, the system default-accounts area, and within property / lease / owner settings; other systems have an equivalent defaults area.
+
+**Balance and cash defaults**
 
 | System default | Maps to NARPM |
 |----------------|---------------|
 | Operating cash | 1000 Operating Trust Bank |
 | Security deposit cash | 1010 Security Deposit Trust Bank |
 | Accounts receivable | 1040 Accounts Receivable - Tenants |
-| Prepaid rent | 2020 Prepaid Rent |
 | Accounts payable | 2040 Accounts Payable - Vendors |
+| Prepaid rent | 2020 Prepaid Rent |
 | Owner contribution | 3100 Owner Contribution |
 | Owner distribution | 3200 Owner Distribution |
 
-A default left pointing at an archived account will silently misroute postings, so check every one after the renumber.
+**Posting / auto-post defaults (these route future money, the ones most often missed)**
+
+| System default | Maps to NARPM |
+|----------------|---------------|
+| Rent | 4000 Rent Income |
+| Late fee | 4020 Late Fee Income |
+| NSF / returned payment | 4030 NSF / Return Fee Income |
+| Application fee | 4010 Application Fee Income |
+| Concession | 4400 Concessions |
+| Security deposit held | 2010 Security Deposits Payable |
+| Owner-held security deposit | 2015 Owner-Held Security Deposits |
+| Security deposit release / refund | 8110 Security Deposit Refund |
+| Tenant credit | 2030 Tenant Credits |
+| Management fee | 5000 Management Fee Expense |
+| Leasing / placement fee | 5010 Leasing Commission Expense |
+
+> **This list is NOT exhaustive, and that is the point.** Different systems and configurations expose different defaults, so do not stop at the rows above. Open the system's default-accounts settings and verify EVERY default and auto-posting rule individually, then re-point any that still reference an old or archived number. One missed default silently misroutes real money on the next posting. When in doubt, confirm the full default set against the conversion guide for your system at pmtrustcoa.com.
 
 ## Category headers and DO NOT USE
 
