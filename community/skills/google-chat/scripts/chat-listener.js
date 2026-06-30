@@ -14,6 +14,7 @@
 'use strict';
 const { getAccessToken } = require('./chat-auth');
 const { execFileSync } = require('child_process');
+const { join } = require('path');
 
 const PUBSUB = 'https://pubsub.googleapis.com/v1';
 
@@ -74,7 +75,15 @@ async function main() {
       continue;
     }
     try {
-      const body = `[Google Chat] ${sender} in ${spaceName}: ${text}`;
+      // Give the agent an explicit path to reply INTO the Google Chat space. The inbox
+      // framing auto-appends a generic "Reply using: cortextos bus send-message ..."
+      // line, but replying on the bus does NOT reach Chat - the agent must use
+      // chat-sender.js with this space id. Add the hint only for a real space id.
+      const senderPath = join(__dirname, 'chat-sender.js');
+      const replyHint = /^spaces\//.test(spaceName)
+        ? `\n(To reply in this Google Chat space, do NOT reply via the bus; run: node ${senderPath} ${spaceName} "your reply")`
+        : '';
+      const body = `[Google Chat] ${sender} in ${spaceName}: ${text}${replyHint}`;
       // --skip-lint: the body is a verbatim quote of an external person's Chat message,
       // which is exactly the legitimate-quoted case comms-lint exempts. Without it,
       // ordinary user wording would trip the outbound lint, throw, and (now that we ack
@@ -90,11 +99,18 @@ async function main() {
   }
 
   if (ackIds.length) {
-    await fetch(`${PUBSUB}/projects/${project}/subscriptions/${sub}:acknowledge`, {
+    const ackRes = await fetch(`${PUBSUB}/projects/${project}/subscriptions/${sub}:acknowledge`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ ackIds }),
     });
+    if (!ackRes.ok) {
+      // A non-2xx acknowledge means these messages are NOT acked: Pub/Sub will
+      // redeliver them and the next cron run would inject duplicate Chat messages.
+      // Fail loudly (mirror the pull path) instead of logging success.
+      console.error(`acknowledge failed: ${ackRes.status} ${await ackRes.text()}`);
+      process.exit(1);
+    }
   }
   console.log(`processed ${receivedMessages.length} message(s), routed to ${agent}`);
 }
