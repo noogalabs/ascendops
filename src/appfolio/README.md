@@ -39,7 +39,7 @@ cortextos bus appfolio-report work_order --filters '{"property_visibility":"acti
 Output is JSON: `{ ok, report, rows[], pagesFetched, truncated, rowCount }`
 (or just the `rows` array with `--rows-only`).
 
-## Report names verified for carolinas-pm (2026-06-29)
+## Report names verified against a live AppFolio account (2026-06)
 
 | Use case                      | Report name(s)                                   |
 | ----------------------------- | ------------------------------------------------ |

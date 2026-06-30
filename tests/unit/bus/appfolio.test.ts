@@ -40,11 +40,11 @@ describe('AppFolioAPI', () => {
 
   it('constructs a Basic auth header and normalizes the base URL', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ results: [], next_page_url: null }));
-    const api = new AppFolioAPI('cid', 'secret', 'https://showcase.appfolio.com/');
+    const api = new AppFolioAPI('cid', 'secret', 'https://acme.appfolio.com/');
     await api.fetchReport('rent_roll');
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://showcase.appfolio.com/api/v2/reports/rent_roll.json');
+    expect(url).toBe('https://acme.appfolio.com/api/v2/reports/rent_roll.json');
     expect(init.method).toBe('POST');
     const expected = 'Basic ' + Buffer.from('cid:secret').toString('base64');
     expect((init.headers as Record<string, string>).Authorization).toBe(expected);

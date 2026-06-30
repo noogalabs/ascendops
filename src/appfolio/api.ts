@@ -60,7 +60,7 @@ export class AppFolioAPI {
   /**
    * @param clientId     AppFolio Reports API Client ID (Basic-auth username)
    * @param clientSecret AppFolio Reports API Client Secret (Basic-auth password)
-   * @param baseUrl      e.g. https://showcase.appfolio.com (trailing slash OK)
+   * @param baseUrl      e.g. https://yourcompany.appfolio.com (trailing slash OK)
    */
   constructor(clientId: string, clientSecret: string, baseUrl: string) {
     if (!clientId || !clientSecret) {
