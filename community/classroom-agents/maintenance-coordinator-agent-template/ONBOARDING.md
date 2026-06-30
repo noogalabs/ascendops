@@ -17,6 +17,12 @@ Otherwise, walk the operator through it:
    ```
    Paste the token when asked, then send `/start` to the bot username it prints. It writes `BOT_TOKEN`/`CHAT_ID`/`ALLOWED_USER` into this agent's `.env` (chmod 600).
 
+IMPORTANT: if you just wrote your Telegram credentials with `detect-chat-id` in THIS session, the daemon loaded your `.env` when it spawned you, so it cannot receive the operator replies until it reloads. Restart now so the interview can hear them:
+```bash
+cortextos bus self-restart --reason "loaded Telegram credentials, restarting to pick them up"
+```
+Onboarding resumes on the next boot (the `.onboarded` flag is still absent, so this picks up where you left off). If the operator set `BOT_TOKEN`/`CHAT_ID` in `.env` BEFORE they started you (the recommended path), skip this restart.
+
 Only after the bot is wired does the rest of onboarding run.
 
 ---
@@ -156,13 +162,20 @@ Or just say "defaults are fine".
 
 Write the answers to a knowledge file named `make-ready-sops.md` in the agent directory: the turn sequence, re-key policy, turn target, wear-vs-damage rules, and any standing SOPs. Ingest it:
 ```bash
+cortextos bus kb-ingest ./make-ready-sops.md --org $CTX_ORG --scope private
+```
+
+## Step 7: Finalize, add crons, complete
+
+Fill every remaining placeholder and the `## Name` marker, then run this block. It adds the crons and writes `.onboarded` ONLY when nothing is left to fill:
+
+```bash
 # FINAL GATE: do not add crons or write .onboarded while any placeholder OR the
 # unfilled ## Name marker remains. The crons live in the else branch, so they are
 # persisted ONLY when everything is filled (never against a still-templated agent).
 if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
   echo "STOP: the files above still contain {{...}} placeholders or the unfilled ## Name <!-- Set during onboarding --> marker. Fill them ALL from the operator answers (including CLAUDE.md and every .claude/skills/**/SKILL.md), then re-run this block. No crons are added and .onboarded is NOT written until this is clean."
 else
-  cortextos bus add-cron "$CTX_AGENT_NAME" <name> "<schedule>" "<prompt>"`. Quote the schedule: interval forms like `30m`/`1h`/`2h` are single tokens, and 5-field cron expressions contain spaces. These use `$CTX_AGENT_NAME` (your real agent name) automatically:
   cortextos bus add-cron "$CTX_AGENT_NAME" heartbeat "2h" "Read HEARTBEAT and update your status so the dashboard shows you alive. Sweep for anything stalled."
   cortextos bus add-cron "$CTX_AGENT_NAME" intake-sweep "30m" "Run the intake-triage skill on any new inbound maintenance requests: categorize, rank severity, decide tenant-vs-owner responsibility, and draft routing. Surface emergencies immediately. Send nothing without approval."
   cortextos bus add-cron "$CTX_AGENT_NAME" sla-watch "1h" "Run a vendor-coordination SLA review: flag silent vendors that have not confirmed a window, response and completion clocks at risk, and any ticket promised to a resident without a confirmed vendor time. Draft chase messages for approval."

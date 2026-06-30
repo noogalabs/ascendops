@@ -25,6 +25,12 @@ Otherwise, wire the bot:
    ```
    Paste the token when asked, then send `/start` to the bot username it prints. It writes `BOT_TOKEN`/`CHAT_ID`/`ALLOWED_USER` into this agent's `.env` (chmod 600) the moment you message the bot. It times out cleanly, just re-run it.
 
+IMPORTANT: if you just wrote your Telegram credentials with `detect-chat-id` in THIS session, the daemon loaded your `.env` when it spawned you, so it cannot receive the operator replies until it reloads. Restart now so the interview can hear them:
+```bash
+cortextos bus self-restart --reason "loaded Telegram credentials, restarting to pick them up"
+```
+Onboarding resumes on the next boot (the `.onboarded` flag is still absent, so this picks up where you left off). If the operator set `BOT_TOKEN`/`CHAT_ID` in `.env` BEFORE they started you (the recommended path), skip this restart.
+
 Only after the bot is wired does the rest of onboarding run.
 
 ---
