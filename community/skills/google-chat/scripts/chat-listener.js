@@ -41,9 +41,14 @@ async function main() {
     console.error(`pull failed: ${pullRes.status} ${await pullRes.text()}`);
     process.exit(1);
   }
-  const { receivedMessages = [] } = await pullRes.json();
+  // An idle subscription can return HTTP 200 with an empty body; JSON.parse('') throws,
+  // so a healthy no-message poll (the common quiet-space cron path) would exit 1. Read
+  // as text and treat an empty body as {} before parsing.
+  const pullText = await pullRes.text();
+  const { receivedMessages = [] } = pullText.trim() ? JSON.parse(pullText) : {};
 
   const ackIds = [];
+  let hadRouteFailure = false;
   for (const rm of receivedMessages) {
     // Ack ONLY after a message is genuinely handled, never before. Acking up front
     // (the previous behavior) meant a transient route failure or a misconfigured agent
@@ -93,8 +98,10 @@ async function main() {
       ackIds.push(rm.ackId); // ack ONLY after a successful route
     } catch (err) {
       // Transient route failure (CLI down, agent misconfigured): leave the message
-      // un-acked so Pub/Sub redelivers the mention instead of dropping it.
+      // un-acked so Pub/Sub redelivers the mention instead of dropping it, and record
+      // the failure so the run exits nonzero (cron supervision must not see success).
       console.error('route failed, leaving message for redelivery:', err.message);
+      hadRouteFailure = true;
     }
   }
 
@@ -113,6 +120,12 @@ async function main() {
     }
   }
   console.log(`processed ${receivedMessages.length} message(s), routed to ${agent}`);
+  if (hadRouteFailure) {
+    // At least one message failed to route (left un-acked for redelivery). Exit nonzero
+    // so cron supervision sees the failed run instead of a false success; the messages
+    // that DID route are already acked above and will not redeliver.
+    process.exit(1);
+  }
 }
 
 main().catch((e) => {
