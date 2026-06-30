@@ -103,26 +103,33 @@ describe('classroom bundles: static cron-safety contract', () => {
       expect(existsSync(join(bundleDir(b), '.claude', 'skills', 'onboarding', 'SKILL.md'))).toBe(true);
     });
 
-    it(`${b}: ONBOARDING.md carries the placeholder hard-gate around .onboarded`, () => {
+    it(`${b}: single .onboarded authority - ONBOARDING.md gates+crons+writes it, onboarding skill defers`, () => {
       // add-agent only fills {{agent_name}}/{{org}}; every other {{...}} (company,
       // operator, owner, timezone, sibling-agent names, role criteria) is filled by
-      // the interview, including ones in CLAUDE.md and .claude/skills/**. The hard
-      // gate refuses to write .onboarded while any {{...}} remains, so a member can
-      // never end up onboarded with a literal placeholder in Claude's prompt or a
-      // scheduled skill. Regression guard: the gate must be present and wrap .onboarded.
+      // the interview, including ones in CLAUDE.md and .claude/skills/**. ONBOARDING.md's
+      // final block is the SINGLE completion authority: a hard placeholder+marker gate,
+      // then the role crons, then .onboarded - so a member can never end up onboarded
+      // with a literal placeholder in Claude's prompt, NOR onboarded-without-crons.
       const onb = readFileSync(join(bundleDir(b), 'ONBOARDING.md'), 'utf-8');
       const skill = readFileSync(join(bundleDir(b), '.claude', 'skills', 'onboarding', 'SKILL.md'), 'utf-8');
-      for (const doc of [onb, skill]) {
-        // the gate greps BOTH {{...}} (format-complete: any placeholder shape) AND the
-        // ## Name '<!-- Set during onboarding' marker - it must cover every signal the
-        // daemon's hasCompletedBootstrapContent keys on, else a filled-but-unnamed agent
-        // could write .onboarded with a template marker as its name.
-        expect(doc).toContain("grep -rlE '\\{\\{[^{}]+\\}\\}|<!-- Set during onboarding'");
-        // the touch .onboarded sits inside the if/grep ... fi gate
-        expect(doc).toMatch(/if grep -rlE[\s\S]*?touch[^\n]*\.onboarded[\s\S]*?fi/);
-        // the gate MUST exclude the self-referencing setup docs (else always-halt)
-        expect(doc).toMatch(/grep -vE '[^']*ONBOARDING\\.md[^']*README\\.md[^']*skills\/onboarding/);
-      }
+
+      // ONBOARDING.md carries the full gate: greps BOTH {{...}} (format-complete: any
+      // placeholder shape) AND the ## Name '<!-- Set during onboarding' marker (every
+      // signal the daemon's hasCompletedBootstrapContent keys on); the touch sits inside
+      // the if/grep ... fi gate; the gate excludes the self-referencing setup docs (else
+      // always-halt).
+      expect(onb).toContain("grep -rlE '\\{\\{[^{}]+\\}\\}|<!-- Set during onboarding'");
+      expect(onb).toMatch(/if grep -rlE[\s\S]*?touch[^\n]*\.onboarded[\s\S]*?fi/);
+      expect(onb).toMatch(/grep -vE '[^']*ONBOARDING\\.md[^']*README\\.md[^']*skills\/onboarding/);
+
+      // SINGLE-AUTHORITY (Codex P2 fix, dual-completion-path): the onboarding skill must
+      // NOT write .onboarded itself. A second completion path (a skill-side gate+touch that
+      // skips the role crons) let the agent reach onboarded-WITHOUT-crons, and .onboarded
+      // suppresses re-onboarding so the crons would never get added. The skill defers to
+      // ONBOARDING.md's final block as the one writer.
+      expect(skill).not.toMatch(/touch[^\n]*\.onboarded/);
+      expect(skill).toContain('ONBOARDING.md');
+
       // ORDERING (ONBOARDING.md): the add-cron commands live INSIDE the gate's else,
       // AFTER the gate and BEFORE .onboarded - so crons are persisted only when clean,
       // never against a still-templated agent (no cron-persist-before-gate).
@@ -148,7 +155,7 @@ describe('classroom bundles: static cron-safety contract', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Dynamic proof — real CronScheduler, bundle runtime state (no crons.json)
+// Dynamic proof - real CronScheduler, bundle runtime state (no crons.json)
 // ---------------------------------------------------------------------------
 
 describe('classroom bundles: real scheduler fires zero crons in bundle runtime state', () => {

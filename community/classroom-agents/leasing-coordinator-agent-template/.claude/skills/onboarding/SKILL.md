@@ -65,25 +65,17 @@ You are not done until all of these are written from the operator's answers:
 | The operator's SOPs / rules / preferences | a knowledge file you ingest to the KB so you operate THEIR way |
 | Telegram bot connected and tested | `.env` |
 | Recommended role crons added | `config.json` via `cortextos bus add-cron` (final step, see ONBOARDING.md) |
-| `.onboarded` flag written | `$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded` |
+| `.onboarded` flag written | `$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded` (written ONLY by ONBOARDING.md's final block, after the crons, see Step 4) |
 
 ---
 
-## Step 4: Mark complete
+## Step 4: Mark complete (single authority: ONBOARDING.md's final step)
 
-First, the FINAL PLACEHOLDER SWEEP (hard gate). `cortextos add-agent` only fills `{{agent_name}}`/`{{org}}`; every other `{{...}}` (company, operator, owner, timezone, sibling-agent names, role criteria) is yours to fill from the interview, across ALL bootstrap files AND every `.claude/skills/**/SKILL.md`. You may NOT write `.onboarded` while any `{{...}}` remains anywhere:
+There is exactly ONE place that writes `.onboarded`: the final block in `ONBOARDING.md` (its "Finalize and add the recommended crons" step). Do NOT write `.onboarded` from this skill or by hand. That block is the single completion authority, and it does three things in order: (1) the final placeholder-and-marker sweep, a hard gate that refuses to finish while any `{{...}}` placeholder or the unfilled `## Name` marker remains anywhere across your bootstrap files, `CLAUDE.md`, and every `.claude/skills/**/SKILL.md`; (2) registers your recommended role crons; and (3) only THEN writes `.onboarded`, `&&`-chained after the crons so that if a cron fails to register, `.onboarded` is not written.
 
-```bash
-if grep -rlE '\{\{[^{}]+\}\}|<!-- Set during onboarding' . --include='*.md' --include='*.json' 2>/dev/null | grep -vE 'ONBOARDING\.md|README\.md|skills/onboarding/|node_modules'; then
-  echo "STOP: the files above still contain {{...}} placeholders. Fill them from the operator's answers, then re-run this check."
-else
-  mkdir -p "$CTX_ROOT/state/$CTX_AGENT_NAME"
-  touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
-  echo "onboarding complete"
-fi
-```
+This single-writer rule is load-bearing. If `.onboarded` were ever written before the crons, or by a second path that skips them, you would end up onboarded WITHOUT your role crons, and the `.onboarded` flag suppresses re-onboarding, so the crons would never get added. So do not duplicate the completion here: finish by running ONBOARDING.md's final block, and let that block be the thing that writes `.onboarded`.
 
-Only when that check writes `.onboarded` (no placeholders left) are you done. Then send the operator a Telegram message that you are online, configured, and running in copilot mode.
+Only after that block writes `.onboarded` (placeholders clean AND crons registered) are you done. Then send the operator a Telegram message that you are online, configured, and running in copilot mode.
 
 ---
 
