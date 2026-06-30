@@ -44,23 +44,43 @@ async function main() {
 
   const ackIds = [];
   for (const rm of receivedMessages) {
-    ackIds.push(rm.ackId); // ack everything we pulled so it is not redelivered
+    // Ack ONLY after a message is genuinely handled, never before. Acking up front
+    // (the previous behavior) meant a transient route failure or a misconfigured agent
+    // permanently dropped a user's mention. We ack on three outcomes: parse failure
+    // (poison payload, redelivery cannot help), no actionable text, or a successful
+    // route. A FAILED route is left un-acked so Pub/Sub redelivers it.
+    let text = '';
+    let sender = 'someone';
+    let spaceName = 'a space';
     try {
       const raw = Buffer.from(rm.message.data || '', 'base64').toString('utf8');
       const evt = JSON.parse(raw);
       // Google Chat MESSAGE event shape.
-      const text = (evt.message && evt.message.text) || '';
-      const sender = (evt.message && evt.message.sender && evt.message.sender.displayName) || 'someone';
-      const spaceName =
+      text = (evt.message && evt.message.text) || '';
+      sender = (evt.message && evt.message.sender && evt.message.sender.displayName) || 'someone';
+      spaceName =
         (evt.space && evt.space.name) ||
         (evt.message && evt.message.space && evt.message.space.name) ||
         'a space';
-      if (text.trim()) {
-        const body = `[Google Chat] ${sender} in ${spaceName}: ${text}`;
-        execFileSync('cortextos', ['bus', 'send-message', agent, 'normal', body], { stdio: 'inherit' });
-      }
     } catch (err) {
-      console.error('skipped a message (parse/route error):', err.message);
+      // Unparseable payload: ack so a poison message is not redelivered forever.
+      console.error('dropping an unparseable Pub/Sub message (acked):', err.message);
+      ackIds.push(rm.ackId);
+      continue;
+    }
+    if (!text.trim()) {
+      // Nothing actionable (membership/system event, empty text): ack and move on.
+      ackIds.push(rm.ackId);
+      continue;
+    }
+    try {
+      const body = `[Google Chat] ${sender} in ${spaceName}: ${text}`;
+      execFileSync('cortextos', ['bus', 'send-message', agent, 'normal', body], { stdio: 'inherit' });
+      ackIds.push(rm.ackId); // ack ONLY after a successful route
+    } catch (err) {
+      // Transient route failure (CLI down, agent misconfigured): leave the message
+      // un-acked so Pub/Sub redelivers the mention instead of dropping it.
+      console.error('route failed, leaving message for redelivery:', err.message);
     }
   }
 

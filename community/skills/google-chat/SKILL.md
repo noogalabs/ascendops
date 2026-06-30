@@ -36,7 +36,8 @@ You need admin access to Google Workspace, a Google Cloud project, and the servi
 ### Step 4: Set up Pub/Sub (for inbound @mentions)
 1. Search `Pub/Sub`, **+ Create Topic**, Topic ID e.g. `chat-messages-<your-org>`, **Create**.
 2. Open the topic, **+ Create Subscription**, Subscription ID `chat-messages-sub`, Delivery type **Pull**, **Create**.
-3. **IAM & Admin > IAM > + Grant Access**: paste the service-account email, roles **Pub/Sub Subscriber** and **Pub/Sub Publisher**, **Save**.
+3. Let your **bot** read the subscription: open the subscription, **Permissions / Show info panel > Add Principal** (or **IAM & Admin > IAM > + Grant Access**), paste your service-account email, role **Pub/Sub Subscriber**, **Save**. The bot only needs Subscriber, and only on the subscription, to pull mentions.
+4. Let **Google Chat publish** inbound events to the topic: open the topic, **Permissions / Show info panel > Add Principal**, principal `chat-api-push@system.gserviceaccount.com` (Google's fixed Chat push service account, not your bot), role **Pub/Sub Publisher**, **Save**. Without this grant, Chat cannot publish to the topic and the listener pulls nothing.
 
 ### Step 5: Configure the Chat app
 1. **APIs & Services > Google Chat API > Configuration**.
