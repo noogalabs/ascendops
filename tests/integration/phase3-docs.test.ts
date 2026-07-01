@@ -155,6 +155,17 @@ describe('3.1 — templates/*/AGENTS.md External Persistent Crons section', () =
 // ---------------------------------------------------------------------------
 
 describe('3.2 — Onboarding docs contain persistent cron guidance', () => {
+  // NOTE (onboarding step-2 item-1): the onboarding skill is self-contained for persistent
+  // crons. community/skills/onboarding/SKILL.md is unified with the canonical reverse-prompt
+  // skill (templates/_shared/onboarding/SKILL.md), which carries a concise "Persistent crons"
+  // pointer to `cortextos bus add-cron` directly in the skill (plus a see-ONBOARDING.md link
+  // for full detail). An earlier revision of this item dropped this community-skill entry on
+  // the theory that the skill could delegate cron guidance to the target ONBOARDING.md; Codex
+  // caught that 6 of 18 ONBOARDING.md targets carry no add-cron, so the add-anytime install
+  // would lose cron guidance on those agents. The self-contained pointer fixes the whole class
+  // (every materialize/install carries it), so this entry is asserted again. The skill is
+  // locked byte-for-byte to the canonical worker strip by tests/unit/cli/onboarding-skill.test.ts,
+  // which also asserts the canonical + every role strip + the real install output carry the pointer.
   const onboardingDocs = [
     { label: 'templates/agent/ONBOARDING.md',       path: join(ROOT, 'templates', 'agent', 'ONBOARDING.md') },
     { label: 'templates/orchestrator/ONBOARDING.md', path: join(ROOT, 'templates', 'orchestrator', 'ONBOARDING.md') },

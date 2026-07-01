@@ -1,7 +1,7 @@
 # Build Notes — Accounting Coordinator Template
 
 This template was genericized into the canonical role-agent shape, mirroring the
-`agent-leasing-coordinator` template's file set, voice, and bundled rule-skills.
+`leasing-coordinator` template's file set, voice, and bundled rule-skills.
 
 ## Accounting data connector is pulled via MCP — NOT baked in
 
@@ -16,14 +16,14 @@ No MCP server is stubbed or faked here. `.mcp.json` matches the leasing template
 (icm only). The connector is registered through `.claude/skills/tool-registration/`
 when the operator pulls it.
 
-## Intentional differences vs `agent-leasing-coordinator`
+## Intentional differences vs `leasing-coordinator`
 
 1. **Four connector / endpoint-discovery skills removed** (rule-skills-only build):
    the browser-automation skill, the two cli-anything / endpoint-discovery skills,
    and the PM work-order endpoint connector skill that the leasing template bundles
    under `.claude/skills/`. These are connectors / browser-automation / cli-anything
    tooling. They are excluded by design — the accounting connector arrives via MCP
-   instead. (Run a file-set diff against `agent-leasing-coordinator` to see exactly
+   instead. (Run a file-set diff against `leasing-coordinator` to see exactly
    which four skill directories are absent.)
 2. **This BUILD-NOTES.md** is added (not present in leasing).
 

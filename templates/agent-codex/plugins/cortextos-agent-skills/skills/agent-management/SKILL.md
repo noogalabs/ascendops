@@ -1,6 +1,7 @@
 ---
 name: agent-management
 description: "You need to create a new agent, restart a crashed agent, change an agent's model or config, fix a Telegram bot token, troubleshoot why an agent is not responding, enable or disable an agent, spawn an agent for another user, manage PM2 process management, reset crash limits, or do anything that touches an agent's lifecycle, configuration, or credentials. This is the definitive guide for every agent operation in cortextOS."
+triggers: ["new agent", "create agent", "spawn agent", "add agent", "restart", "soft restart", "hard restart", "disable agent", "enable agent", "change model", "switch model", "bot token", "BotFather", "agent not responding", "agent crashed", "agent down", "crash limit", "reset crashes", "agent health", "list agents", "heartbeat", "onboard", "setup agent", "configure agent", ".env", "config.json", "pm2", "ecosystem.config", "cross-org", "agent for someone else", "agent management", "agent lifecycle", "agent credentials", "telegram bot", "token not working"]
 ---
 
 # Agent Management
@@ -48,6 +49,11 @@ ORG="myorg"
 # Step 1: Copy template
 cp -r "$CTX_FRAMEWORK_ROOT/templates/$TEMPLATE" \
       "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
+
+# Materialize the onboarding skill: templates carry a 1-word role marker, not a full
+# SKILL.md copy, so strip the shared canonical to this agent role. Idempotent (no-op if
+# already materialized or the template has no onboarding skill).
+cortextos materialize-onboarding "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
 
 # Step 2: Create Telegram bot
 # Tell the user:
@@ -279,7 +285,7 @@ fi
 
 ## 6. Managing Crons
 
-Crons are daemon-managed and persisted to `${CTX_ROOT}/state/<agent>/crons.json`. The daemon dispatches them automatically — no agent-side restoration needed. Use the bus commands listed below; this is the only persistent scheduling path. Editing `config.json.crons[]` mid-session does NOT hot-reload (the daemon only re-reads `config.json` on agent boot).
+Crons are daemon-managed and persisted to `${CTX_ROOT}/state/<agent>/crons.json`. The daemon dispatches them automatically — no agent-side restoration needed. Use the bus commands; do NOT edit `config.json` or use `/loop` / `CronCreate`.
 
 ### Adding a Cron
 ```bash
@@ -380,7 +386,10 @@ cortextos enable "$AGENT" --org "$ORG" --restart
 
 ### Agent Keeps Crashing
 1. Check crash count: `cat $HOME/.cortextos/default/state/$AGENT/.crash_count_today`
-2. Check stderr: `tail -20 $HOME/.cortextos/default/logs/$AGENT/stderr.log`
+2. Check the logs (each gives a different signal):
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/crashes.log`: the durable crash record (session-end type, reason, session id, last task)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stdout.log`: rate-limit classification (Anthropic rolling-window pauses)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stderr.log`: errors and stack traces
 3. Common causes: rate limit, auth expired, context exhaustion
 4. Fix: reset crash count, fix root cause, `cortextos enable <agent> --restart`
 

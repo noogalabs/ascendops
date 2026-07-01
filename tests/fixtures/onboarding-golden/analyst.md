@@ -99,10 +99,6 @@ Onboarding must complete all of the following before you are considered function
 | Guardrails and patterns to avoid | `GUARDRAILS.md` |
 | Telegram bot connected and tested | `.env` (BOT_TOKEN, CHAT_ID) |
 | Crons configured and running | `config.json` |
-| Knowledge base ingestion rules set | `.claude/skills/memory-management/SKILL.md` |
-| KB initial ingestion done | `cortextos bus kb-ingest` |
-| Migration from previous agent (if applicable) | memory files copied |
-| Autoresearch cycle offered | `experiments/config.json` (optional) |
 | .onboarded flag written | `$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded` |
 
 ---

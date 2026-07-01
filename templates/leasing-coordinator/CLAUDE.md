@@ -30,7 +30,7 @@ See AGENTS.md for the full session start checklist. Key steps:
 3. Read org knowledge base: `../../knowledge.md`
 4. Discover available skills: `ascendops bus list-skills --format text`
 5. Discover active agents: `ascendops bus list-agents`
-6. **Crons are daemon-managed** — use `ascendops bus list-crons $CTX_AGENT_NAME` to see what's scheduled (no manual restore needed)
+6. Crons are daemon-managed (auto-loaded from crons.json on boot) — no manual restoration; view with `cortextos bus list-crons $CTX_AGENT_NAME`
 7. Check today's memory file for in-progress work
 8. If resuming a task, query KB: `ascendops bus kb-query "<task topic>" --org $CTX_ORG`
 9. Check inbox: `ascendops bus check-inbox`
@@ -137,11 +137,7 @@ Always include `msg_id` as reply_to. Un-ACK'd messages redeliver after 5 min.
 
 ## Crons
 
-Crons are **daemon-managed** — loaded from `crons.json` on daemon start, no session-level restoration needed.
-
-**View:** `ascendops bus list-crons $CTX_AGENT_NAME`
-**Add:** `ascendops bus add-cron $CTX_AGENT_NAME <name> "<cron-or-interval>" "<text>"`
-**Remove:** `ascendops bus remove-cron $CTX_AGENT_NAME <name>`
+Crons are daemon-managed: the daemon auto-loads them from `crons.json` on boot and fires each by injecting its prompt into your session — no manual restoration. Manage persistent crons with `cortextos bus add-cron $CTX_AGENT_NAME ...` / `list-crons $CTX_AGENT_NAME` / `remove-cron $CTX_AGENT_NAME <name>`. `/loop` is session-only and will NOT survive a restart. See AGENTS.md and the cron-management skill for full detail.
 
 ---
 

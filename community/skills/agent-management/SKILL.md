@@ -51,6 +51,11 @@ ORG="myorg"
 cp -r "$CTX_FRAMEWORK_ROOT/templates/$TEMPLATE" \
       "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
 
+# Materialize the onboarding skill: templates carry a 1-word role marker, not a full
+# SKILL.md copy, so strip the shared canonical to this agent role. Idempotent (no-op if
+# already materialized or the template has no onboarding skill).
+cortextos materialize-onboarding "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
+
 # Step 2: Create Telegram bot
 # Tell the user:
 # 1. Open Telegram, message @BotFather
@@ -205,6 +210,8 @@ cortextos bus send-message "$AGENT" high "soft-restart" "model change to $NEW_MO
 - `claude-sonnet-4-6` - Good balance, ~5x cheaper than Opus
 - `claude-haiku-4-5-20251001` - Fastest, cheapest, for simple tasks
 
+**Context window suffix:** Append `[1m]` to any model ID (e.g., `claude-opus-4-6[1m]`) to enable the extended 1M token context window. Without it, agents get the default shorter context window and will compact much sooner. Recommended for orchestrators and any agent doing complex multi-step work.
+
 **No model set = default (Opus).** Always set explicitly for cost control.
 
 ---
@@ -279,29 +286,27 @@ fi
 
 ## 6. Managing Crons
 
+Crons are daemon-managed and persisted to `${CTX_ROOT}/state/<agent>/crons.json`. The daemon dispatches them automatically — no agent-side restoration needed. Use the bus commands; do NOT edit `config.json` or use `/loop` / `CronCreate`.
+
 ### Adding a Cron
 ```bash
-AGENT="sentinel"
-ORG="myorg"
-
-node -e "
-const fs = require('fs');
-const path = '$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT/config.json';
-const c = JSON.parse(fs.readFileSync(path));
-if (!c.crons) c.crons = [];
-c.crons.push({ name: 'new-cron', interval: '2h', prompt: 'Do the thing' });
-fs.writeFileSync(path, JSON.stringify(c, null, 2));
-"
-
-# Notify agent that crons have been updated
-cortextos bus send-message "$AGENT" normal \
-  'Crons updated in crons.json. The daemon scheduler will pick up the change automatically. To verify: cortextos bus list-crons '"$AGENT"
+cortextos bus add-cron <agent> <name> <interval-or-cron-expr> "<prompt>"
+# Example: cortextos bus add-cron sentinel new-cron 2h "Do the thing"
 ```
 
 ### Removing a Cron
 ```bash
-cortextos bus remove-cron "$AGENT" cron-to-remove
-cortextos bus send-message "$AGENT" normal 'Cron removed from daemon-managed crons.json.'
+cortextos bus remove-cron <agent> <name>
+```
+
+### Updating a Cron
+```bash
+cortextos bus update-cron <agent> <name> --interval <new>
+```
+
+### Listing Crons
+```bash
+cortextos bus list-crons <agent>
 ```
 
 ---
@@ -382,7 +387,10 @@ cortextos enable "$AGENT" --org "$ORG" --restart
 
 ### Agent Keeps Crashing
 1. Check crash count: `cat $HOME/.cortextos/default/state/$AGENT/.crash_count_today`
-2. Check stderr: `tail -20 $HOME/.cortextos/default/logs/$AGENT/stderr.log`
+2. Check the logs (each gives a different signal):
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/crashes.log`: the durable crash record (session-end type, reason, session id, last task)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stdout.log`: rate-limit classification (Anthropic rolling-window pauses)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stderr.log`: errors and stack traces
 3. Common causes: rate limit, auth expired, context exhaustion
 4. Fix: reset crash count, fix root cause, `cortextos enable <agent> --restart`
 
@@ -413,7 +421,7 @@ cortextos enable "$AGENT" --org "$ORG" --restart
 | Restart another agent | `cortextos bus send-message <agent> high "soft-restart" "<reason>"` |
 | Change model | Edit config.json model field + soft restart |
 | Update bot token | Edit .env BOT_TOKEN + soft restart |
-| Add cron | `cortextos bus add-cron <agent> <name> <interval-or-cron-expr> "<prompt>"` |
+| Add cron | `cortextos bus add-cron <agent> <name> <interval> "<prompt>"` |
 | Check health | `cortextos status` or `cortextos bus read-all-heartbeats` |
 | List agents | `cortextos bus list-agents --format json` |
 | Check PM2 | `pm2 list` |

@@ -483,6 +483,18 @@
       "submitted_at": "2026-06-03T00:00:00Z"
     },
     {
+      "name": "maintenance-coordinator",
+      "description": "Maintenance coordinator agent for repair work orders, vendor dispatch, and maintenance scheduling",
+      "author": "ascendops",
+      "type": "agent",
+      "version": "1.0.0",
+      "tags": ["maintenance", "coordinator", "repairs", "work-orders", "vendors"],
+      "review_status": "community",
+      "dependencies": [],
+      "install_path": "community/agents/maintenance-coordinator",
+      "submitted_at": "2026-07-01T00:00:00Z"
+    },
+    {
       "name": "nepq",
       "description": "NEPQ sales methodology bundle — framework, cold outreach, discovery notes, follow-up cadence, objection handling, and the verbatim Black Book question bank (6 sub-skills)",
       "author": "ascendops",

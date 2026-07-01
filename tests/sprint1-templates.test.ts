@@ -51,6 +51,14 @@ describe('Sprint 1: Template Completeness', () => {
     it('has all 5 skills', () => {
       const expectedSkills = ['autoresearch', 'comms', 'cron-management', 'tasks', 'onboarding'];
       for (const skill of expectedSkills) {
+        if (skill === 'onboarding') {
+          // Onboarding is no longer a per-template SKILL.md copy: the template carries a
+          // 1-word role marker and add-agent materializes the skill from the shared
+          // canonical (templates/_shared/onboarding/SKILL.md) at scaffold time.
+          const rolePath = join(agentDir, '.claude', 'skills', 'onboarding', 'role');
+          expect(existsSync(rolePath), 'Missing onboarding role marker').toBe(true);
+          continue;
+        }
         const skillPath = join(agentDir, '.claude', 'skills', skill, 'SKILL.md');
         expect(existsSync(skillPath), `Missing skill: ${skill}`).toBe(true);
       }
@@ -166,6 +174,13 @@ describe('Sprint 1: Template Completeness', () => {
         'nighttime-mode', 'theta-wave', 'weekly-review', 'onboarding',
       ];
       for (const skill of expectedSkills) {
+        if (skill === 'onboarding') {
+          // Onboarding is materialized at scaffold time from the shared canonical; the
+          // template carries a 1-word role marker, not a SKILL.md copy.
+          const rolePath = join(orchDir, '.claude', 'skills', 'onboarding', 'role');
+          expect(existsSync(rolePath), 'Missing onboarding role marker').toBe(true);
+          continue;
+        }
         const skillPath = join(orchDir, '.claude', 'skills', skill, 'SKILL.md');
         expect(existsSync(skillPath), `Missing skill: ${skill}`).toBe(true);
       }
@@ -246,6 +261,13 @@ describe('Sprint 1: Template Completeness', () => {
         'theta-wave', 'upstream-sync', 'onboarding',
       ];
       for (const skill of expectedSkills) {
+        if (skill === 'onboarding') {
+          // Onboarding is materialized at scaffold time from the shared canonical; the
+          // template carries a 1-word role marker, not a SKILL.md copy.
+          const rolePath = join(analystDir, '.claude', 'skills', 'onboarding', 'role');
+          expect(existsSync(rolePath), 'Missing onboarding role marker').toBe(true);
+          continue;
+        }
         const skillPath = join(analystDir, '.claude', 'skills', skill, 'SKILL.md');
         expect(existsSync(skillPath), `Missing skill: ${skill}`).toBe(true);
       }

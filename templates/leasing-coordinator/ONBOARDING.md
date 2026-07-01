@@ -19,13 +19,13 @@ Before I can talk to you here, I need a Telegram bot. Three quick steps:
 2. Open your new bot, send /start.
 3. From your terminal, run:
      curl -s "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates" \
-       | jq '.result[-1].message.chat.id'
-   That prints your numeric chat id.
+       | jq '.result[-1].message | {chat_id: .chat.id, user_id: .from.id}'
+   That prints your numeric chat id and your numeric user id.
 
 Then edit orgs/<org>/agents/{{agent_name}}/.env and set:
   BOT_TOKEN=<paste>
-  CHAT_ID=<paste>
-  ALLOWED_USER=<your Telegram username>
+  CHAT_ID=<paste numeric chat id>
+  ALLOWED_USER=<paste numeric user id>   # numeric Telegram user id, NOT a username
 
 Restart me (cortextos restart {{agent_name}}) and message me here again.
 ```

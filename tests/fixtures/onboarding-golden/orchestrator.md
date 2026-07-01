@@ -26,10 +26,10 @@ operator hasn't completed bootstrap, point them there. The two phases:
 - **Phase 2 — Onboarding (this skill):** configure the agent for the operator's PM
   business + software.
 
-**Agent order is data-driven:** EA/orchestrator FIRST (it coordinates the rest),
-THEN the required core agents, THEN the optional
-agents. Follow the ordered roster table in `SKOOL-INSTALL.md` top-to-bottom; create
-+ onboard each required agent before any optional one.
+**Agent order is data-driven, and you (EA/orchestrator) come FIRST** — you
+coordinate the rest. After you, the operator brings up the required core agents, THEN the optional agents. Follow the
+ordered roster table in `SKOOL-INSTALL.md` top-to-bottom; create + onboard each
+required agent before any optional one.
 
 ### Bot setup walkthrough (baked in here so it works even if SKOOL-INSTALL.md is missing)
 
@@ -99,10 +99,6 @@ Onboarding must complete all of the following before you are considered function
 | Guardrails and patterns to avoid | `GUARDRAILS.md` |
 | Telegram bot connected and tested | `.env` (BOT_TOKEN, CHAT_ID) |
 | Crons configured and running | `config.json` |
-| Knowledge base ingestion rules set | `.claude/skills/memory-management/SKILL.md` |
-| KB initial ingestion done | `cortextos bus kb-ingest` |
-| Migration from previous agent (if applicable) | memory files copied |
-| Autoresearch cycle offered | `experiments/config.json` (optional) |
 | .onboarded flag written | `$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded` |
 
 ---

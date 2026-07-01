@@ -13,7 +13,7 @@ triggers: ["new agent", "create agent", "spawn agent", "add agent", "restart", "
 ## CRITICAL RULES
 
 1. **ALWAYS use the CLI.** Never manually edit state files or .env without using the proper command.
-2. **ALWAYS create .env before enabling.** An agent without .env may inherit parent credentials.
+2. **ALWAYS create .env before enabling.** An agent without .env will inherit parent credentials (the Becky bug).
 3. **ALWAYS write restart markers before /exit.** Use `cortextos bus self-restart`, never raw /exit.
 4. **ALWAYS use `cortextos enable` to start agents.** Never manually edit PM2 config.
 5. **NEVER share bot tokens between agents.** Each agent gets its own bot from @BotFather.
@@ -49,6 +49,11 @@ ORG="myorg"
 # Step 1: Copy template
 cp -r "$CTX_FRAMEWORK_ROOT/templates/$TEMPLATE" \
       "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
+
+# Materialize the onboarding skill: templates carry a 1-word role marker, not a full
+# SKILL.md copy, so strip the shared canonical to this agent role. Idempotent (no-op if
+# already materialized or the template has no onboarding skill).
+cortextos materialize-onboarding "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
 
 # Step 2: Create Telegram bot
 # Tell the user:
@@ -119,7 +124,7 @@ cortextos enable "$AGENT_NAME" --org "$ORG"
 # If messages come to you instead of them, the .env has wrong CHAT_ID
 ```
 
-**Common Mistake:** If you skip the .env creation, the agent can inherit credentials from the parent environment. Messages meant for the new agent may route through the wrong identity. ALWAYS create .env BEFORE enabling.
+**Common Mistake (Becky Bug):** If you skip the .env creation, the agent inherits YOUR credentials from the parent environment. Messages meant for the other user go to YOU instead. ALWAYS create .env BEFORE enabling.
 
 ---
 
@@ -165,7 +170,7 @@ cortextos stop <agent> && cortextos start <agent>
 
 Both kill the existing PID and respawn a fresh process that re-reads `settings.json` from scratch. Verify by adding a one-line debug write to your hook script before testing — if the file shows up after a benign tool call, the hook is loaded.
 
-If `bus hard-restart` writes restart markers without actually stopping the process, the running fork may be stale. Fall back to external `stop && start` until the fork is updated.
+This bit us hard on the coder-telegram-guardrail wire-up before upstream PR #217 fixed `bus hard-restart` to actually signal the daemon. On any fork that has not pulled in #217 (commit `a38ef7a`), `bus hard-restart` writes markers without killing the PID — fall back to external `stop && start` until the fork is rebased.
 
 ### Restart from Another Agent
 
@@ -370,18 +375,21 @@ cortextos enable "$AGENT" --org "$ORG" --restart
 ### Agent Not Responding to Telegram
 1. Check .env exists and has BOT_TOKEN + CHAT_ID + ALLOWED_USER
 2. Check fast-checker is running: `ps aux | grep fast-checker | grep $AGENT`
-3. Check agent output: `tail -50 $HOME/.cortextos/default/logs/$AGENT/stdout.log` and `tail -20 $HOME/.cortextos/default/logs/$AGENT/crashes.log`
+3. Check fast-checker log: `tail -10 $HOME/.cortextos/default/logs/$AGENT/fast-checker.log`
 4. Check agent status: `cortextos status`
 
 ### Messages Going to Wrong Person
 1. Check .env CHAT_ID - is it the right person's chat ID?
 2. Check .env BOT_TOKEN - is it the right bot?
-3. If agent was spawned by another agent, the parent's env vars may have leaked
+3. If agent was spawned by another agent, the parent's env vars may have leaked (Becky bug)
 4. Fix: rewrite .env with correct credentials, soft restart
 
 ### Agent Keeps Crashing
 1. Check crash count: `cat $HOME/.cortextos/default/state/$AGENT/.crash_count_today`
-2. Check crashes/restarts: `tail -20 $HOME/.cortextos/default/logs/$AGENT/crashes.log` and `tail -20 $HOME/.cortextos/default/logs/$AGENT/stdout.log`
+2. Check the logs (each gives a different signal):
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/crashes.log`: the durable crash record (session-end type, reason, session id, last task)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stdout.log`: rate-limit classification (Anthropic rolling-window pauses)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stderr.log`: errors and stack traces
 3. Common causes: rate limit, auth expired, context exhaustion
 4. Fix: reset crash count, fix root cause, `cortextos enable <agent> --restart`
 

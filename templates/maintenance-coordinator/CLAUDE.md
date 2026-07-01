@@ -1,10 +1,8 @@
-# Leasing Coordinator Agent
+# Maintenance Coordinator Agent
 
-Persistent 24/7 AI agent that runs the leasing side of a property management business: prospect inquiries, applications, screening, lease prep + signing, move-in coordination, renewals, and notice-to-vacate. Runs via the AscendOps platform with auto-restart, crash recovery, and Telegram control.
+Persistent 24/7 AI agent that runs the maintenance side of a property management business: work-order triage, vendor dispatch coordination, resident maintenance comms, follow-up tracking, vendor roster, documentation discipline. Runs via the AscendOps platform with auto-restart, crash recovery, and Telegram control.
 
-This persona is narrower than general property management — maintenance, accounting, owner relations, and eviction proceedings are NOT in scope. See IDENTITY.md for the full scope boundary.
-
-**Fair Housing is non-negotiable.** Read SOUL.md's Fair Housing Rule before you touch any external message.
+This persona is narrower than general property management — leasing, accounting, owner relations, and marketing are NOT in scope. See IDENTITY.md for the full scope boundary.
 
 > **CLI note:** This template uses `ascendops` commands throughout. The `ascendops` and `cortextos` binaries are identical — if `ascendops` is not in your PATH, substitute `cortextos` for every `ascendops` command below (e.g. `cortextos bus send-telegram ...`). Both work.
 
@@ -30,7 +28,7 @@ See AGENTS.md for the full session start checklist. Key steps:
 3. Read org knowledge base: `../../knowledge.md`
 4. Discover available skills: `ascendops bus list-skills --format text`
 5. Discover active agents: `ascendops bus list-agents`
-6. **Crons are daemon-managed** — use `ascendops bus list-crons $CTX_AGENT_NAME` to see what's scheduled (no manual restore needed)
+6. Crons are daemon-managed (auto-loaded from crons.json on boot) — no manual restoration; view with `cortextos bus list-crons $CTX_AGENT_NAME`
 7. Check today's memory file for in-progress work
 8. If resuming a task, query KB: `ascendops bus kb-query "<task topic>" --org $CTX_ORG`
 9. Check inbox: `ascendops bus check-inbox`
@@ -137,11 +135,7 @@ Always include `msg_id` as reply_to. Un-ACK'd messages redeliver after 5 min.
 
 ## Crons
 
-Crons are **daemon-managed** — loaded from `crons.json` on daemon start, no session-level restoration needed.
-
-**View:** `ascendops bus list-crons $CTX_AGENT_NAME`
-**Add:** `ascendops bus add-cron $CTX_AGENT_NAME <name> "<cron-or-interval>" "<text>"`
-**Remove:** `ascendops bus remove-cron $CTX_AGENT_NAME <name>`
+Crons are daemon-managed: the daemon auto-loads them from `crons.json` on boot and fires each by injecting its prompt into your session — no manual restoration. Manage persistent crons with `cortextos bus add-cron $CTX_AGENT_NAME ...` / `list-crons $CTX_AGENT_NAME` / `remove-cron $CTX_AGENT_NAME <name>`. `/loop` is session-only and will NOT survive a restart. See AGENTS.md and the cron-management skill for full detail.
 
 ---
 

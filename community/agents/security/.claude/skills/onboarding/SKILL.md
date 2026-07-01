@@ -10,6 +10,62 @@ This skill runs on first boot or when explicitly triggered. It is the only thing
 
 ---
 
+## Step 0: Bootstrap orientation (Phase 1 — for operators starting from zero)
+
+The full, doc-independent zero-to-fleet install sequence lives locally at
+`SKOOL-INSTALL.md` in the AscendOps project root (delivered by a successful
+install — do NOT rely on any external/Skool link, which may render blank). If the
+operator hasn't completed bootstrap, point them there. The two phases:
+
+- **Phase 1 — Bootstrap (must be done before this skill matters):** create prereq
+  accounts (GitHub, Anthropic/Claude, Google, Telegram, optional Telnyx) → install
+  Claude Code (`npm install -g @anthropic-ai/claude-code` + `claude login`) → run
+  the installer (`curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs | node`)
+  → open `~/ascendops` in Claude Code → create a Telegram bot per agent with auto
+  chat_id capture (below).
+- **Phase 2 — Onboarding (this skill):** configure the agent for the operator's PM
+  business + software.
+
+**Agent order is data-driven:** EA/orchestrator FIRST (it coordinates the rest),
+THEN the required core agents, THEN the optional
+agents. Follow the ordered roster table in `SKOOL-INSTALL.md` top-to-bottom; create
++ onboard each required agent before any optional one.
+
+### Bot setup walkthrough (baked in here so it works even if SKOOL-INSTALL.md is missing)
+
+For THIS agent, if its `.env` has no `BOT_TOKEN`/`CHAT_ID` yet:
+
+1. In Telegram, message **@BotFather** → `/newbot` → pick a display name → pick a
+   username ending in `bot`. Copy the **BOT_TOKEN** it returns (looks like
+   `123456789:AA...`).
+2. Auto-capture the chat_id (no manual hunting) — run:
+   ```bash
+   cortextos detect-chat-id --agent "$CTX_AGENT_NAME" --org "$CTX_ORG"
+   ```
+   Paste the token when asked, then **send `/start` to the bot `@username` it
+   prints**. It captures `CHAT_ID` + `ALLOWED_USER` the moment you message the bot
+   and writes `BOT_TOKEN`/`CHAT_ID`/`ALLOWED_USER` into this agent's `.env`
+   (chmod 600). It times out cleanly if you wait too long — just re-run it.
+   (Interactive alternative: `cortextos bot create "$CTX_AGENT_NAME"`.)
+
+Only after the bot is wired does the rest of onboarding (below) run.
+
+### Optional AscendOps support access
+
+Ask the operator whether they want to enable AscendOps support access for this
+agent so the owner can help through the agent's Telegram bot. Default to **No**. If
+they choose yes, run:
+
+```bash
+cortextos support-access enable --agent "$CTX_AGENT_NAME" --org "$CTX_ORG"
+```
+
+Show the command output, including the share-instruction for the owner. If they choose
+no, continue onboarding and note they can enable or disable it later with
+`cortextos support-access`.
+
+---
+
 ## Step 1: Check onboarding status
 
 ```bash
@@ -61,6 +117,12 @@ touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
 ```
 
 Then notify the user via Telegram that you are online and ready.
+
+---
+
+## Persistent crons
+
+Any recurring workflow you set up during onboarding (heartbeats, sweeps, reports) must be a PERSISTENT cron so it survives restarts: create it with `cortextos bus add-cron`, never `/loop` (which is session-only and dies on restart; Codex-runtime agents have no `/loop` at all). The daemon reschedules every entry in `crons.json` on each start. See the persistent-cron section of `ONBOARDING.md` for full setup and examples.
 
 ---
 

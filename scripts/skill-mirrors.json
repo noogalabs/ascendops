@@ -12,9 +12,31 @@
     "skill": "framework-upstream-auto-update",
     "canonical": "templates/agent/.claude/skills/framework-upstream-auto-update",
     "mirrors": [
-      "templates/agent-maintenance-director/.claude/skills/framework-upstream-auto-update",
-      "templates/agent-leasing-coordinator/.claude/skills/framework-upstream-auto-update"
+      "templates/maintenance-coordinator/.claude/skills/framework-upstream-auto-update",
+      "templates/leasing-coordinator/.claude/skills/framework-upstream-auto-update"
     ],
     "note": "Template-variant parity only; deployed framework-upstream copies are personalized from placeholders and must not byte-compare against the generic template."
+  },
+  {
+    "skill": "agent-management",
+    "canonical": "templates/agent/.claude/skills/agent-management",
+    "mirrors": [
+      "templates/analyst/.claude/skills/agent-management",
+      "templates/leasing-coordinator/.claude/skills/agent-management",
+      "templates/maintenance-coordinator/.claude/skills/agent-management",
+      "templates/agent-accounting-coordinator/.claude/skills/agent-management",
+      "community/agents/research-agent/.claude/skills/agent-management",
+      "community/agents/security/.claude/skills/agent-management",
+      "templates/agent-codex/plugins/cortextos-agent-skills/skills/agent-management"
+    ],
+    "note": "Shared agent-management BODY, single-sourced. Orchestrator carries an orchestrator-only Migration Check overlay and community/skills/agent-management carries required external_calls frontmatter; both are body-guarded by tests, not byte-mirrored."
+  },
+  {
+    "skill": "onboarding-static",
+    "canonical": "community/agents/research-agent/.claude/skills/onboarding",
+    "mirrors": [
+      "community/agents/security/.claude/skills/onboarding"
+    ],
+    "note": "Static community-agent onboarding copies kept byte-identical (worker-strip body). community/skills/onboarding (catalog, carries external_calls) and templates/agent-codex onboarding (plugin path) are intentionally not mirrors."
   }
 ]

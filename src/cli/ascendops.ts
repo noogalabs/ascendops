@@ -10,6 +10,7 @@ import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { initCommand } from './init.js';
 import { addAgentCommand } from './add-agent.js';
+import { materializeOnboardingCommand } from './onboarding-skill';
 import { startCommand } from './start.js';
 import { stopCommand } from './stop.js';
 import { statusCommand } from './status.js';
@@ -41,6 +42,7 @@ program
 program.addCommand(initCommand);
 program.addCommand(installCommand);
 program.addCommand(addAgentCommand);
+program.addCommand(materializeOnboardingCommand);
 program.addCommand(startCommand);
 program.addCommand(stopCommand);
 program.addCommand(statusCommand);

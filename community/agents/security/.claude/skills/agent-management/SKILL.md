@@ -18,6 +18,7 @@ triggers: ["new agent", "create agent", "spawn agent", "add agent", "restart", "
 4. **ALWAYS use `cortextos enable` to start agents.** Never manually edit PM2 config.
 5. **NEVER share bot tokens between agents.** Each agent gets its own bot from @BotFather.
 6. **NEVER hardcode chat IDs.** Get them from the actual user via Telegram getUpdates.
+7. **ALWAYS ask the user which runtime** (claude-code vs codex-app-server) before scaffolding a new agent. Default to claude-code only if the user has no preference. Never silently pick.
 
 ---
 
@@ -48,6 +49,11 @@ ORG="myorg"
 # Step 1: Copy template
 cp -r "$CTX_FRAMEWORK_ROOT/templates/$TEMPLATE" \
       "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
+
+# Materialize the onboarding skill: templates carry a 1-word role marker, not a full
+# SKILL.md copy, so strip the shared canonical to this agent role. Idempotent (no-op if
+# already materialized or the template has no onboarding skill).
+cortextos materialize-onboarding "$CTX_FRAMEWORK_ROOT/orgs/$ORG/agents/$AGENT_NAME"
 
 # Step 2: Create Telegram bot
 # Tell the user:
@@ -380,7 +386,10 @@ cortextos enable "$AGENT" --org "$ORG" --restart
 
 ### Agent Keeps Crashing
 1. Check crash count: `cat $HOME/.cortextos/default/state/$AGENT/.crash_count_today`
-2. Check stderr: `tail -20 $HOME/.cortextos/default/logs/$AGENT/stderr.log`
+2. Check the logs (each gives a different signal):
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/crashes.log`: the durable crash record (session-end type, reason, session id, last task)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stdout.log`: rate-limit classification (Anthropic rolling-window pauses)
+   - `tail -20 $HOME/.cortextos/default/logs/$AGENT/stderr.log`: errors and stack traces
 3. Common causes: rate limit, auth expired, context exhaustion
 4. Fix: reset crash count, fix root cause, `cortextos enable <agent> --restart`
 
@@ -403,7 +412,7 @@ cortextos enable "$AGENT" --org "$ORG" --restart
 
 | I need to... | Command |
 |---|---|
-| Create new agent | `cortextos add-agent <name> --template <type> --org <org>` |
+| Create new agent | `cortextos add-agent <name> --template agent --org <org> --runtime claude-code` (or `--template agent-codex --runtime codex-app-server` after asking the user which runtime) |
 | Enable agent | `cortextos enable <agent> --org <org>` |
 | Disable agent | `cortextos disable <agent> --org <org>` |
 | Soft restart (self) | `cortextos bus self-restart --reason "<reason>"` |

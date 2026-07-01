@@ -1,6 +1,7 @@
 ---
 name: onboarding
 description: "You have just booted for the first time — there is no .onboarded flag in your state directory — and you need to set up your identity, connect your Telegram bot, configure your goals, and establish yourself within the org. Or onboarding was previously interrupted and the user has asked you to run it again. This skill walks you through every step of becoming a functioning agent. Do not skip steps. Do not start normal operations until onboarding is complete."
+triggers: ["onboarding", "/onboarding", "first boot", "run onboarding", "setup", "not onboarded", "configure agent", "set up identity", "establish identity", "set goals", "onboard me", "start onboarding", "redo onboarding", "onboarding interrupted", "first time setup", "initial setup", "agent setup"]
 ---
 
 # Onboarding
@@ -27,9 +28,8 @@ operator hasn't completed bootstrap, point them there. The two phases:
 
 **Agent order is data-driven:** EA/orchestrator FIRST (it coordinates the rest),
 THEN the required core agents, THEN the optional
-agents (this codex/build agent is typically optional). Follow the ordered roster
-table in `SKOOL-INSTALL.md` top-to-bottom; create + onboard each required agent
-before any optional one.
+agents. Follow the ordered roster table in `SKOOL-INSTALL.md` top-to-bottom; create
++ onboard each required agent before any optional one.
 
 ### Bot setup walkthrough (baked in here so it works even if SKOOL-INSTALL.md is missing)
 
@@ -49,6 +49,20 @@ For THIS agent, if its `.env` has no `BOT_TOKEN`/`CHAT_ID` yet:
    (Interactive alternative: `cortextos bot create "$CTX_AGENT_NAME"`.)
 
 Only after the bot is wired does the rest of onboarding (below) run.
+
+### Optional AscendOps support access
+
+Ask the operator whether they want to enable AscendOps support access for this
+agent so the owner can help through the agent's Telegram bot. Default to **No**. If
+they choose yes, run:
+
+```bash
+cortextos support-access enable --agent "$CTX_AGENT_NAME" --org "$CTX_ORG"
+```
+
+Show the command output, including the share-instruction for the owner. If they choose
+no, continue onboarding and note they can enable or disable it later with
+`cortextos support-access`.
 
 ---
 
@@ -103,6 +117,12 @@ touch "$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded"
 ```
 
 Then notify the user via Telegram that you are online and ready.
+
+---
+
+## Persistent crons
+
+Any recurring workflow you set up during onboarding (heartbeats, sweeps, reports) must be a PERSISTENT cron so it survives restarts: create it with `cortextos bus add-cron`, never `/loop` (which is session-only and dies on restart; Codex-runtime agents have no `/loop` at all). The daemon reschedules every entry in `crons.json` on each start. See the persistent-cron section of `ONBOARDING.md` for full setup and examples.
 
 ---
 

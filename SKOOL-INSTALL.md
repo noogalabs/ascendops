@@ -132,7 +132,7 @@ You'll repeat this short loop once per agent, in the order Phase 2 lays out
 **a. Create the bot at @BotFather.**
 1. In Telegram, open a chat with **@BotFather**.
 2. Send `/newbot`.
-3. Give it a display name (e.g. "Acme Maintenance Director").
+3. Give it a display name (e.g. "Acme Maintenance Coordinator").
 4. Give it a username ending in `bot` (e.g. `acme_md_bot`).
 5. BotFather replies with a **BOT_TOKEN** that looks like `123456789:AA...`. Copy it.
 
@@ -182,11 +182,11 @@ change without changing the install steps — work down the list top to bottom a
 | Order | Agent | Template | Required? | Role |
 |-------|-------|----------|-----------|------|
 | 1 | EA / Orchestrator | `orchestrator` | **required** | Coordinates the fleet; your single point of contact |
-| 2 | Maintenance Director | `agent-maintenance-director` | **required** | Work-order triage, vendor dispatch, resident comms |
+| 2 | Maintenance Coordinator | `maintenance-coordinator` | **required** | Work-order triage, vendor dispatch, resident comms |
 | 3 | Analyst | `analyst` | **required** | Metrics, reporting, and fleet/data analysis |
 | 4 | Dev | `agent` | **required** | Builds + reviews code changes for your fleet (Claude Code) |
 | 5 | Second Dev (Codex) | `agent-codex` | optional | A second build agent on the Codex runtime |
-| 6 | Leasing Coordinator | `agent-leasing-coordinator` | optional | Leasing pipeline: intake, showings, applications, move-in. **Newer — built + defined but not yet production-proven; the Maintenance Director is the proven PM persona.** |
+| 6 | Leasing Coordinator | `leasing-coordinator` | optional | Leasing pipeline: intake, showings, applications, move-in. **Newer — built + defined but not yet production-proven; the Maintenance Coordinator is the proven PM persona.** |
 
 The wizard reads this ordering and walks you through it. The rule it follows:
 **EA/orchestrator → required core agents → optional agents.** If you skip an
@@ -236,7 +236,7 @@ Message each agent:
 > "Morning. What's on your plate today?"
 
 Each should reply with a short status reflecting what onboarding configured — the
-Maintenance Director mentions work orders / vendors, the Leasing Coordinator
+Maintenance Coordinator mentions work orders / vendors, the Leasing Coordinator
 mentions prospects / showings, the orchestrator gives a fleet-level pulse. You can
 also run:
 

@@ -5,6 +5,7 @@ import { homedir } from 'os';
 import { OrgContext } from '../types';
 import { validateAgentName, validateOrgName } from '../utils/validate';
 import { atomicWriteSync } from '../utils/atomic';
+import { materializeOnboardingSkill } from './onboarding-skill';
 
 const VALID_RUNTIMES = ['claude-code', 'hermes', 'codex-app-server'] as const;
 type RuntimeKind = typeof VALID_RUNTIMES[number];
@@ -19,8 +20,8 @@ const NON_CODEX_TEMPLATES = [
   'analyst',
   'm2c1-worker',
   'hermes',
-  'agent-maintenance-director',
-  'agent-leasing-coordinator',
+  'maintenance-coordinator',
+  'leasing-coordinator',
   'agent-accounting-coordinator',
 ] as const;
 
@@ -134,6 +135,9 @@ export const addAgentCommand = new Command('add-agent')
     const templateDir = findTemplateDir(projectRoot, effectiveTemplate);
     if (templateDir) {
       copyTemplateFiles(templateDir, agentDir, name, org);
+      // Onboarding skill is no longer a per-template copy: materialize it from the
+      // shared canonical for the template's declared role (.claude/skills/onboarding/role).
+      materializeOnboardingSkill(agentDir, projectRoot, name, org);
       console.log(`  Copied template files from ${effectiveTemplate}`);
     } else {
       // Create minimal files
@@ -393,7 +397,7 @@ function installCodexSkillSymlinks(agentDir: string, agentName: string): number 
   return linked;
 }
 
-function findTemplateDir(projectRoot: string, template: string): string | null {
+export function findTemplateDir(projectRoot: string, template: string): string | null {
   const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT || projectRoot;
   const candidates = [
     join(projectRoot, 'templates', template),
@@ -409,7 +413,7 @@ function findTemplateDir(projectRoot: string, template: string): string | null {
   return null;
 }
 
-function copyTemplateFiles(templateDir: string, agentDir: string, name: string, org: string): void {
+export function copyTemplateFiles(templateDir: string, agentDir: string, name: string, org: string): void {
   const files = readdirSync(templateDir);
   for (const file of files) {
     const srcPath = join(templateDir, file);
