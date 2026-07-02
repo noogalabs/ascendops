@@ -26,6 +26,7 @@ import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { fetchAppfolioReport } from '../bus/appfolio.js';
 import { fetchHostawayResource } from '../bus/hostaway.js';
+import { fetchTenantTurnerResource } from '../bus/tenantturner.js';
 import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
 import { createSkillPr } from '../bus/skill-autopr.js';
 import { atomicWriteSync } from '../utils/atomic.js';
@@ -1815,6 +1816,59 @@ busCommand
 
     try {
       const result = await fetchHostawayResource(frameworkRoot, org, resource, {
+        query,
+        maxPages: opts.maxPages ? Number(opts.maxPages) : undefined,
+        maxRows: opts.maxRows ? Number(opts.maxRows) : undefined,
+      });
+      if (opts.rowsOnly) {
+        console.log(JSON.stringify(result.rows, null, 2));
+      } else {
+        console.log(JSON.stringify(result, null, 2));
+      }
+    } catch (e) {
+      console.error(`ERROR: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// Tenant Turner (read-only data connector)
+// ---------------------------------------------------------------------------
+busCommand
+  .command('tenantturner-get <resource>')
+  .description('Fetch a read-only Tenant Turner resource by name (e.g. applications, properties)')
+  .option('--org <org>', 'Organization name (defaults to CTX_ORG)')
+  .option('--since <date>', 'SinceDateUpdated filter (YYYY-MM-DD, within the last 2 years) — required for applications')
+  .option('--query <json>', 'Extra query params as a JSON object', '{}')
+  .option('--max-pages <n>', 'Stop after N pages (default 20)')
+  .option('--max-rows <n>', 'Stop after N rows')
+  .option('--rows-only', 'Print just the array of row objects (omit metadata)')
+  .action(async (
+    resource: string,
+    opts: { org?: string; since?: string; query: string; maxPages?: string; maxRows?: string; rowsOnly?: boolean },
+  ) => {
+    const env = resolveEnv();
+    const org = opts.org || env.org;
+    if (!org) {
+      console.error('ERROR: --org or CTX_ORG required');
+      process.exit(1);
+    }
+    const frameworkRoot = env.frameworkRoot || process.cwd();
+
+    let query: Record<string, string | number>;
+    try {
+      query = JSON.parse(opts.query);
+      if (typeof query !== 'object' || query === null || Array.isArray(query)) {
+        throw new Error('query must be a JSON object');
+      }
+    } catch (e) {
+      console.error(`ERROR: --query is not a valid JSON object: ${(e as Error).message}`);
+      process.exit(1);
+    }
+
+    try {
+      const result = await fetchTenantTurnerResource(frameworkRoot, org, resource, {
+        sinceDateUpdated: opts.since,
         query,
         maxPages: opts.maxPages ? Number(opts.maxPages) : undefined,
         maxRows: opts.maxRows ? Number(opts.maxRows) : undefined,
