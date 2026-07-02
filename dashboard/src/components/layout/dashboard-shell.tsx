@@ -5,6 +5,7 @@ import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
 import { BottomNav } from './bottom-nav';
 import { OrgContext } from '@/hooks/use-org';
+import { ToastProvider } from '@/components/ui/toast';
 import {
   Sheet,
   SheetContent,
@@ -36,6 +37,7 @@ export function DashboardShell({ orgs, brandName, children }: DashboardShellProp
   }, [currentOrg]);
 
   return (
+    <ToastProvider>
     <OrgContext.Provider value={{ currentOrg, setCurrentOrg, orgs }}>
       <div className="flex h-screen">
         {/* Desktop sidebar */}
@@ -66,5 +68,6 @@ export function DashboardShell({ orgs, brandName, children }: DashboardShellProp
         </div>
       </div>
     </OrgContext.Provider>
+    </ToastProvider>
   );
 }

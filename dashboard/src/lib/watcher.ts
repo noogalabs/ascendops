@@ -66,13 +66,12 @@ function handleFileChange(
 ): void {
   console.log(`[watcher] ${changeType}: ${filePath}`);
 
-  // Sync the changed file to SQLite (skip for deletions)
-  if (changeType !== 'remove') {
-    try {
-      syncFile(filePath);
-    } catch (err) {
-      console.error(`[watcher] Sync failed for ${filePath}:`, err);
-    }
+  // Sync to SQLite. For deletions, syncFile re-scans the directory and prunes
+  // rows whose source files no longer exist, so we run it on remove too.
+  try {
+    syncFile(filePath);
+  } catch (err) {
+    console.error(`[watcher] Sync failed for ${filePath}:`, err);
   }
 
   // Emit SSE event
