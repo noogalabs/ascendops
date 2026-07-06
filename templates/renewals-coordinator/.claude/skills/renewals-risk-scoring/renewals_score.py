@@ -12,6 +12,7 @@ import sys
 from typing import Dict, Iterable, List, Optional, Tuple
 
 INTAKE_WINDOW_DAYS = 90
+OVERDUE_LOOKBACK_DAYS = 90
 MAX_INCREASE_PCT = 0.05
 NONRENEW_LATE_THRESHOLD = 7
 NONRENEW_NSF_THRESHOLD = 3
@@ -137,8 +138,12 @@ def score_record(rent: Row, delinquency: Row, human: Row, today: dt.date) -> Dic
     expiry = parse_date(rent.get("lease_expiry"))
     days_to_expiry = (expiry - today).days if expiry else None
     in_window = days_to_expiry is not None and 0 <= days_to_expiry <= INTAKE_WINDOW_DAYS
+    overdue = days_to_expiry is not None and -OVERDUE_LOOKBACK_DAYS <= days_to_expiry < 0
 
     escalations: List[str] = []
+    if overdue:
+        # Signed renewals move lease_expiry forward, so a past-expiry row is an unsigned holdover.
+        escalations.append(f"OVERDUE: lease expired {abs(days_to_expiry)}d ago, no signed renewal (holdover)")
     if "key_on_file" in human and not parse_bool(human.get("key_on_file")):
         escalations.append("no key on file")
     if parse_bool(rent.get("section8")) or parse_bool(delinquency.get("section8")):
@@ -166,6 +171,7 @@ def score_record(rent: Row, delinquency: Row, human: Row, today: dt.date) -> Dic
         "lease_expiry": rent.get("lease_expiry", ""),
         "days_to_expiry": days_to_expiry,
         "in_intake_window": in_window,
+        "overdue": overdue,
         "current_rent": parse_money(rent.get("current_rent")),
         "market_rent": parse_money(rent.get("market_rent")),
         "proposed_rent": proposed,
@@ -188,6 +194,7 @@ def demo_rows() -> Tuple[List[Row], List[Row], List[Row]]:
         {"tenant_name": "Casey Assist", "unit": "8C", "property_id": "P-200", "current_rent": "1200", "market_rent": "1285", "lease_expiry": "2026-07-20", "bed_bath_sqft": "1/1 650", "section8": "yes"},
         {"tenant_name": "Devon Review", "unit": "4D", "property_id": "P-200", "current_rent": "2100", "market_rent": "2300", "lease_expiry": "2026-12-01", "bed_bath_sqft": "3/2 1300", "section8": "no"},
         {"tenant_name": "Erin Caution", "unit": "5E", "property_id": "P-100", "current_rent": "1400", "market_rent": "1500", "lease_expiry": "2026-08-10", "bed_bath_sqft": "2/1 850", "section8": "no"},
+        {"tenant_name": "Grace Holdover", "unit": "9F", "property_id": "P-300", "current_rent": "1600", "market_rent": "1680", "lease_expiry": "2026-06-15", "bed_bath_sqft": "2/2 950", "section8": "no"},
     ]
     delinquency = [
         {"tenant_name": "Bob Latepay", "unit": "3B", "property_id": "P-100", "late_count_12mo": "8", "nsf_count_12mo": "1", "outstanding_balance": "$250", "last_payment_date": "2026-06-20", "section8": "no"},
@@ -201,6 +208,7 @@ def demo_rows() -> Tuple[List[Row], List[Row], List[Row]]:
         {"tenant_name": "Casey Assist", "unit": "8C", "property_id": "P-200", "key_on_file": "yes", "pet_on_file": "yes", "pet_screening_status": "complete", "do_not_renew_flag": "yes", "violations_summary": "", "inspection_status": "complete", "inspection_findings": "damage review", "manager_comp_rent": ""},
         {"tenant_name": "Devon Review", "unit": "4D", "property_id": "P-200", "key_on_file": "yes", "pet_on_file": "no", "pet_screening_status": "", "do_not_renew_flag": "no", "violations_summary": "", "inspection_status": "complete", "inspection_findings": "", "manager_comp_rent": ""},
         {"tenant_name": "Erin Caution", "unit": "5E", "property_id": "P-100", "key_on_file": "yes", "pet_on_file": "no", "pet_screening_status": "", "do_not_renew_flag": "no", "violations_summary": "", "inspection_status": "complete", "inspection_findings": "", "manager_comp_rent": ""},
+        {"tenant_name": "Grace Holdover", "unit": "9F", "property_id": "P-300", "key_on_file": "yes", "pet_on_file": "no", "pet_screening_status": "", "do_not_renew_flag": "no", "violations_summary": "", "inspection_status": "complete", "inspection_findings": "", "manager_comp_rent": ""},
     ]
     return delinquency, rent_roll, human
 
