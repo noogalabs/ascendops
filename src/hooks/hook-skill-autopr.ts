@@ -25,7 +25,7 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, resolve, sep } from 'path';
 import { spawn } from 'child_process';
 import { readStdin, parseHookInput } from './index.js';
 
@@ -233,9 +233,11 @@ async function main(): Promise<void> {
   //  2. The filename must be exactly SKILL.md (case-sensitive)
   //  3. The directory depth must be exactly one level below community/skills/
   const resolvedFile = resolve(filePath);
-  if (!resolvedFile.startsWith(communitySkillsRoot + '/')) return;
+  if (!resolvedFile.startsWith(communitySkillsRoot + sep)) return;
 
-  const rel = resolvedFile.slice(communitySkillsRoot.length + 1); // strip prefix + slash
+  // strip prefix + separator, then normalize separators to '/' so the match
+  // below is platform-independent (resolve() yields '\' on Windows).
+  const rel = resolvedFile.slice(communitySkillsRoot.length + 1).split(sep).join('/');
   const skillMatch = rel.match(/^([a-z0-9][a-z0-9_-]{0,63})\/SKILL\.md$/);
   if (!skillMatch) return;
 

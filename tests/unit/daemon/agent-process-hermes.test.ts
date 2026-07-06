@@ -158,9 +158,9 @@ describe('AgentProcess - Hermes runtime: shouldContinue', () => {
     // daemon's process.env — shouldContinue() must read the file itself or
     // the documented per-agent override is silently ignored.
     const agentEnvPath = `${mockEnv.agentDir}/.env`;
-    fsMocks.existsSync.mockImplementation((p: string) => String(p) === agentEnvPath);
+    fsMocks.existsSync.mockImplementation((p: string) => String(p).replace(/\\/g, '/') === agentEnvPath);
     fsMocks.readFileSync.mockImplementation((p: string) => {
-      if (String(p) === agentEnvPath) {
+      if (String(p).replace(/\\/g, '/') === agentEnvPath) {
         return '# agent secrets\nBOT_TOKEN=tg-token\nHERMES_HOME=/srv/hermes-home\n';
       }
       return '';

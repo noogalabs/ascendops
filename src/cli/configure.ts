@@ -340,14 +340,14 @@ async function screenGeminiKey(
   console.log('    2. Sign in with your Google account (create one free if needed)');
   console.log('    3. Click "Create API key" — pick "Create API key in new project"');
   console.log('       or select an existing project');
-  console.log('    4. Copy the key (starts with AIza...)\n');
+  console.log('    4. Copy the key (starts with AIza... or AQ....)\n');
   console.log('  Your Gemini API key stays on this machine. AscendOps has no');
   console.log('  managed infrastructure — there is no server we send it to.\n');
 
   const secretsPath = join(projectRoot, 'orgs', org, SECRETS_FILENAME);
 
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const key = await askMasked(iface, '  Paste your Gemini API key (AIza..., input hidden): ');
+    const key = await askMasked(iface, '  Paste your Gemini API key (AIza... or AQ..., input hidden): ');
     if (!key) {
       console.log('  Key is required for the knowledge base to function. Try again.');
       continue;

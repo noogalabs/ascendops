@@ -15,6 +15,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+
+const isWindows = process.platform === 'win32';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -45,10 +47,13 @@ beforeAll(() => {
   write('media/signing.key', 'raw-key-bytes');
 
   // Symlink with an innocent media name pointing at the .env (bypass attempt)
-  fs.symlinkSync(
-    path.join(ctxRoot, 'orgs/demo/agents/dane/.env'),
-    path.join(ctxRoot, 'media/avatar.png'),
-  );
+  // Symlinks require Developer Mode on Windows; skip creation when unavailable.
+  if (!isWindows) {
+    fs.symlinkSync(
+      path.join(ctxRoot, 'orgs/demo/agents/dane/.env'),
+      path.join(ctxRoot, 'media/avatar.png'),
+    );
+  }
 
   // Legit files
   write('media/pic.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]));
