@@ -43,6 +43,10 @@ export class AgentPTY {
   // Enter into the new session (the callbacks only check `this.pty`, which
   // is truthy again after a respawn).
   private trustPromptTimers: ReturnType<typeof setTimeout>[] = [];
+  // Set once we've navigated + confirmed the "Bypass Permissions mode"
+  // acceptance screen, so later auto-accept timers don't send stray
+  // arrow-key/Enter input into the live session.
+  private bypassPromptHandled = false;
 
   constructor(env: CtxEnv, config: AgentConfig, logPath?: string, bootstrapPattern?: string) {
     this.env = env;
@@ -194,18 +198,44 @@ export class AgentPTY {
     // Skipped for runtimes that never show a trust prompt (Hermes overrides
     // needsTrustPromptAutoAccept) — the loose "Yes"/"trust" substring match
     // would otherwise fire a stray Enter on unrelated output.
+    this.bypassPromptHandled = false;
     if (this.needsTrustPromptAutoAccept()) {
-      for (const delayMs of [5000, 8000]) {
+      for (const delayMs of [5000, 8000, 12000]) {
         const timer = setTimeout(() => {
-          if (this.pty) {
-            const recent = this.outputBuffer.getRecent();
-            if (recent.includes('trust') || recent.includes('Yes')) {
-              try {
-                this.pty.write('\r');
-              } catch {
-                // PTY torn down between the alive check and the write — ignore.
-              }
+          if (!this.pty) return;
+          // Already accepted this session — don't fire stray keys into the
+          // now-live REPL from the later redundant timers.
+          if (this.bypassPromptHandled) return;
+          const recent = this.outputBuffer.getRecent();
+          try {
+            // Claude Code 2.1.x shows a "Bypass Permissions mode" acceptance
+            // screen when launched with --dangerously-skip-permissions. Its
+            // cursor DEFAULTS to "1. No, exit", so a bare Enter would QUIT
+            // Claude (and the option text "2. Yes, I accept" makes the plain
+            // trust-prompt 'Yes' match fire that fatal Enter). Navigate down
+            // to option 2 first, then confirm — exactly once.
+            //
+            // NOTE: match SINGLE tokens ('Bypass', 'responsibility'). Claude's
+            // TUI positions each word with ANSI cursor-move codes, so there are
+            // no literal spaces in the buffer — a multi-word substring like
+            // 'Bypass Permissions mode' never matches.
+            if (recent.includes('Bypass') || recent.includes('responsibility')) {
+              this.bypassPromptHandled = true;
+              this.pty.write('\x1b[B'); // arrow down -> "2. Yes, I accept"
+              const confirm = setTimeout(() => {
+                try {
+                  this.pty?.write('\r');
+                } catch {
+                  // PTY torn down between selection and confirm — ignore.
+                }
+              }, 400);
+              this.trustPromptTimers.push(confirm);
+            } else if (recent.includes('trust') || recent.includes('Yes')) {
+              // Older "trust this folder?" prompt: default is already Yes.
+              this.pty.write('\r');
             }
+          } catch {
+            // PTY torn down between the alive check and the write — ignore.
           }
         }, delayMs);
         this.trustPromptTimers.push(timer);
