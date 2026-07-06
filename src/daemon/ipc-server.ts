@@ -1,6 +1,6 @@
 import { createServer, Server, Socket } from 'net';
 import { existsSync, unlinkSync, chmodSync, readFileSync } from 'fs';
-import { join, resolve as pathResolve } from 'path';
+import { join, resolve as pathResolve, sep } from 'path';
 import type { IPCRequest, IPCResponse, CronSummaryRow, CronDefinition } from '../types/index.js';
 import { AgentManager } from './agent-manager.js';
 import { getIpcPath } from '../utils/paths.js';
@@ -686,8 +686,8 @@ export class IPCServer {
             const resolvedDir = pathResolve(d.dir);
             const ctxRoot = process.env.CTX_ROOT ? pathResolve(process.env.CTX_ROOT) : '';
             const cwd = pathResolve(process.cwd());
-            const underCtxRoot = ctxRoot && (resolvedDir === ctxRoot || resolvedDir.startsWith(ctxRoot + '/'));
-            const underCwd = resolvedDir === cwd || resolvedDir.startsWith(cwd + '/');
+            const underCtxRoot = ctxRoot && (resolvedDir === ctxRoot || resolvedDir.startsWith(ctxRoot + sep));
+            const underCwd = resolvedDir === cwd || resolvedDir.startsWith(cwd + sep);
             if (!underCtxRoot && !underCwd) {
               response = { success: false, error: 'Invalid worker dir' };
             } else {

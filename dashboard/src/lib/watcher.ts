@@ -52,10 +52,11 @@ function getWatchPaths(): string[] {
 // ---------------------------------------------------------------------------
 
 function categorizeFilePath(filePath: string): SSEEvent['type'] {
-  if (filePath.includes('/tasks/')) return 'task';
-  if (filePath.includes('/approvals/')) return 'approval';
-  if (filePath.includes('/heartbeat.json')) return 'heartbeat';
-  if (filePath.includes('/analytics/events/')) return 'event';
+  const normalized = filePath.replace(/\\/g, '/');
+  if (normalized.includes('/tasks/')) return 'task';
+  if (normalized.includes('/approvals/')) return 'approval';
+  if (normalized.includes('/heartbeat.json')) return 'heartbeat';
+  if (normalized.includes('/analytics/events/')) return 'event';
   return 'sync';
 }
 

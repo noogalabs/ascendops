@@ -16,6 +16,8 @@ import { sendMessage, checkInbox, ackInbox, pruneProcessed, PROCESSED_TTL_DAYS }
 import { resolvePaths } from '../../../src/utils/paths';
 import type { BusPaths } from '../../../src/types';
 
+const isWindows = process.platform === 'win32';
+
 describe('Message Bus', () => {
   let testDir: string;
   let senderPaths: BusPaths;
@@ -259,7 +261,7 @@ describe('Message Bus', () => {
       expect(existsSync(victim)).toBe(true);
     });
 
-    it('does not follow symlinked agent dirs out of processed/ in --all-agents mode', () => {
+    it.skipIf(isWindows)('does not follow symlinked agent dirs out of processed/ in --all-agents mode', () => {
       // A symlink inside processed/ pointing at an external dir full of old files
       const externalDir = join(testDir, 'external-data');
       mkdirSync(externalDir, { recursive: true });

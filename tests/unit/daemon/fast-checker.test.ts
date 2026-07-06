@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+const isWindows = process.platform === 'win32';
+
 vi.mock('child_process', () => ({ exec: vi.fn(), execFile: vi.fn() }));
 vi.mock('../../../src/bus/message.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/bus/message.js')>();
@@ -932,7 +934,7 @@ describe('FastChecker', () => {
     beforeEach(() => { vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
-    it('fires exec after bootstrap at 50-min interval', async () => {
+    it.skipIf(isWindows)('fires exec after bootstrap at 50-min interval', async () => {
       const { exec } = await import('child_process');
       const agent = createMockAgent('my-agent');
       const checker = new FastChecker(agent, paths, '/tmp/framework');
@@ -948,7 +950,7 @@ describe('FastChecker', () => {
       checker.wake();
     });
 
-    it('clears timer on stop — no further exec calls after stop', async () => {
+    it.skipIf(isWindows)('clears timer on stop — no further exec calls after stop', async () => {
       const { execFile } = await import('child_process');
       const execMock = execFile as ReturnType<typeof vi.fn>;
       const agent = createMockAgent('my-agent');

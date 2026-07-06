@@ -85,13 +85,15 @@ describe('Bus System', () => {
 
     beforeEach(() => {
       gitDir = mkdtempSync(join(tmpdir(), 'cortextos-autocommit-test-'));
-      execSync('git init', { cwd: gitDir, stdio: 'pipe' });
-      execSync('git config user.email "test@test.com"', { cwd: gitDir, stdio: 'pipe' });
-      execSync('git config user.name "Test"', { cwd: gitDir, stdio: 'pipe' });
+      // Batch init+config into one shell invocation to reduce per-process overhead
+      // on Windows (each execSync spawns cmd.exe + git.exe, which is slow under AV).
+      execSync('git init && git config user.email "test@test.com" && git config user.name "Test"', {
+        cwd: gitDir, stdio: 'pipe', shell: true,
+      });
       // Create initial commit so git status works properly
       writeFileSync(join(gitDir, '.gitkeep'), '');
-      execSync('git add .gitkeep && git commit -m "init"', { cwd: gitDir, stdio: 'pipe' });
-    });
+      execSync('git add .gitkeep && git commit -m "init"', { cwd: gitDir, stdio: 'pipe', shell: true });
+    }, 30000);
 
     afterEach(() => {
       rmSync(gitDir, { recursive: true, force: true });
@@ -149,12 +151,12 @@ describe('Bus System', () => {
       expect(staged.trim()).toBe('');
     });
 
-    it('returns clean when no changes', () => {
+    it('returns clean when no changes', { timeout: 30000 }, () => {
       const report = autoCommit(gitDir);
       expect(report.status).toBe('clean');
     });
 
-    it('stages safe files when not dry-run', () => {
+    it('stages safe files when not dry-run', { timeout: 30000 }, () => {
       writeFileSync(join(gitDir, 'newfile.txt'), 'content');
 
       const report = autoCommit(gitDir, false);
@@ -166,7 +168,7 @@ describe('Bus System', () => {
       expect(staged.trim()).toContain('newfile.txt');
     });
 
-    it('returns nothing_to_stage when all files blocked', () => {
+    it('returns nothing_to_stage when all files blocked', { timeout: 30000 }, () => {
       writeFileSync(join(gitDir, 'secrets.env'), 'API_KEY=123');
 
       const report = autoCommit(gitDir);

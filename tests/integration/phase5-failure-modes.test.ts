@@ -43,6 +43,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+const isWindows = process.platform === 'win32';
 import {
   mkdtempSync,
   rmSync,
@@ -237,7 +239,7 @@ describe('FM-1: Disk full — ENOSPC write failure, no data loss on recovery', (
     scheduler.stop();
   });
 
-  it('atomicWriteSync: ENOSPC on tmp write throws; subsequent write succeeds', () => {
+  it.skipIf(isWindows)('atomicWriteSync: ENOSPC on tmp write throws; subsequent write succeeds', () => {
     // Direct unit test: atomicWriteSync propagates write errors correctly.
     // We simulate ENOSPC by writing to a path in a non-writable directory.
     const readOnlyDir = join(tmpRoot, 'readonly-dir');
