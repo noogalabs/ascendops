@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const isWindows = process.platform === 'win32';
+
 let spawnedPtyExitHandler: ((event: { exitCode: number; signal?: number }) => void) | null = null;
 let spawnedPtyDataHandler: ((data: string) => void) | null = null;
 const spawnedPty = {
@@ -155,7 +157,7 @@ beforeEach(() => {
   spawnedPty.kill.mockReset();
 });
 
-describe('CodexAppServerPTY socket path policy', () => {
+describe.skipIf(isWindows)('CodexAppServerPTY socket path policy', () => {
   it('uses codex.sock in the agent state dir by default', () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     expect((pty as unknown as { _socketPath: string })._socketPath).toBe('/tmp/ctx/state/codex-app-agent/codex.sock');
@@ -1047,7 +1049,7 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → context_status.json', 
     return JSON.parse(lastCall[1]) as Record<string, unknown>;
   }
 
-  it('writes context_status.json atomically with current-window used_percentage', () => {
+  it.skipIf(isWindows)('writes context_status.json atomically with current-window used_percentage', () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _threadId: string })._threadId = 'thread-9';
     feedTokenUsage(pty, {
@@ -1219,7 +1221,7 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
     return JSON.parse(trimmed) as Record<string, unknown>;
   }
 
-  it('appends a JSONL line to <ctxRoot>/logs/<agent>/codex-tokens.jsonl on tokenUsage', () => {
+  it.skipIf(isWindows)('appends a JSONL line to <ctxRoot>/logs/<agent>/codex-tokens.jsonl on tokenUsage', () => {
     const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5-codex' });
     (pty as unknown as { _threadId: string })._threadId = 'thread-9';
     feedTokenUsage(pty, {

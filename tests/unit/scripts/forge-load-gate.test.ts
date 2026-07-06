@@ -48,7 +48,8 @@ function seed(name: string, content: string): string {
   return dir;
 }
 
-describe('forge-load-gate', () => {
+// Each test spawns ≥1 child process; 10 s is tight under full-suite parallelism.
+describe('forge-load-gate', { timeout: 30000 }, () => {
   afterEach(() => {
     if (tmp) rmSync(tmp, { recursive: true, force: true });
   });

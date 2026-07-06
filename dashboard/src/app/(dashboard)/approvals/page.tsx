@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useOrg } from '@/hooks/use-org';
+import { useToast } from '@/components/ui/toast';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ApprovalCard } from '@/components/approvals/approval-card';
 import { ApprovalDetailDialog } from '@/components/approvals/approval-detail-dialog';
@@ -14,6 +15,7 @@ import type { Approval, Task } from '@/lib/types';
 
 export default function ApprovalsPage() {
   const { currentOrg } = useOrg();
+  const { toast } = useToast();
 
   const [pending, setPending] = useState<Approval[]>([]);
   const [resolved, setResolved] = useState<Approval[]>([]);
@@ -56,11 +58,11 @@ export default function ApprovalsPage() {
         setHumanTasks(allHuman.filter(t => t.status !== 'completed'));
       }
     } catch {
-      // Silently fail
+      toast({ message: 'Failed to load approvals. Check your connection.', variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [currentOrg, historyFilters]);
+  }, [currentOrg, historyFilters, toast]);
 
   useEffect(() => {
     setLoading(true);
@@ -81,10 +83,13 @@ export default function ApprovalsPage() {
       });
 
       if (res.ok) {
+        toast({ message: `Approval ${decision}.`, variant: 'success' });
         fetchApprovals();
+      } else {
+        toast({ message: 'Failed to resolve approval. Try again.', variant: 'error' });
       }
     } catch {
-      // Silently fail
+      toast({ message: 'Network error. Could not resolve approval.', variant: 'error' });
     }
   }
 
@@ -170,12 +175,21 @@ export default function ApprovalsPage() {
                       variant="outline"
                       className="ml-3 shrink-0"
                       onClick={async () => {
-                        await fetch(`/api/tasks/${task.id}`, {
-                          method: 'PATCH',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ status: 'completed' }),
-                        });
-                        fetchApprovals();
+                        try {
+                          const res = await fetch(`/api/tasks/${task.id}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ status: 'completed' }),
+                          });
+                          if (res.ok) {
+                            toast({ message: 'Task marked done.', variant: 'success' });
+                            fetchApprovals();
+                          } else {
+                            toast({ message: 'Failed to mark task done. Try again.', variant: 'error' });
+                          }
+                        } catch {
+                          toast({ message: 'Network error. Could not update task.', variant: 'error' });
+                        }
                       }}
                     >
                       <IconCheck size={14} className="mr-1" />

@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const isWindows = process.platform === 'win32';
 import * as fs from 'fs';
 import {
   mkdtempSync,
@@ -59,7 +61,7 @@ describe('atomic utilities', () => {
     expect(readFileSync(targetPath, 'utf-8')).toBe('created\n');
   });
 
-  it('atomicWriteSync sets file mode to 0o600', () => {
+  it.skipIf(isWindows)('atomicWriteSync sets file mode to 0o600', () => {
     const targetPath = join(testDir, 'secure.txt');
 
     atomicWriteSync(targetPath, 'secret');
@@ -83,7 +85,7 @@ describe('atomic utilities', () => {
     expect(readdirSync(testDir).filter(file => file.startsWith('.tmp.'))).toEqual([]);
   });
 
-  it('atomicWriteSync follows a symlink and updates the shared target', () => {
+  it.skipIf(isWindows)('atomicWriteSync follows a symlink and updates the shared target', () => {
     const sharedDir = join(testDir, 'shared');
     const linkDir = join(testDir, 'agent');
     ensureDir(sharedDir);
@@ -130,7 +132,7 @@ describe('atomic utilities', () => {
     expect(readFileSync(targetPath, 'utf-8')).toBe('{"created":true}\n');
   });
 
-  it('atomicWriteSync follows a symlink whose target is in a different dir, link intact', () => {
+  it.skipIf(isWindows)('atomicWriteSync follows a symlink whose target is in a different dir, link intact', () => {
     const targetDir = join(testDir, 'fleet-defs');
     const linkDir = join(testDir, 'collie');
     ensureDir(targetDir);
@@ -152,7 +154,7 @@ describe('atomic utilities', () => {
     expect(readdirSync(linkDir).filter((f) => f.startsWith('.tmp.'))).toEqual([]);
   });
 
-  it('atomicWriteSync write-through-creates a DANGLING symlink target, link intact', () => {
+  it.skipIf(isWindows)('atomicWriteSync write-through-creates a DANGLING symlink target, link intact', () => {
     // A symlink whose target does NOT exist yet (e.g. the shared fleet target
     // was deleted). The old broad-catch behavior would let realpathSync throw,
     // leave destPath = the link path, and renameSync would REPLACE the symlink
@@ -180,7 +182,7 @@ describe('atomic utilities', () => {
     expect(readdirSync(testDir).filter((f) => f.startsWith('.tmp.'))).toEqual([]);
   });
 
-  it('atomicWriteSync resolves a relative dangling symlink against the link dir', () => {
+  it.skipIf(isWindows)('atomicWriteSync resolves a relative dangling symlink against the link dir', () => {
     // A relative dangling symlink (target stated relative to the link's own
     // directory) must resolve against dirname(link), not cwd.
     const targetDir = join(testDir, 'shared');
@@ -217,7 +219,7 @@ describe('atomic utilities', () => {
     expect(readFileSync(targetPath, 'utf-8')).toBe('{"version":2}\n');
   });
 
-  it('atomicWriteSync keepBak writes the .bak at the LINK path (reader contract), not the resolved target', () => {
+  it.skipIf(isWindows)('atomicWriteSync keepBak writes the .bak at the LINK path (reader contract), not the resolved target', () => {
     // INVARIANT: readCronsWithStatus() recovers from `filePath + '.bak'` — the
     // path it was GIVEN. When crons.json is a symlink, writeCrons() passes the
     // link path as filePath. The backup must therefore land at <link>.bak

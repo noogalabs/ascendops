@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'path';
 
 // Capture the PTY exit handler so tests can simulate exits at controlled times
 let capturedOnExit: ((exitCode: number, signal?: number) => void) | null = null;
@@ -186,7 +187,7 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     // to stdout and left restarts.log empty.
     expect(fsMocks.appendFileSync).toHaveBeenCalledTimes(1);
     const [logPath, logLine] = fsMocks.appendFileSync.mock.calls[0];
-    expect(String(logPath)).toContain('/logs/alice/restarts.log');
+    expect(String(logPath).replace(/\\/g, '/')).toContain('/logs/alice/restarts.log');
     expect(String(logLine)).toMatch(/\] CRASH: exit_code=1 crash_count=1 backoff_s=5\b/);
     expect(String(logLine).endsWith('\n')).toBe(true);
   });
@@ -196,7 +197,7 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     // marker moments ago. handleExit should recognize the shutdown-in-progress
     // signal and bail out before touching the crash counter or restarts.log.
     fsMocks.existsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, '/');
       return path.endsWith('/state/alice/.daemon-stop');
     });
     fsMocks.statSync.mockImplementation((p: any) => ({ mtimeMs: Date.now() - 2_000 }));
@@ -272,7 +273,7 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
       (call) => String(call[0]).endsWith('.session-refresh'),
     );
     expect(writeIdx).toBeGreaterThanOrEqual(0);
-    expect(String(fsMocks.writeFileSync.mock.calls[writeIdx][0])).toBe('/tmp/test-ctx/state/alice/.session-refresh');
+    expect(String(fsMocks.writeFileSync.mock.calls[writeIdx][0]).replace(/\\/g, '/')).toContain('/state/alice/.session-refresh');
     // The marker must be written BEFORE stop() — a SessionEnd hook firing as
     // the PTY dies must already see the marker, or it classifies a false crash.
     const markerWriteOrder = fsMocks.writeFileSync.mock.invocationCallOrder[writeIdx];
@@ -286,24 +287,24 @@ describe('AgentProcess - crashCount NaN-guard (bug-hunt #8)', () => {
   // is classified as a real crash.
   const seedCrashFile = (raw: string) => {
     fsMocks.existsSync.mockImplementation((p: any) =>
-      String(p).endsWith('/state/alice/.crash_count_today'),
+      String(p).replace(/\\/g, '/').endsWith('/state/alice/.crash_count_today'),
     );
     fsMocks.readFileSync.mockImplementation((p: any) => {
-      if (String(p).endsWith('/state/alice/.crash_count_today')) return raw;
+      if (String(p).replace(/\\/g, '/').endsWith('/state/alice/.crash_count_today')) return raw;
       return '';
     });
   };
 
   const crashLogLine = (): string => {
     const call = fsMocks.appendFileSync.mock.calls.find(c =>
-      String(c[0]).endsWith('/logs/alice/restarts.log'),
+      String(c[0]).replace(/\\/g, '/').endsWith('/logs/alice/restarts.log'),
     );
     return call ? String(call[1]) : '';
   };
 
   const crashCountWrite = (): string | undefined => {
     const call = fsMocks.writeFileSync.mock.calls.find(c =>
-      String(c[0]).endsWith('/state/alice/.crash_count_today'),
+      String(c[0]).replace(/\\/g, '/').endsWith('/state/alice/.crash_count_today'),
     );
     return call ? String(call[1]) : undefined;
   };
@@ -406,7 +407,7 @@ describe('AgentProcess onboarding fallback', () => {
 
   it('retro-writes .onboarded when bootstrap files have real content', () => {
     fsMocks.existsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, '/');
       if (path.endsWith('/state/alice/.onboarded')) return false;
       if (path.endsWith('/state/alice/heartbeat.json')) return false;
       if (path.endsWith('/orgs/acme/agents/alice/ONBOARDING.md')) return true;
@@ -415,7 +416,7 @@ describe('AgentProcess onboarding fallback', () => {
       return false;
     });
     fsMocks.readFileSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, '/');
       if (path.endsWith('/orgs/acme/agents/alice/IDENTITY.md')) {
         return `# Agent Identity
 
@@ -436,7 +437,7 @@ Research specialist for the team.
     const prompt = (ap as any).buildStartupPrompt(null) as string;
 
     expect(fsMocks.writeFileSync).toHaveBeenCalledWith(
-      '/tmp/test-ctx/state/alice/.onboarded',
+      expect.stringContaining(join('state', 'alice', '.onboarded')),
       '',
       'utf-8',
     );
@@ -445,7 +446,7 @@ Research specialist for the team.
 
   it('keeps first-boot onboarding when bootstrap files still look templated', () => {
     fsMocks.existsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, '/');
       if (path.endsWith('/state/alice/.onboarded')) return false;
       if (path.endsWith('/state/alice/heartbeat.json')) return false;
       if (path.endsWith('/orgs/acme/agents/alice/ONBOARDING.md')) return true;
@@ -454,7 +455,7 @@ Research specialist for the team.
       return false;
     });
     fsMocks.readFileSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, '/');
       if (path.endsWith('/orgs/acme/agents/alice/IDENTITY.md')) {
         return `# Agent Identity
 
@@ -475,7 +476,7 @@ Research specialist for the team.
     const prompt = (ap as any).buildStartupPrompt(null) as string;
 
     expect(fsMocks.writeFileSync).not.toHaveBeenCalledWith(
-      '/tmp/test-ctx/state/alice/.onboarded',
+      expect.stringContaining(join('state', 'alice', '.onboarded')),
       '',
       'utf-8',
     );

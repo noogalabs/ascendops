@@ -52,10 +52,11 @@ function getWatchPaths(): string[] {
 // ---------------------------------------------------------------------------
 
 function categorizeFilePath(filePath: string): SSEEvent['type'] {
-  if (filePath.includes('/tasks/')) return 'task';
-  if (filePath.includes('/approvals/')) return 'approval';
-  if (filePath.includes('/heartbeat.json')) return 'heartbeat';
-  if (filePath.includes('/analytics/events/')) return 'event';
+  const normalized = filePath.replace(/\\/g, '/');
+  if (normalized.includes('/tasks/')) return 'task';
+  if (normalized.includes('/approvals/')) return 'approval';
+  if (normalized.includes('/heartbeat.json')) return 'heartbeat';
+  if (normalized.includes('/analytics/events/')) return 'event';
   return 'sync';
 }
 
@@ -65,13 +66,12 @@ function handleFileChange(
 ): void {
   console.log(`[watcher] ${changeType}: ${filePath}`);
 
-  // Sync the changed file to SQLite (skip for deletions)
-  if (changeType !== 'remove') {
-    try {
-      syncFile(filePath);
-    } catch (err) {
-      console.error(`[watcher] Sync failed for ${filePath}:`, err);
-    }
+  // Sync to SQLite. For deletions, syncFile re-scans the directory and prunes
+  // rows whose source files no longer exist, so we run it on remove too.
+  try {
+    syncFile(filePath);
+  } catch (err) {
+    console.error(`[watcher] Sync failed for ${filePath}:`, err);
   }
 
   // Emit SSE event

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const isWindows = process.platform === 'win32';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -18,6 +20,7 @@ describe('support-access CLI', () => {
   let originalCwd: string;
   let originalCtxRoot: string | undefined;
   let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
   let originalCtxInstanceId: string | undefined;
   let logs: string[];
   let errors: string[];
@@ -30,9 +33,12 @@ describe('support-access CLI', () => {
     originalCwd = process.cwd();
     originalCtxRoot = process.env.CTX_ROOT;
     originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
     originalCtxInstanceId = process.env.CTX_INSTANCE_ID;
     process.chdir(testDir);
     process.env.HOME = testDir;
+    // os.homedir() on Windows reads USERPROFILE, not HOME
+    process.env.USERPROFILE = testDir;
     process.env.CTX_ROOT = join(testDir, 'stale-ctx-root');
     process.env.CTX_INSTANCE_ID = 'support-test';
     process.exitCode = undefined;
@@ -54,6 +60,11 @@ describe('support-access CLI', () => {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
     }
     if (originalCtxInstanceId === undefined) {
       delete process.env.CTX_INSTANCE_ID;
@@ -222,7 +233,7 @@ describe('support-access CLI', () => {
     expect(env).not.toContain(SUPPORT_ACCESS_ID);
   });
 
-  it('does not record a grant when .env authorization cannot be written', () => {
+  it.skipIf(isWindows)('does not record a grant when .env authorization cannot be written', () => {
     writeFileSync(envPath, 'ALLOWED_USER=111\nOTHER_KEY=keep\n');
     const agentDir = dirname(envPath);
     chmodSync(agentDir, 0o500);
@@ -369,7 +380,7 @@ describe('support-access CLI', () => {
     expect(existsSync(join(blockedRoot, 'state', 'alice', 'support-access.jsonl'))).toBe(false);
   });
 
-  it('does not record a revoke when .env removal cannot be written', () => {
+  it.skipIf(isWindows)('does not record a revoke when .env removal cannot be written', () => {
     writeFileSync(envPath, `ALLOWED_USER=111,${SUPPORT_ACCESS_ID},222\nOTHER_KEY=keep\n`);
     const agentDir = dirname(envPath);
     chmodSync(agentDir, 0o500);
