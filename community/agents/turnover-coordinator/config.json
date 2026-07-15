@@ -1,0 +1,26 @@
+{
+  "agent_name": "{{agent_name}}",
+  "enabled": true,
+  "startup_delay": 0,
+  "max_session_seconds": 255600,
+  "max_crashes_per_day": 10,
+  "working_directory": "",
+  "timezone": "",
+  "crons": [
+    {
+      "name": "heartbeat",
+      "type": "recurring",
+      "interval": "4h",
+      "prompt": "Read HEARTBEAT.md and follow its instructions. Update your heartbeat, check inbox, review all active turnover units, and flag any that are at risk of missing their move-in ready date."
+    },
+    {
+      "name": "morning-scan",
+      "type": "recurring",
+      "interval": "24h",
+      "prompt": "Run the daily turnover status report: list all active units with their make-ready stage, vendor schedule, and move-in target date. Flag any unit where the timeline is at risk. Send summary to the property manager."
+    }
+  ],
+  "ecosystem": {
+    "local_version_control": { "enabled": true }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "focus": "Make-ready pipeline — all active turnover units on schedule for move-in",
+  "goals": [
+    "Track every active turnover unit from move-out confirmation to move-in-ready sign-off",
+    "Coordinate make-ready vendors in sequence: clean → repair → paint → final inspection",
+    "Alert property manager when any unit is at risk of missing its move-in ready date",
+    "Maintain punch list for each unit and flag incomplete items every heartbeat cycle",
+    "Confirm utility transfer between tenancies before marking turnover complete"
+  ],
+  "bottleneck": "",
+  "updated_at": "{{ISO_TIMESTAMP}}",
+  "updated_by": "onboarding"
+}
