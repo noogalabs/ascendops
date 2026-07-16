@@ -19,7 +19,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { join, sep } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { scanForSecurityIssues, validateFrontmatter } from '../hooks/hook-skill-autopr.js';
@@ -128,7 +128,7 @@ export async function createSkillPr(skillName: string): Promise<void> {
   // Path traversal check: resolved skill dir must stay inside community/skills/
   const communitySkillsDir = join(frameworkRoot, 'community', 'skills');
   const skillDir = join(communitySkillsDir, skillName);
-  if (!skillDir.startsWith(communitySkillsDir + '/') && skillDir !== communitySkillsDir) {
+  if (!skillDir.startsWith(communitySkillsDir + sep) && skillDir !== communitySkillsDir) {
     throw new Error(`Skill path "${skillDir}" escapes the community/skills directory`);
   }
 

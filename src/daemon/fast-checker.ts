@@ -16,7 +16,7 @@ import {
 } from '../slack/slack-identity.js';
 import { KEYS } from '../pty/inject.js';
 import { stripControlChars, sanitizeForPtyInjection, wrapFenceSafe, validateOrgName } from '../utils/validate.js';
-import { resolve as pathResolve } from 'path';
+import { resolve as pathResolve, sep } from 'path';
 import { atomicWriteSync } from '../utils/atomic.js';
 // added 2026-04-29 via internal dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
 import { loadHookRegistry, matchHooks, dispatchHook, type HookRegistry } from '../bus/hooks.js';
@@ -410,9 +410,12 @@ export class FastChecker {
     this.heartbeatTimer = setInterval(() => {
       if (!existsSync(onboardedMarkerPath)) return;
       const ts = new Date().toISOString();
+      // Invoke the built CLI via node directly rather than the bare `cortextos`
+      // command: on Windows the npm global is a `cortextos.cmd` shim that
+      // execFile (no shell) cannot resolve, yielding `spawn cortextos ENOENT`.
       execFile(
-        'cortextos',
-        ['bus', 'update-heartbeat', `[watchdog] ${agentName} alive — idle session ${ts}`],
+        process.execPath,
+        [join(this.frameworkRoot, 'dist', 'cli.js'), 'bus', 'update-heartbeat', `[watchdog] ${agentName} alive — idle session ${ts}`],
         { timeout: 10_000 },
         (err) => {
           if (!err) return;
@@ -598,7 +601,7 @@ export class FastChecker {
     // even after symlink expansion. Defends against any path-traversal slip past validateOrgName.
     const orgsRoot = pathResolve(join(this.frameworkRoot, 'orgs'));
     const resolvedOrgPath = pathResolve(orgPath);
-    if (!resolvedOrgPath.startsWith(orgsRoot + '/') && resolvedOrgPath !== orgsRoot) {
+    if (!resolvedOrgPath.startsWith(orgsRoot + sep) && resolvedOrgPath !== orgsRoot) {
       this.log(`Hook dispatcher disabled — org path escaped frameworkRoot: ${orgPath}`);
       return;
     }
@@ -1433,7 +1436,9 @@ export class FastChecker {
       rawJson = await new Promise<string>((resolve, reject) => {
         // Request JSON output — the CLI command doesn't accept the old shell
         // script's --warn-* flags. Alerting is handled here on tier transitions.
-        execFile('cortextos', ['bus', 'check-usage-api', '--json'], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
+        // Invoke via node + built CLI (not bare `cortextos`) so the Windows
+        // `cortextos.cmd` shim doesn't break execFile with `spawn ENOENT`.
+        execFile(process.execPath, [join(this.frameworkRoot, 'dist', 'cli.js'), 'bus', 'check-usage-api', '--json'], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
           if (err) { reject(err); return; }
           resolve(stdout);
         });

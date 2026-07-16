@@ -191,23 +191,36 @@ export class AgentPTY {
       }
     });
 
-    // Claude Code shows a "trust this folder?" prompt on first run in a new directory.
-    // Auto-accept by sending Enter after the prompt appears.
-    // The prompt takes ~3-5s to render; we send Enter at 5s and 8s for reliability.
-    // Skipped for runtimes that never show a trust prompt (Hermes overrides
-    // needsTrustPromptAutoAccept) — the loose "Yes"/"trust" substring match
-    // would otherwise fire a stray Enter on unrelated output.
+    // Claude Code shows first-run gates that block the session until answered:
+    //   1. "trust this folder?" — default highlight is accept, so Enter confirms.
+    //   2. "--dangerously-skip-permissions" Bypass Permissions warning — default
+    //      highlight is "No, exit", so a bare Enter EXITS the process (crash loop).
+    //      We must move the selection down to "Yes, I accept" before confirming.
+    // The prompt takes ~3-5s to render; we answer at 5s and 8s for reliability.
+    // Skipped for runtimes that never show these prompts (Hermes overrides
+    // needsTrustPromptAutoAccept) — the loose substring match would otherwise
+    // fire stray input on unrelated output.
     if (this.needsTrustPromptAutoAccept()) {
-      for (const delayMs of [5000, 8000]) {
+      for (const delayMs of [5000, 8000, 11000, 14000]) {
         const timer = setTimeout(() => {
           if (this.pty) {
             const recent = this.outputBuffer.getRecent();
-            if (recent.includes('trust') || recent.includes('Yes')) {
-              try {
+            try {
+              if (recent.includes('Bypass Permissions')) {
+                // Bypass-permissions gate ("--dangerously-skip-permissions" first
+                // run): options are "1. No, exit" (default) / "2. Yes, I accept".
+                // Move selection DOWN to "Yes, I accept" then confirm (\r).
+                // NOTE: match only on "Bypass Permissions" — a folder-trust prompt
+                // also contains the literal "No, exit", and Down+Enter there would
+                // wrongly select exit. Once accepted, Claude caches it machine-wide
+                // and this screen never reappears.
+                this.pty.write('\x1b[B\r');
+              } else if (recent.includes('trust') || recent.includes('Yes')) {
+                // Folder-trust prompt: default highlight is accept; Enter confirms.
                 this.pty.write('\r');
-              } catch {
-                // PTY torn down between the alive check and the write — ignore.
               }
+            } catch {
+              // PTY torn down between the alive check and the write — ignore.
             }
           }
         }, delayMs);
