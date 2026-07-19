@@ -121,6 +121,19 @@ if ! bash "$GUARD" "$TMP/window-skill-only.md" > /dev/null 2>&1; then
   failures=$((failures + 1))
 fi
 
+# Substrings and hyphenated compounds of fleet names are whole non-matching
+# tokens, never roster hits — pins the tokenizer against splitting drift.
+cat > "$TMP/window-substrings.md" <<EOF
+| Component | Blueprint |
+| Strategy | blue-green |
+| Operator | mundane cashier nickname |
+| Cadence | 0 2 * * 1 |
+EOF
+if ! bash "$GUARD" "$TMP/window-substrings.md" > /dev/null 2>&1; then
+  echo "FAIL: non-roster substrings near cadence were blocked"
+  failures=$((failures + 1))
+fi
+
 # Guard machinery is never exempt from secret detection.
 mkdir -p "$TMP/no-bypass/.github/scripts" "$TMP/no-bypass/.github/workflows" "$TMP/no-bypass/tests"
 for path in \
