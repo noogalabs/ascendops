@@ -158,14 +158,25 @@ export function notifyAgents(opts: {
     `crashes today: ${opts.crashCount}`,
     `restart attempted: ${opts.restartAttempted ? 'yes' : 'no (max_crashes_per_day reached)'}`,
   ].join('\n');
+  const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+  const cliPath = frameworkRoot ? join(frameworkRoot, 'dist', 'cli.js') : null;
   for (const target of opts.recipients) {
     try {
-      execFile(
-        'cortextos',
-        ['bus', 'send-message', target, 'high', body],
-        { timeout: 10_000 },
-        () => { /* fire-and-forget */ },
-      );
+      if (cliPath) {
+        execFile(
+          process.execPath,
+          [cliPath, 'bus', 'send-message', target, 'high', body],
+          { timeout: 10_000 },
+          () => { /* fire-and-forget */ },
+        );
+      } else {
+        execFile(
+          'cortextos',
+          ['bus', 'send-message', target, 'high', body],
+          { timeout: 10_000 },
+          () => { /* fire-and-forget */ },
+        );
+      }
     } catch { /* best-effort, never throw */ }
   }
 }

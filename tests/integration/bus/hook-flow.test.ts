@@ -1,6 +1,6 @@
 // Integration coverage for hook telemetry: dispatchHook → handler result → bus log-event subprocess.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -62,9 +62,17 @@ function lastEmittedEvent(): { name: string; meta: Record<string, unknown> } | n
 }
 
 describe('hook telemetry — end-to-end flow', () => {
+  const originalFrameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+
   beforeEach(() => {
     execFileCalls.length = 0;
     clearHandlerRegistry();
+    delete process.env.CTX_FRAMEWORK_ROOT;
+  });
+
+  afterEach(() => {
+    if (originalFrameworkRoot === undefined) delete process.env.CTX_FRAMEWORK_ROOT;
+    else process.env.CTX_FRAMEWORK_ROOT = originalFrameworkRoot;
   });
 
   it('routes fire results to the cortextos bus log-event subprocess', async () => {
@@ -88,6 +96,21 @@ describe('hook telemetry — end-to-end flow', () => {
     expect(emitted?.meta.hook_id).toBe('h1');
     expect(emitted?.meta.handler_type).toBe('log_event');
     expect(emitted?.meta.event_id).toBe('evt-1');
+  });
+
+  it('uses the framework CLI through the current Node executable when CTX_FRAMEWORK_ROOT is set', async () => {
+    process.env.CTX_FRAMEWORK_ROOT = '/opt/cortextos';
+    registerHandler('log_event', (): HandlerResult => ({ action: 'fire', reason: 'ran' }));
+
+    await dispatchHook(makeHook(), makeEvent());
+
+    expect(execFileCalls).toHaveLength(1);
+    expect(execFileCalls[0].cmd).toBe(process.execPath);
+    expect(execFileCalls[0].args.slice(0, 3)).toEqual([
+      join('/opt/cortextos', 'dist', 'cli.js'),
+      'bus',
+      'log-event',
+    ]);
   });
 
   it('routes block results to hook_block', async () => {

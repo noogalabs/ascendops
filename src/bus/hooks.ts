@@ -325,12 +325,23 @@ function emitHookBusEvent(name: HookEmitName, meta: Record<string, unknown>): vo
     });
   }
   try {
-    execFile(
-      'cortextos',
-      ['bus', 'log-event', 'action', name, 'info', '--meta', serialized],
-      { timeout: 5_000 },
-      () => { /* fire-and-forget */ },
-    );
+    const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+    if (frameworkRoot) {
+      const cliPath = join(frameworkRoot, 'dist', 'cli.js');
+      execFile(
+        process.execPath,
+        [cliPath, 'bus', 'log-event', 'action', name, 'info', '--meta', serialized],
+        { timeout: 5_000 },
+        () => { /* fire-and-forget */ },
+      );
+    } else {
+      execFile(
+        'cortextos',
+        ['bus', 'log-event', 'action', name, 'info', '--meta', serialized],
+        { timeout: 5_000 },
+        () => { /* fire-and-forget */ },
+      );
+    }
   } catch {
     // best-effort: never propagate logging failures
   }

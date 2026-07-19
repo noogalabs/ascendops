@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
+import { join } from 'path';
 import type { Event } from '../../../src/types/index';
 
 const execFileCalls: Array<{ cmd: string; args: string[] }> = [];
@@ -48,6 +49,8 @@ function makeHook(overrides: Partial<HookEntry> = {}): HookEntry {
 }
 
 describe('src/bus/hook-handlers', () => {
+  const originalFrameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+
   beforeEach(() => {
     execFileCalls.length = 0;
     execFileImpl = (cmd: string, args: string[], _opts: unknown, cb?: () => void) => {
@@ -56,6 +59,12 @@ describe('src/bus/hook-handlers', () => {
       return { unref: () => {} };
     };
     clearHandlerRegistry();
+    delete process.env.CTX_FRAMEWORK_ROOT;
+  });
+
+  afterEach(() => {
+    if (originalFrameworkRoot === undefined) delete process.env.CTX_FRAMEWORK_ROOT;
+    else process.env.CTX_FRAMEWORK_ROOT = originalFrameworkRoot;
   });
 
   it('registerBuiltInHandlers registers all four handler types', () => {
@@ -80,6 +89,20 @@ describe('src/bus/hook-handlers', () => {
     const meta = JSON.parse(execFileCalls[0].args[6]);
     expect(meta.source_hook_id).toBe('h1');
     expect(meta.source_event_id).toBe('evt-1');
+  });
+
+  it('logEventHandler uses the framework CLI through the current Node executable when CTX_FRAMEWORK_ROOT is set', async () => {
+    process.env.CTX_FRAMEWORK_ROOT = '/opt/cortextos';
+
+    await logEventHandler(makeHook(), makeEvent());
+
+    expect(execFileCalls).toHaveLength(1);
+    expect(execFileCalls[0].cmd).toBe(process.execPath);
+    expect(execFileCalls[0].args.slice(0, 3)).toEqual([
+      join('/opt/cortextos', 'dist', 'cli.js'),
+      'bus',
+      'log-event',
+    ]);
   });
 
   it('logEventHandler uses provided routing values and documented defaults', async () => {

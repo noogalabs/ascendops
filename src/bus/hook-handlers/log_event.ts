@@ -1,6 +1,7 @@
 // Built-in handler: emits a follow-up bus event whose category/type/severity/meta come from hook.handler.
 // Hardened against argv injection: validates registry-supplied category/type/severity before passing to execFile.
 import { execFile } from 'child_process';
+import { join } from 'path';
 import type { HandlerFn } from '../hooks';
 import type { EventCategory, EventSeverity } from '../../types/index';
 
@@ -28,12 +29,22 @@ export const logEventHandler: HandlerFn = (hook, event) => {
     source_event_id: event.id,
   };
   try {
-    execFile(
-      'cortextos',
-      ['bus', 'log-event', category, type, severity, '--meta', JSON.stringify(meta)],
-      { timeout: 5000 },
-      () => {},
-    );
+    const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+    if (frameworkRoot) {
+      execFile(
+        process.execPath,
+        [join(frameworkRoot, 'dist', 'cli.js'), 'bus', 'log-event', category, type, severity, '--meta', JSON.stringify(meta)],
+        { timeout: 5000 },
+        () => {},
+      );
+    } else {
+      execFile(
+        'cortextos',
+        ['bus', 'log-event', category, type, severity, '--meta', JSON.stringify(meta)],
+        { timeout: 5000 },
+        () => {},
+      );
+    }
   } catch { /* fire-and-forget */ }
   return { action: 'fire', reason: 'event_logged' };
 };

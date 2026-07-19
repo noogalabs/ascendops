@@ -102,8 +102,16 @@ describe('readMaxCrashesPerDay', () => {
 });
 
 describe('notifyAgents', () => {
+  const originalFrameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+
   beforeEach(() => {
     execFileMock.mockReset();
+    delete process.env.CTX_FRAMEWORK_ROOT;
+  });
+
+  afterEach(() => {
+    if (originalFrameworkRoot === undefined) delete process.env.CTX_FRAMEWORK_ROOT;
+    else process.env.CTX_FRAMEWORK_ROOT = originalFrameworkRoot;
   });
 
   it('sends one bus send-message per recipient', () => {
@@ -132,6 +140,29 @@ describe('notifyAgents', () => {
     const [cmd, args] = execFileMock.mock.calls[0];
     expect(cmd).toBe('cortextos');
     expect(args.slice(0, 4)).toEqual(['bus', 'send-message', 'chief', 'high']);
+  });
+
+  it('uses the framework CLI through the current Node executable when CTX_FRAMEWORK_ROOT is set', () => {
+    process.env.CTX_FRAMEWORK_ROOT = '/opt/cortextos';
+    notifyAgents({
+      agentName: 'dev',
+      endType: 'crash',
+      reason: 'r',
+      lastTask: 't',
+      crashCount: 1,
+      restartAttempted: true,
+      recipients: ['chief'],
+    });
+
+    const [cmd, args] = execFileMock.mock.calls[0];
+    expect(cmd).toBe(process.execPath);
+    expect(args.slice(0, 5)).toEqual([
+      join('/opt/cortextos', 'dist', 'cli.js'),
+      'bus',
+      'send-message',
+      'chief',
+      'high',
+    ]);
   });
 
   it('body includes all required fields', () => {
