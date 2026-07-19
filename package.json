@@ -8,8 +8,9 @@
     "ascendops": "dist/ascendops.js"
   },
   "scripts": {
-    "prebuild": "npm run typecheck",
+    "prebuild": "node scripts/prebuild-guard.mjs && npm run typecheck",
     "build": "tsup",
+    "predev": "node scripts/prebuild-guard.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
