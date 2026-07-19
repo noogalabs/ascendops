@@ -400,14 +400,15 @@ export class CodexAppServerPTY {
   }
 
   setTelegramHandle(api: TelegramAPI, chatId: string): void {
-    const hadHandle = !!this._telegramApi && !!this._chatId;
     this._telegramApi = api;
     this._chatId = chatId;
-    // A model-gate alert deferred at spawn must fire when its handle arrives.
-    // Pre-spawn wiring remains covered by spawn() reconciliation.
-    if (this._alive && !hadHandle) {
-      this.reconcileModelGateAlert();
-    }
+    // Deliberately store-only: reconcileModelGateAlert is invoked ONLY from
+    // spawn() after bootstrap succeeds. Reconciling from a post-start bind was
+    // tried and produced three consecutive defects (missed retry, retry
+    // suppression, dedupe-state corruption during pending bootstrap) on a path
+    // no production caller reaches - the sole caller binds pre-start
+    // (agent-manager.ts:601). If a post-start caller is ever added, see the
+    // PR #48 review thread before reintroducing reconcile here.
   }
 
   private finalizeExit(exitCode: number, signal?: number, reason?: string): void {

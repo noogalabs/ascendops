@@ -1731,30 +1731,67 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
       expect(queueTurn).toHaveBeenCalledTimes(1);
     });
 
-    it('delivers a deferred gated-model alert when the Telegram handle arrives mid-lifecycle', async () => {
+    it('keeps a live post-start Telegram bind store-only', () => {
       const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
       (pty as unknown as { _alive: boolean })._alive = true;
+      const reconcile = vi.spyOn(alertable(pty), 'reconcileModelGateAlert');
       const sendMessage = bindTelegram(pty);
 
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(atomicWriteSyncMock).not.toHaveBeenCalled();
+    });
+
+    it('does not alert or persist state when Telegram binds during pending bootstrap', async () => {
+      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
+      let resolveStart!: () => void;
+      const startPending = new Promise<void>((resolve) => {
+        resolveStart = resolve;
+      });
+      vi.spyOn(pty as never, 'startAppServerWithRetry' as never).mockReturnValue(startPending as never);
+      vi.spyOn(pty as never, 'connectRpc' as never).mockResolvedValue(undefined as never);
+      vi.spyOn(pty as never, 'initializeRpc' as never).mockResolvedValue(undefined as never);
+      vi.spyOn(pty as never, 'startOrResumeThread' as never).mockImplementation(async () => {
+        (pty as unknown as { _threadId: string })._threadId = 'thread-pending';
+      });
+      const reconcile = vi.spyOn(alertable(pty), 'reconcileModelGateAlert');
+
+      const spawning = pty.spawn('fresh', '');
+      await Promise.resolve();
+      const sendMessage = bindTelegram(pty);
+
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(atomicWriteSyncMock).not.toHaveBeenCalled();
+
+      resolveStart();
+      await spawning;
+    });
+
+    it('writes no state for failed bootstrap and alerts once on the next successful lifecycle', async () => {
+      const failedPty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
+      bindTelegram(failedPty);
+      vi.spyOn(failedPty as never, 'startAppServerWithRetry' as never).mockRejectedValue(new Error('bootstrap failed') as never);
+      const failedReconcile = vi.spyOn(alertable(failedPty), 'reconcileModelGateAlert');
+
+      await expect(failedPty.spawn('fresh', '')).rejects.toThrow('bootstrap failed');
+      expect(failedReconcile).not.toHaveBeenCalled();
+      expect(atomicWriteSyncMock).not.toHaveBeenCalled();
+
+      const successfulPty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
+      const sendMessage = bindTelegram(successfulPty);
+      vi.spyOn(successfulPty as never, 'startAppServerWithRetry' as never).mockResolvedValue(undefined as never);
+      vi.spyOn(successfulPty as never, 'connectRpc' as never).mockResolvedValue(undefined as never);
+      vi.spyOn(successfulPty as never, 'initializeRpc' as never).mockResolvedValue(undefined as never);
+      vi.spyOn(successfulPty as never, 'startOrResumeThread' as never).mockImplementation(async () => {
+        (successfulPty as unknown as { _threadId: string })._threadId = 'thread-success';
+      });
+
+      await successfulPty.spawn('fresh', '');
       await Promise.resolve();
 
       expect(sendMessage).toHaveBeenCalledTimes(1);
       expect(atomicWriteSyncMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('does not re-enter reconciliation when an already-bound live handle is replaced', async () => {
-      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
-      const sendMessage = bindTelegram(pty);
-      alertable(pty).reconcileModelGateAlert();
-      await Promise.resolve();
-      expect(sendMessage).toHaveBeenCalledTimes(1);
-
-      const reconcile = vi.spyOn(alertable(pty), 'reconcileModelGateAlert');
-      (pty as unknown as { _alive: boolean })._alive = true;
-      bindTelegram(pty, sendMessage);
-
-      expect(reconcile).not.toHaveBeenCalled();
-      expect(sendMessage).toHaveBeenCalledTimes(1);
     });
 
     it('does not reconcile when a Telegram handle is bound before spawn', () => {
