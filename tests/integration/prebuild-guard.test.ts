@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { delimiter, dirname, join, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -193,7 +193,7 @@ describe('prebuild live-tree guard', () => {
     const originalPrefix = process.env.npm_config_prefix;
     const originalPath = process.env.PATH;
     process.env.npm_config_prefix = prefix;
-    process.env.PATH = `${binDir}:${originalPath || ''}`;
+    process.env.PATH = `${binDir}${delimiter}${originalPath || ''}`;
     try {
       const { detectLiveTree } = await import(`${pathToFileURL(GUARD_SOURCE).href}?positive=${Date.now()}`);
       const result = detectLiveTree(repoRoot);
