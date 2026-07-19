@@ -63,6 +63,7 @@ const fsMocks = {
   writeFileSync: vi.fn(),
   appendFileSync: vi.fn(),
   statSync: vi.fn(),
+  unlinkSync: vi.fn(),
 };
 
 vi.mock('fs', async () => {
@@ -70,7 +71,7 @@ vi.mock('fs', async () => {
   return {
     ...actual,
     mkdirSync: vi.fn(),
-    unlinkSync: vi.fn(),
+    get unlinkSync() { return fsMocks.unlinkSync; },
     get existsSync() { return fsMocks.existsSync; },
     get readFileSync() { return fsMocks.readFileSync; },
     get writeFileSync() { return fsMocks.writeFileSync; },
@@ -109,6 +110,7 @@ beforeEach(() => {
   fsMocks.writeFileSync.mockReset();
   fsMocks.appendFileSync.mockReset();
   fsMocks.statSync.mockReset();
+  fsMocks.unlinkSync.mockClear();
 });
 
 describe('AgentProcess codex-app-server runtime', () => {
@@ -216,4 +218,45 @@ describe('AgentProcess codex-app-server runtime', () => {
     await stopPromise;
     expect(mockCodexAppServerPty.kill).toHaveBeenCalled();
   }, 10000);
+
+  it('ignores stale Claude JSONL when picking continue vs fresh', async () => {
+    const codexThreadPath = '/tmp/test-ctx/state/codex-app-agent/codex-app-server-thread.json';
+
+    // A stale Claude JSONL is irrelevant for this runtime. With no Codex thread
+    // state, the launch must be fresh.
+    fsMocks.existsSync.mockImplementation((path: string) => {
+      if (path.endsWith('.force-fresh')) return false;
+      if (path === codexThreadPath) return false;
+      return path.endsWith('.jsonl');
+    });
+    const fresh = new AgentProcess('codex-app-agent', mockEnv, { runtime: 'codex-app-server' });
+    await fresh.start();
+    expect(mockCodexAppServerPty.spawn).toHaveBeenLastCalledWith('fresh', expect.any(String));
+
+    // The runtime's own thread-state file is the only continue signal.
+    mockCodexAppServerPty.spawn.mockClear();
+    fsMocks.existsSync.mockImplementation((path: string) => {
+      if (path.endsWith('.force-fresh')) return false;
+      return path === codexThreadPath;
+    });
+    const continued = new AgentProcess('codex-app-agent', mockEnv, { runtime: 'codex-app-server' });
+    await continued.start();
+    expect(mockCodexAppServerPty.spawn).toHaveBeenLastCalledWith('continue', expect.any(String));
+  });
+
+  it('force-fresh wins over codex thread state and the marker is consumed', async () => {
+    const codexThreadPath = '/tmp/test-ctx/state/codex-app-agent/codex-app-server-thread.json';
+
+    // Both signals present: .force-fresh must win (fresh spawn), and the
+    // marker must be consumed in the launch decision — pins the
+    // force-fresh-BEFORE-runtime-checks ordering in shouldContinue().
+    fsMocks.existsSync.mockImplementation((path: string) => {
+      if (path.endsWith('.force-fresh')) return true;
+      return path === codexThreadPath;
+    });
+    const forced = new AgentProcess('codex-app-agent', mockEnv, { runtime: 'codex-app-server' });
+    await forced.start();
+    expect(mockCodexAppServerPty.spawn).toHaveBeenLastCalledWith('fresh', expect.any(String));
+    expect(fsMocks.unlinkSync).toHaveBeenCalledWith(expect.stringMatching(/\.force-fresh$/));
+  });
 });

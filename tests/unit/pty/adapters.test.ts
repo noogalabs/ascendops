@@ -140,6 +140,15 @@ describe('anthropicAdapter — zero behavior change', () => {
       expect(args).toContain('--dangerously-skip-permissions');
     });
 
+    it('includes --dangerously-skip-permissions when explicitly true', () => {
+      const args = anthropicAdapter.buildArgs(
+        'fresh',
+        'p',
+        { config: { dangerously_skip_permissions: true }, env },
+      );
+      expect(args).toContain('--dangerously-skip-permissions');
+    });
+
     it('omits --dangerously-skip-permissions when dangerously_skip_permissions is false (permission gate engaged)', () => {
       const args = anthropicAdapter.buildArgs(
         'fresh',
