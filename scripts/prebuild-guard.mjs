@@ -20,9 +20,9 @@ function run(command, args, options = {}) {
   return spawnSync(command, args, { encoding: 'utf-8', ...options });
 }
 
-function resultError(label, result, allowStatusOne = false) {
+function resultError(label, result, allowedAbsenceStatuses = new Set()) {
   if (result.error) return `${label}: ${result.error.message}`;
-  if (result.status !== 0 && !(allowStatusOne && result.status === 1)) {
+  if (result.status !== 0 && !allowedAbsenceStatuses.has(result.status)) {
     return `${label}: exited ${result.status}${result.stderr ? `: ${result.stderr.trim()}` : ''}`;
   }
   return null;
@@ -39,7 +39,7 @@ export function detectLiveTree(repoRoot) {
 
   try {
     const packageName = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')).name;
-    const result = run('npm', ['root', '-g']);
+    const result = run('npm', ['root', '-g'], { shell: process.platform === 'win32' });
     const error = resultError('D1 global-package identity', result);
     if (error) errors.push(error);
     else if (result.status === 0 && packageName) {
@@ -56,7 +56,7 @@ export function detectLiveTree(repoRoot) {
     const result = process.platform === 'win32'
       ? run('where', ['cortextos'])
       : run('/bin/sh', ['-c', 'command -v cortextos']);
-    const error = resultError('D2 global-bin containment', result, true);
+    const error = resultError('D2 global-bin containment', result, new Set([1, 126, 127]));
     if (error) errors.push(error);
     else if (result.status === 0) {
       const commandPath = result.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
@@ -69,10 +69,7 @@ export function detectLiveTree(repoRoot) {
   }
 
   try {
-    const result = run('git', ['-C', root, 'config', '--get', 'cortextos.livetree']);
-    const error = resultError('D3 explicit marker', result, true);
-    if (error) errors.push(error);
-    else if (result.status === 0 && result.stdout.trim() === 'true') {
+    if (existsSync(join(root, '.cortextos-live-tree'))) {
       signals.push('D3 explicit marker');
     }
   } catch (error) {
@@ -138,6 +135,15 @@ export function main() {
   return decision.allow ? 0 : 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+export function isDirectRun(argvPath = process.argv[1]) {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(argvPath);
+  } catch {
+    return import.meta.url === pathToFileURL(argvPath).href;
+  }
+}
+
+if (isDirectRun()) {
   process.exitCode = main();
 }

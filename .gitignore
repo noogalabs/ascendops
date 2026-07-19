@@ -36,6 +36,9 @@ agents/*/memory/
 # macOS metadata
 .DS_Store
 
+# Per-checkout marker for the deployed live tree
+.cortextos-live-tree
+
 # Test artifacts
 test-results/
 *.log

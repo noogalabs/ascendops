@@ -4,6 +4,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -35,7 +36,7 @@ function makeRepo(branch = 'feature/test', marker = false): { root: string; scri
   copyFileSync(GUARD_SOURCE, join(root, 'scripts', 'prebuild-guard.mjs'));
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'cortextos' }));
   git(root, ['init', '-b', branch]);
-  if (marker) git(root, ['config', 'cortextos.livetree', 'true']);
+  if (marker) writeFileSync(join(root, '.cortextos-live-tree'), '');
   return { root, script: join(root, 'scripts', 'prebuild-guard.mjs') };
 }
 
@@ -116,13 +117,62 @@ describe('prebuild live-tree guard', () => {
     const { root, script } = makeRepo('feature/detached', true);
     writeFileSync(join(root, 'tracked.txt'), 'tracked');
     git(root, ['add', 'tracked.txt']);
-    git(root, ['-c', 'user.name=Guard Test', '-c', 'user.email=guard@example.com', 'commit', '-m', 'fixture']);
+    git(root, ['-c', 'user.name=Guard Test', '-c', 'user.email=guard@localhost', 'commit', '-m', 'fixture']);
     git(root, ['checkout', '--detach']);
 
     const result = runGuard(script, strippedEnv());
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('detached');
+  });
+
+  it('keeps a linked worktree isolated from the live checkout marker', () => {
+    const { root } = makeRepo('main', true);
+    git(root, ['add', 'package.json', 'scripts/prebuild-guard.mjs']);
+    git(root, ['-c', 'user.name=Guard Test', '-c', 'user.email=guard@localhost', 'commit', '-m', 'fixture']);
+    const worktreeRoot = join(dirname(root), `${root.split('/').at(-1)}-worktree`);
+    tempRoots.push(worktreeRoot);
+    git(root, ['worktree', 'add', '-b', 'feature/worktree', worktreeRoot]);
+
+    const result = runGuard(join(worktreeRoot, 'scripts', 'prebuild-guard.mjs'), strippedEnv());
+
+    expect(result.status).toBe(0);
+    expect(output(result)).toContain('isolated checkout');
+    expect(output(result)).toContain('live detectors: none');
+  });
+
+  it('treats an absent cortextos command as a normal D2 no-signal result', () => {
+    const { script } = makeRepo('feature/no-command', false);
+    const emptyPath = tempRoot('prebuild-guard-empty-path-');
+
+    const result = runGuard(script, strippedEnv({ PATH: emptyPath }));
+
+    expect(result.status).toBe(0);
+    expect(output(result)).toContain('isolated checkout');
+    expect(output(result)).not.toMatch(/detector errors:.*D2 global-bin containment/);
+  });
+
+  it('runs and blocks through a symlinked repository path', () => {
+    const { root } = makeRepo('feature/alias', true);
+    const aliasRoot = join(dirname(root), `${root.split('/').at(-1)}-alias`);
+    tempRoots.push(aliasRoot);
+    symlinkSync(root, aliasRoot);
+
+    const result = runGuard(join(aliasRoot, 'scripts', 'prebuild-guard.mjs'), strippedEnv());
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('feature/alias');
+    expect(result.stderr).toContain('D3 explicit marker');
+  });
+
+  it('wires the guard into build, dev, and test lifecycle hooks', () => {
+    const packageJson = JSON.parse(readFileSync(join(SOURCE_ROOT, 'package.json'), 'utf-8')) as {
+      scripts: Record<string, string>;
+    };
+
+    expect(packageJson.scripts.prebuild).toContain('node scripts/prebuild-guard.mjs');
+    expect(packageJson.scripts.predev).toContain('node scripts/prebuild-guard.mjs');
+    expect(packageJson.scripts.pretest).toContain('node scripts/prebuild-guard.mjs');
   });
 
   it('detects live identity through real global-package and global-bin symlink chains', async () => {
