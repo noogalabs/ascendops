@@ -35,6 +35,12 @@ interface ThreadState {
   updatedAt: string;
 }
 
+interface ModelGateAlertState {
+  configured_model: string;
+  used_model: string;
+  alerted_at: string;
+}
+
 interface SocketPointer {
   socketPath?: string;
   host?: string;
@@ -161,6 +167,7 @@ export class CodexAppServerPTY {
   private _socketCwd: string;
   private _rpcEndpoint: { host: string; port: number } | { socketPath: string } | null = null;
   private _threadStatePath: string;
+  private _modelGateAlertPath: string;
   private _socketPointerPath: string;
   private _threadId: string | null = null;
   private _telegramApi: TelegramAPI | null = null;
@@ -173,6 +180,7 @@ export class CodexAppServerPTY {
     this._cwd = config.working_directory || env.agentDir || process.cwd();
     this._stateDir = join(env.ctxRoot, 'state', env.agentName);
     this._threadStatePath = join(this._stateDir, 'codex-app-server-thread.json');
+    this._modelGateAlertPath = join(this._stateDir, 'codex-model-gate-alert.json');
     this._socketPointerPath = join(this._stateDir, 'codex-app-server-socket.json');
     const socket = this.resolveSocketPath();
     this._socketPath = socket.path;
@@ -216,6 +224,101 @@ export class CodexAppServerPTY {
     }
   }
 
+  private reconcileModelGateAlert(): void {
+    const configured = this._config.model;
+    const gated = !!configured && !SAFE_MODELS.includes(configured);
+    const stateExists = existsSync(this._modelGateAlertPath);
+    let state: ModelGateAlertState | null = null;
+
+    if (stateExists) {
+      try {
+        state = JSON.parse(readFileSync(this._modelGateAlertPath, 'utf-8')) as ModelGateAlertState;
+      } catch {
+        // Fail toward alerting: unreadable dedupe state must not suppress notice.
+        state = null;
+      }
+    }
+
+    if (gated) {
+      if (state?.configured_model === configured && state.used_model === DEFAULT_SAFE_MODEL) {
+        return;
+      }
+      if (!this._telegramApi || !this._chatId) {
+        this._outputBuffer.push('[codex-app-server] model gate alert deferred: no Telegram handle\n');
+        return;
+      }
+
+      const alertText = `MODEL GATE: agent ${this._env.agentName} config.json requests model ${configured}, which is not on the codex SAFE_MODELS allowlist [${SAFE_MODELS.join(', ')}]. It is actually running ${DEFAULT_SAFE_MODEL}. If ${configured} is entitled and intended, add it to SAFE_MODELS in src/pty/codex-app-server-pty.ts, rebuild, and restart the agent. If it is a typo, fix "model" in the agents config.json. This alert will not repeat for this model across restarts; it re-arms when the gate clears or the configured model changes.`;
+      const alertState: ModelGateAlertState = {
+        configured_model: configured,
+        used_model: DEFAULT_SAFE_MODEL,
+        alerted_at: new Date().toISOString(),
+      };
+      this._telegramApi.sendMessage(this._chatId, alertText, undefined, { parseMode: null })
+        .then(() => {
+          atomicWriteSync(this._modelGateAlertPath, JSON.stringify(alertState, null, 2));
+          try {
+            const paths = resolvePaths(this._env.agentName, this._env.instanceId, this._env.org);
+            logEvent(
+              paths,
+              this._env.agentName,
+              this._env.org,
+              'action',
+              'codex_model_gate_alert_sent',
+              'warning',
+              {
+                configured_model: configured,
+                used_model: DEFAULT_SAFE_MODEL,
+                safe_models: SAFE_MODELS,
+              },
+            );
+          } catch {
+            /* non-fatal: the Telegram alert was delivered */
+          }
+        })
+        .catch((err) => {
+          this._outputBuffer.push(`[codex-app-server] model gate alert send failed: ${err}\n`);
+        });
+      return;
+    }
+
+    if (!stateExists) return;
+
+    try {
+      unlinkSync(this._modelGateAlertPath);
+    } catch {
+      /* non-fatal: alerting remains re-armed in memory for this lifecycle */
+    }
+
+    if (this._telegramApi && this._chatId) {
+      const clearedText = configured
+        ? `MODEL GATE CLEARED: agent ${this._env.agentName} is now running its configured model ${configured}.`
+        : `MODEL GATE CLEARED: agent ${this._env.agentName} no longer requests a gated model.`;
+      this._telegramApi.sendMessage(this._chatId, clearedText, undefined, { parseMode: null })
+        .catch((err) => {
+          this._outputBuffer.push(`[codex-app-server] model gate cleared alert send failed: ${err}\n`);
+        });
+    }
+
+    try {
+      const paths = resolvePaths(this._env.agentName, this._env.instanceId, this._env.org);
+      logEvent(
+        paths,
+        this._env.agentName,
+        this._env.org,
+        'action',
+        'codex_model_gate_cleared',
+        'info',
+        {
+          configured_model: configured ?? null,
+          previous_configured_model: state?.configured_model ?? null,
+        },
+      );
+    } catch {
+      /* non-fatal: the state reconciliation already completed */
+    }
+  }
+
   async spawn(mode: 'fresh' | 'continue', prompt: string): Promise<void> {
     if (this._alive) {
       throw new Error('CodexAppServerPTY already spawned. Kill first.');
@@ -231,6 +334,7 @@ export class CodexAppServerPTY {
       await this.initializeRpc();
       await this.startOrResumeThread(mode);
       this._outputBuffer.push(`${BOOTSTRAP_PATTERN} thread=${this._threadId}\n`);
+      this.reconcileModelGateAlert();
       if (prompt.trim()) {
         this.queueTurn([{ type: 'text', text: prompt, text_elements: [] }]);
       }
