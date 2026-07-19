@@ -120,6 +120,29 @@ ROSTER_CRON_ROW = re.compile(
     r"(?:heartbeat\(\d+[hm]\)|(?:morning|evening)-review\([^)]*\*[^)]*\))",
     re.IGNORECASE,
 )
+# SHA-256 digests of lowercase fleet agent names. The scanner hashes whole
+# identifier tokens before comparison so substrings never become roster hits.
+# CODEOWNERS protects this identity set and its matcher.
+ROSTER_NAME_HASHES = {
+    "0df89317e02535902d116be0f27294a75145339bf4af53fb35131aea8071a0e1",
+    "0357513deb903a056e74a7e475247fc1ffe31d8be4c1d4a31f58dd47ae484100",
+    "2b7847b7b705781d7cf21a05e9c1bb37cbf078aea103bc3edcc6aca52ab65453",
+    "ed62c6fd9f1b99007f2f0e108e1c5c97184fa69f3c43feb8038b389d80896476",
+    "7f0b629cbb9d794b3daf19fcd686a30a039b47395545394dadc0574744996a87",
+    "5af2ce87460cec2056d0bdbe9fb8dda57462e3d4074d9aeea537c3638048e895",
+    "16477688c0e00699c6cfa4497a3612d7e83c532062b64b250fed8908128ed548",
+    "fcb758b78074e8274889be3114a8bf507914641f63dd9efc7fa65a414f7c0480",
+    "969d9377fbf980082dcdfbcf57ceab1e0af76b40af96f6fded61b8dc76998272",
+    "8472638c24e61364a5cfbe3bb146f22058212be6aedd4fea0c78e27aa30d2ebc",
+    "3782208ea47adc401de2df91494d5b3653d7be671dec6d6cd84677ff2fa7b972",
+    "ab0fcec08e18a7bccda1e81df4974e3434fcd36000518f7e776fb85495b5a494",
+}
+PIPE_ROW = re.compile(r"^[ \t]*\|")
+CADENCE_EXPR = re.compile(
+    r"heartbeat\(\d|pr-monitor\(\d|\(\d+ [\d*]+ \* \* |"
+    r"(?:^|[^\d*,/-])[\d*][\d*,/-]* [\d*][\d*,/-]* [\d*][\d*,/-]* "
+    r"[\d*][\d*,/-]* [\d*][\d*,/-]*(?:[^\d*,/-]|$)"
+)
 FORMATTED_PHONE = re.compile(
     r"(?<!\d)(?P<value>(?:\+?1[ .-]?)?(?:\([2-9]\d{2}\)|[2-9]\d{2})[ .-]\d{3}[ .-]\d{4})(?!\d)"
 )
@@ -335,6 +358,10 @@ def scan(path: str, lines: list[tuple[int, str]]) -> list[tuple[str, int, str, s
         hits.append((path, 0, "internal", "private runtime path is tracked"))
     if ENV_PATH.search(normalized) and not basename.endswith((".example", ".sample", ".template")):
         hits.append((path, 0, "env-file", "tracked .env content"))
+    roster_cron_hit = False
+    last_name_line: int | None = None
+    last_cron_line: int | None = None
+    window_hit_line: int | None = None
     for line_number, text in lines:
         if text == "__BINARY_CONTENT__":
             continue
@@ -346,6 +373,24 @@ def scan(path: str, lines: list[tuple[int, str]]) -> list[tuple[str, int, str, s
                 hits.append((path, line_number, "pii", "operator home path"))
         if not is_test_path(path) and ROSTER_CRON_ROW.search(text):
             hits.append((path, line_number, "internal", "agent roster and cron schedule"))
+            roster_cron_hit = True
+        # Windowed scanning is intentionally limited to table rows. In --diff
+        # mode it sees only added lines, so a new name beside a pre-existing
+        # cadence row can be missed; --tree scans have no such gap.
+        if not is_test_path(path) and PIPE_ROW.search(text):
+            lowered = text.lower()
+            identifiers = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", lowered)
+            if any(hashlib.sha256(identifier.encode()).hexdigest() in ROSTER_NAME_HASHES for identifier in identifiers):
+                last_name_line = line_number
+            if CADENCE_EXPR.search(lowered):
+                last_cron_line = line_number
+            if (
+                last_name_line is not None
+                and last_cron_line is not None
+                and abs(last_name_line - last_cron_line) <= 3
+                and window_hit_line is None
+            ):
+                window_hit_line = line_number
         pii_exempt = "/vendor/" in f"/{normalized.lstrip('/')}"
         phone_matches = list(FORMATTED_PHONE.finditer(text))
         if PHONE_CONTEXT.search(text):
@@ -377,6 +422,8 @@ def scan(path: str, lines: list[tuple[int, str]]) -> list[tuple[str, int, str, s
             if match:
                 category, reason = match
                 hits.append((path, line_number, category, reason))
+    if window_hit_line is not None and not roster_cron_hit:
+        hits.append((path, window_hit_line, "internal", "agent roster and cron schedule within 3 lines"))
     return hits
 
 

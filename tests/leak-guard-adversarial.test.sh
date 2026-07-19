@@ -69,6 +69,58 @@ mkdir -p "$(dirname "$memory_path")"
 printf 'clean\n' > "$memory_path"
 expect_block "tracked agent memory" "private runtime path is tracked" "$memory_path"
 
+# Windowed roster/cadence detection uses split synthetic construction so the
+# public regression never publishes a contiguous fleet identity.
+roster_name='da''ne'
+
+cat > "$TMP/window-near.md" <<EOF
+| Agent | Role |
+| $roster_name | orchestrator |
+| Notes | primary |
+| Cadence | morning-review(0 13 * * *) |
+EOF
+expect_block "roster and parenthesized cadence within 3 lines" "agent roster and cron schedule within 3 lines" "$TMP/window-near.md"
+
+cat > "$TMP/window-far.md" <<EOF
+| Agent | Role |
+| $roster_name | orchestrator |
+| Notes | one |
+| Notes | two |
+| Notes | three |
+| Notes | four |
+| Cadence | 0 13 * * 1 |
+EOF
+if ! bash "$GUARD" "$TMP/window-far.md" > /dev/null 2>&1; then
+  echo "FAIL: roster and cadence more than 3 lines apart was blocked"
+  failures=$((failures + 1))
+fi
+
+cat > "$TMP/window-prose.md" <<EOF
+Authored: $roster_name
+This section explains how morning-review works.
+EOF
+if ! bash "$GUARD" "$TMP/window-prose.md" > /dev/null 2>&1; then
+  echo "FAIL: prose adjacency was blocked"
+  failures=$((failures + 1))
+fi
+
+cat > "$TMP/window-bare.md" <<EOF
+| Agent | Role |
+|$roster_name|orchestrator|
+| Cadence | 0 13 * * 1 |
+EOF
+expect_block "roster and bare cadence within 3 lines" "agent roster and cron schedule within 3 lines" "$TMP/window-bare.md"
+
+cat > "$TMP/window-skill-only.md" <<EOF
+| Agent | Role |
+| $roster_name | orchestrator |
+| Skill | morning-review |
+EOF
+if ! bash "$GUARD" "$TMP/window-skill-only.md" > /dev/null 2>&1; then
+  echo "FAIL: skill-name-only table was blocked"
+  failures=$((failures + 1))
+fi
+
 # Guard machinery is never exempt from secret detection.
 mkdir -p "$TMP/no-bypass/.github/scripts" "$TMP/no-bypass/.github/workflows" "$TMP/no-bypass/tests"
 for path in \

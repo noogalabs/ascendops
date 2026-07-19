@@ -27,9 +27,19 @@ install_hook() {
     return
   fi
 
-  cp "$src" "$dest"
+  # Preserve operator-installed hooks. Differing hooks are left completely
+  # untouched; identical tracked hooks still have their executable bit repaired.
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if ! cmp -s "$src" "$dest"; then
+      echo "Warning: .git/hooks/$name already exists and differs (skipping)" >&2
+      return
+    fi
+  else
+    cp "$src" "$dest"
+    echo "  Installed: .git/hooks/$name"
+  fi
+
   chmod +x "$dest"
-  echo "  Installed: .git/hooks/$name"
 }
 
 echo "Installing cortextOS git hooks..."
