@@ -36,9 +36,11 @@ interface ThreadState {
 }
 
 interface ModelGateAlertState {
+  status?: 'cleared';
   configured_model: string;
   used_model: string;
   alerted_at: string;
+  cleared_at?: string;
 }
 
 interface SocketPointer {
@@ -240,7 +242,9 @@ export class CodexAppServerPTY {
     }
 
     if (gated) {
-      if (state?.configured_model === configured && state.used_model === DEFAULT_SAFE_MODEL) {
+      if (state?.status !== 'cleared'
+        && state?.configured_model === configured
+        && state.used_model === DEFAULT_SAFE_MODEL) {
         return;
       }
       if (!this._telegramApi || !this._chatId) {
@@ -286,8 +290,24 @@ export class CodexAppServerPTY {
 
     try {
       unlinkSync(this._modelGateAlertPath);
-    } catch {
-      /* non-fatal: alerting remains re-armed in memory for this lifecycle */
+    } catch (unlinkErr) {
+      const now = new Date().toISOString();
+      const clearedState: ModelGateAlertState = {
+        status: 'cleared',
+        configured_model: state?.configured_model ?? configured ?? '',
+        used_model: state?.used_model ?? DEFAULT_SAFE_MODEL,
+        alerted_at: state?.alerted_at ?? now,
+        cleared_at: now,
+      };
+      try {
+        atomicWriteSync(this._modelGateAlertPath, JSON.stringify(clearedState, null, 2));
+      } catch (writeErr) {
+        this._outputBuffer.push(
+          `[codex-app-server] model gate alert re-arm failed for ${this._modelGateAlertPath}: unlink failed (${unlinkErr}); cleared-tombstone write failed (${writeErr}); remove it manually before re-enabling a gated model.\n`,
+        );
+      }
+      // Do not report a clear when the original gated-state file could not be removed.
+      return;
     }
 
     if (this._telegramApi && this._chatId) {

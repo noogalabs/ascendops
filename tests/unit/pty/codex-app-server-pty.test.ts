@@ -1689,6 +1689,91 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
       );
     });
 
+    it('writes a cleared tombstone without reporting success when stale-state unlink fails', () => {
+      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5-codex' });
+      const sendMessage = bindTelegram(pty);
+      fsMocks.existsSync.mockReturnValue(true);
+      fsMocks.readFileSync.mockReturnValue(JSON.stringify({
+        configured_model: 'gpt-5.3-codex',
+        used_model: 'gpt-5.5',
+        alerted_at: '2026-07-19T00:00:00.000Z',
+      }));
+      fsMocks.unlinkSync.mockImplementation(() => {
+        throw new Error('unlink denied');
+      });
+
+      alertable(pty).reconcileModelGateAlert();
+
+      expect(atomicWriteSyncMock).toHaveBeenCalledTimes(1);
+      const [statePath, rawState] = atomicWriteSyncMock.mock.calls[0] as [string, string];
+      expect(statePath).toBe('/tmp/ctx/state/codex-app-agent/codex-model-gate-alert.json');
+      expect(JSON.parse(rawState)).toEqual(expect.objectContaining({
+        status: 'cleared',
+        configured_model: 'gpt-5.3-codex',
+        used_model: 'gpt-5.5',
+      }));
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(logEventMock).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        'action',
+        'codex_model_gate_cleared',
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('alerts on the next same-model gated lifecycle when persisted state is a cleared tombstone', async () => {
+      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
+      const sendMessage = bindTelegram(pty);
+      fsMocks.existsSync.mockReturnValue(true);
+      fsMocks.readFileSync.mockReturnValue(JSON.stringify({
+        status: 'cleared',
+        configured_model: 'gpt-5.3-codex',
+        used_model: 'gpt-5.5',
+        alerted_at: '2026-07-19T00:00:00.000Z',
+        cleared_at: '2026-07-19T01:00:00.000Z',
+      }));
+
+      alertable(pty).reconcileModelGateAlert();
+      await Promise.resolve();
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(atomicWriteSyncMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('requires manual state removal when unlink and cleared-tombstone writes both fail', () => {
+      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5-codex' });
+      fsMocks.existsSync.mockReturnValue(true);
+      fsMocks.readFileSync.mockReturnValue(JSON.stringify({
+        configured_model: 'gpt-5.3-codex',
+        used_model: 'gpt-5.5',
+        alerted_at: '2026-07-19T00:00:00.000Z',
+      }));
+      fsMocks.unlinkSync.mockImplementation(() => {
+        throw new Error('unlink denied');
+      });
+      atomicWriteSyncMock.mockImplementation(() => {
+        throw new Error('write denied');
+      });
+
+      alertable(pty).reconcileModelGateAlert();
+
+      const output = pty.getOutputBuffer().getRecent();
+      expect(output).toContain('/tmp/ctx/state/codex-app-agent/codex-model-gate-alert.json');
+      expect(output).toContain('remove it manually');
+      expect(logEventMock).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        'action',
+        'codex_model_gate_cleared',
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
     it('defers without writing state when Telegram is not bound', () => {
       const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
 
