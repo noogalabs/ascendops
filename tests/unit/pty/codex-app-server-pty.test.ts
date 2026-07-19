@@ -1585,11 +1585,11 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
       expect(sendMessage).toHaveBeenCalledTimes(1);
       const [, text, , options] = sendMessage.mock.calls[0] as [string, string, undefined, { parseMode: null }];
       expect(options).toEqual({ parseMode: null });
-      expect(text).toContain('gpt-5.3-codex');
-      expect(text).toContain('actually running gpt-5.5');
+      expect(text).toContain("requests model 'gpt-5.3-codex'");
+      expect(text).toContain("actually running 'gpt-5.5'");
       expect(text).toContain(`[${safeModels.join(', ')}]`);
       expect(text).toContain('add it to SAFE_MODELS');
-      expect(text).toContain('fix "model" in the agents config.json');
+      expect(text).toContain('fix "model" in the agent\'s config.json');
 
       expect(atomicWriteSyncMock).toHaveBeenCalledTimes(1);
       const [statePath, rawState] = atomicWriteSyncMock.mock.calls[0] as [string, string];
@@ -1729,6 +1729,41 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
 
       expect(reconcile).toHaveBeenCalledTimes(1);
       expect(queueTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('delivers a deferred gated-model alert when the Telegram handle arrives mid-lifecycle', async () => {
+      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
+      (pty as unknown as { _alive: boolean })._alive = true;
+      const sendMessage = bindTelegram(pty);
+
+      await Promise.resolve();
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(atomicWriteSyncMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not re-enter reconciliation when an already-bound live handle is replaced', async () => {
+      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
+      const sendMessage = bindTelegram(pty);
+      alertable(pty).reconcileModelGateAlert();
+      await Promise.resolve();
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      const reconcile = vi.spyOn(alertable(pty), 'reconcileModelGateAlert');
+      (pty as unknown as { _alive: boolean })._alive = true;
+      bindTelegram(pty, sendMessage);
+
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reconcile when a Telegram handle is bound before spawn', () => {
+      const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.3-codex' });
+      const reconcile = vi.spyOn(alertable(pty), 'reconcileModelGateAlert');
+
+      bindTelegram(pty);
+
+      expect(reconcile).not.toHaveBeenCalled();
     });
   });
 

@@ -248,7 +248,7 @@ export class CodexAppServerPTY {
         return;
       }
 
-      const alertText = `MODEL GATE: agent ${this._env.agentName} config.json requests model ${configured}, which is not on the codex SAFE_MODELS allowlist [${SAFE_MODELS.join(', ')}]. It is actually running ${DEFAULT_SAFE_MODEL}. If ${configured} is entitled and intended, add it to SAFE_MODELS in src/pty/codex-app-server-pty.ts, rebuild, and restart the agent. If it is a typo, fix "model" in the agents config.json. This alert will not repeat for this model across restarts; it re-arms when the gate clears or the configured model changes.`;
+      const alertText = `MODEL GATE: agent ${this._env.agentName} config.json requests model '${configured}', which is not on the codex SAFE_MODELS allowlist [${SAFE_MODELS.join(', ')}]. It is actually running '${DEFAULT_SAFE_MODEL}'. If '${configured}' is entitled and intended, add it to SAFE_MODELS in src/pty/codex-app-server-pty.ts, rebuild, and restart the agent. If it is a typo, fix "model" in the agent's config.json. This alert will not repeat for this model across restarts; it re-arms when the gate clears or the configured model changes.`;
       const alertState: ModelGateAlertState = {
         configured_model: configured,
         used_model: DEFAULT_SAFE_MODEL,
@@ -400,8 +400,14 @@ export class CodexAppServerPTY {
   }
 
   setTelegramHandle(api: TelegramAPI, chatId: string): void {
+    const hadHandle = !!this._telegramApi && !!this._chatId;
     this._telegramApi = api;
     this._chatId = chatId;
+    // A model-gate alert deferred at spawn must fire when its handle arrives.
+    // Pre-spawn wiring remains covered by spawn() reconciliation.
+    if (this._alive && !hadHandle) {
+      this.reconcileModelGateAlert();
+    }
   }
 
   private finalizeExit(exitCode: number, signal?: number, reason?: string): void {
