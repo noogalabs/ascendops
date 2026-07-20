@@ -16,6 +16,7 @@ export default defineConfig({
   test: {
     globals: true,
     testTimeout: 10000,
+    globalSetup: ['tests/setup/sandbox-home.global.ts'],
     setupFiles: ['tests/setup/clean-ctx-env.ts'],
     include: [
       'tests/**/*.test.ts',

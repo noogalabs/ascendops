@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { describe, expect, it, vi } from 'vitest';
@@ -320,16 +328,20 @@ describe('Claude preflight', () => {
     expect(existsSync(join(homeDir, '.claude', 'settings.json'))).toBe(false);
   });
 
-  it('creates both Claude config files when they are absent', () => {
+  it('currently fabricates both absent Claude files without logging', () => {
     const homeDir = mkdtempSync(join(tmpdir(), 'claude-preflight-'));
+    const log = vi.fn();
 
-    expect(ensureFolderTrusted('/workspace/new-agent', { homeDir })).toBe(true);
-    expect(ensureBypassPromptSuppressed({ homeDir })).toBe(true);
+    // TODO boundary-phase: absent/unparseable/husk must fail loud, refuse spawn,
+    // and preserve the damaged file instead of fabricating a replacement.
+    expect(ensureFolderTrusted('/workspace/new-agent', { homeDir, log })).toBe(true);
+    expect(ensureBypassPromptSuppressed({ homeDir, log })).toBe(true);
 
     expect(JSON.parse(readFileSync(join(homeDir, '.claude.json'), 'utf8')))
       .toMatchObject({ projects: { '/workspace/new-agent': { hasTrustDialogAccepted: true } } });
     expect(JSON.parse(readFileSync(join(homeDir, '.claude', 'settings.json'), 'utf8')))
       .toMatchObject({ skipDangerousModePermissionPrompt: true });
+    expect(log).not.toHaveBeenCalled();
   });
 
   it('creates or merges folder trust while preserving unrelated values and is idempotent', () => {
@@ -342,7 +354,8 @@ describe('Claude preflight', () => {
     };
     writeFileSync(configPath, JSON.stringify(original, null, 2) + '\n');
 
-    ensureFolderTrusted('/workspace/new-agent', { homeDir });
+    const write = vi.fn((filePath: string, data: string) => writeFileSync(filePath, data));
+    ensureFolderTrusted('/workspace/new-agent', { homeDir, write });
 
     const firstWrite = readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(firstWrite);
@@ -351,10 +364,13 @@ describe('Claude preflight', () => {
     expect(parsed.projects['/existing']).toEqual(original.projects['/existing']);
     expect(parsed.projects['/workspace/new-agent'].hasTrustDialogAccepted).toBe(true);
     expect(firstWrite).toContain('"literal": "KEEP:  a  b"');
+    expect(write).toHaveBeenCalledTimes(1);
 
-    const noOpWrite = vi.fn();
-    ensureFolderTrusted('/workspace/new-agent', { homeDir, write: noOpWrite });
-    expect(noOpWrite).not.toHaveBeenCalled();
+    const fixedTime = new Date('2026-07-19T00:00:00.000Z');
+    utimesSync(configPath, fixedTime, fixedTime);
+    const mtimeBefore = statSync(configPath).mtimeMs;
+    ensureFolderTrusted('/workspace/new-agent', { homeDir });
+    expect(statSync(configPath).mtimeMs).toBe(mtimeBefore);
     expect(readFileSync(configPath, 'utf8')).toBe(firstWrite);
   });
 
@@ -363,22 +379,32 @@ describe('Claude preflight', () => {
     const claudeDir = join(homeDir, '.claude');
     mkdirSync(claudeDir, { recursive: true });
     const settingsPath = join(claudeDir, 'settings.json');
-    const original = { model: 'opus', permissions: { allow: ['Read'] }, literal: 'KEEP:  x  y' };
+    const original = Object.fromEntries(
+      Array.from({ length: 34 }, (_, index) => [`preservedKey${index + 1}`, `value-${index + 1}`]),
+    ) as Record<string, unknown>;
+    original.model = 'opus';
+    original.permissions = { allow: ['Read'] };
+    original.literal = 'KEEP:  x  y';
+    expect(Object.keys(original)).toHaveLength(37);
     writeFileSync(settingsPath, JSON.stringify(original, null, 2) + '\n');
 
-    ensureBypassPromptSuppressed({ homeDir });
+    const write = vi.fn((filePath: string, data: string) => writeFileSync(filePath, data));
+    ensureBypassPromptSuppressed({ homeDir, write });
 
     const firstWrite = readFileSync(settingsPath, 'utf8');
     const parsed = JSON.parse(firstWrite);
-    expect(parsed.model).toBe(original.model);
-    expect(parsed.permissions).toEqual(original.permissions);
-    expect(parsed.literal).toBe(original.literal);
+    for (const [key, value] of Object.entries(original)) {
+      expect(parsed[key]).toEqual(value);
+    }
     expect(parsed.skipDangerousModePermissionPrompt).toBe(true);
     expect(firstWrite).toContain('"literal": "KEEP:  x  y"');
+    expect(write).toHaveBeenCalledTimes(1);
 
-    const noOpWrite = vi.fn();
-    ensureBypassPromptSuppressed({ homeDir, write: noOpWrite });
-    expect(noOpWrite).not.toHaveBeenCalled();
+    const fixedTime = new Date('2026-07-19T00:00:00.000Z');
+    utimesSync(settingsPath, fixedTime, fixedTime);
+    const mtimeBefore = statSync(settingsPath).mtimeMs;
+    ensureBypassPromptSuppressed({ homeDir });
+    expect(statSync(settingsPath).mtimeMs).toBe(mtimeBefore);
     expect(readFileSync(settingsPath, 'utf8')).toBe(firstWrite);
   });
 
@@ -395,15 +421,20 @@ describe('Claude preflight', () => {
     expect(log.mock.calls.map((call) => String(call[0])).join('\n')).toContain('simulated disk failure');
   });
 
-  it('does not overwrite malformed Claude JSON and reports the parse failure', () => {
+  it('does not overwrite either malformed Claude file and reports both parse failures', () => {
     const homeDir = mkdtempSync(join(tmpdir(), 'claude-preflight-'));
     const configPath = join(homeDir, '.claude.json');
+    const settingsPath = join(homeDir, '.claude', 'settings.json');
+    mkdirSync(dirname(settingsPath), { recursive: true });
     writeFileSync(configPath, '{not-json\n');
+    writeFileSync(settingsPath, '{also-not-json\n');
     const log = vi.fn();
 
     expect(ensureFolderTrusted('/workspace/agent', { homeDir, log })).toBe(false);
+    expect(ensureBypassPromptSuppressed({ homeDir, log })).toBe(false);
 
     expect(readFileSync(configPath, 'utf8')).toBe('{not-json\n');
-    expect(log).toHaveBeenCalledTimes(1);
+    expect(readFileSync(settingsPath, 'utf8')).toBe('{also-not-json\n');
+    expect(log).toHaveBeenCalledTimes(2);
   });
 });
