@@ -38,6 +38,57 @@ function stripAnsi(value: string): string {
   return value.replace(ANSI_OSC_RE, '').replace(ANSI_CSI_RE, '');
 }
 
+const TUI_CURSOR_POSITION_RE = /\x1b\[[0-9]+G/;
+const BYPASS_HEADER = 'WARNING:ClaudeCoderunninginBypassPermissionsmode';
+const BYPASS_RESPONSIBILITY = 'Byproceeding,youacceptallresponsibility';
+// The captured gate uses segments 0..10. Three provisional extra segments
+// tolerate measured synthetic drift; a fourth overflows audibly. This is not
+// an Anthropic margin, and widening it increases feature-assembly surface.
+const BYPASS_WINDOW_SEGMENTS = 14;
+const INTERNAL_BYPASS_WARNING_RE =
+  /\[claude-prompt\] unmatched_bypass_gate agent=[^\r\n]+ runtime=claude-code detector=ordered-tui-v1 action=manual-intervention-required\r?\n/g;
+
+function compactTuiText(value: string): string {
+  return stripAnsi(value).replace(/\s+/g, '');
+}
+
+function classifyBypassGate(value: string): {
+  visible: boolean;
+  unmatchedFingerprint: boolean;
+} {
+  // Detector-generated diagnostics must not alter detector input. The warning
+  // remains in OutputBuffer for operators, but cannot shift the bounded TUI window.
+  const detectorInput = value.replace(INTERNAL_BYPASS_WARNING_RE, '');
+  const rawSegments = detectorInput.split(/\r\n|\r|\n/);
+  let unmatchedFingerprint = false;
+
+  for (let headerIndex = 0; headerIndex < rawSegments.length; headerIndex += 1) {
+    const rawHeader = rawSegments[headerIndex];
+    const header = compactTuiText(rawHeader);
+    if (!header.includes(BYPASS_HEADER) || !TUI_CURSOR_POSITION_RE.test(rawHeader)) continue;
+
+    unmatchedFingerprint = true;
+    const window = rawSegments
+      .slice(headerIndex, headerIndex + BYPASS_WINDOW_SEGMENTS)
+      .map(compactTuiText);
+    const responsibilityIndex = window.findIndex((segment) =>
+      segment.includes(BYPASS_RESPONSIBILITY),
+    );
+    if (responsibilityIndex <= 0) continue;
+
+    const selectedNoIndex = window.findIndex(
+      (segment, index) => index > responsibilityIndex && segment === '❯1.Noexit',
+    );
+    if (selectedNoIndex < 0) continue;
+    const acceptOption = window[selectedNoIndex + 1];
+    if (/^2\..+$/.test(acceptOption ?? '')) {
+      return { visible: true, unmatchedFingerprint: false };
+    }
+  }
+
+  return { visible: false, unmatchedFingerprint };
+}
+
 /**
  * Manages a single Claude Code PTY session.
  * Replaces the tmux session management in agent-wrapper.sh.
@@ -59,6 +110,8 @@ export class AgentPTY {
   private promptAnswerSent = false;
   private promptOutputCursor = 0;
   private bypassAnswerCount = 0;
+  private unmatchedBypassSeen = false;
+  private unmatchedBypassWarningSent = false;
 
   constructor(env: CtxEnv, config: AgentConfig, logPath?: string, bootstrapPattern?: string) {
     this.env = env;
@@ -239,6 +292,8 @@ export class AgentPTY {
     this.promptAnswerSent = false;
     this.promptOutputCursor = this.outputBuffer.createSafeCursor();
     this.bypassAnswerCount = 0;
+    this.unmatchedBypassSeen = false;
+    this.unmatchedBypassWarningSent = false;
     if (handlesClaudeTrustPrompts) {
       for (const delayMs of [5000, 8000, 11000, 14000, 20000, 26000, 32000]) {
         const timer = setTimeout(() => {
@@ -248,18 +303,35 @@ export class AgentPTY {
             : this.outputBuffer.getRecentTail(4096);
           const tail = stripAnsi(candidate);
           try {
-            const bypassGateVisible =
-              tail.includes('Yes, I accept') ||
-              tail.includes('running in Bypass Permissions mode');
-            if (bypassGateVisible && effectiveSkip !== false) {
+            const bypassGate = classifyBypassGate(candidate);
+            if (bypassGate.visible && effectiveSkip !== false) {
               if (this.bypassAnswerCount >= 3) return;
               // Bypass Permissions defaults to exit. Move to accept, then confirm.
               this.pty.write('\x1b[B\r');
               this.bypassAnswerCount += 1;
+              this.unmatchedBypassSeen = false;
               this.promptAnswerSent = true;
               this.promptOutputCursor = this.outputBuffer.createSafeCursor();
               return;
             }
+            if (bypassGate.unmatchedFingerprint && effectiveSkip !== false) {
+              if (this.unmatchedBypassSeen && !this.unmatchedBypassWarningSent) {
+                this.unmatchedBypassWarningSent = true;
+                const warning = '[claude-prompt] unmatched_bypass_gate' +
+                  ` agent=${this.env.agentName}` +
+                  ' runtime=claude-code detector=ordered-tui-v1' +
+                  ' action=manual-intervention-required';
+                console.error(warning);
+                // Detector-generated diagnostics must not alter detector input.
+                // Any future diagnostic pushed here must also be excluded or it
+                // restores self-poisoning. Structural follow-up: task_1784554889660_60163313.
+                this.outputBuffer.push(`${warning}\n`);
+              } else {
+                this.unmatchedBypassSeen = true;
+              }
+              return;
+            }
+            this.unmatchedBypassSeen = false;
             const folderTrustVisible =
               tail.includes('Yes, I trust this folder') ||
               tail.includes('trust the files in this folder');

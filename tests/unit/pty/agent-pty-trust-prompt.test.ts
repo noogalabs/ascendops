@@ -10,6 +10,7 @@
 //   4. HermesPTY opts out entirely (no trust prompt in Hermes).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'crypto';
 
 // Hermetic fs: skip secrets.env / agent .env loading.
 vi.mock('fs', async () => {
@@ -28,12 +29,18 @@ const preflightMocks = vi.hoisted(() => ({
   readUnattendedConsent: vi.fn<() => boolean | undefined>(() => undefined),
 }));
 
+const eventMocks = vi.hoisted(() => ({
+  logEvent: vi.fn(),
+}));
+
 vi.mock('../../../src/utils/claude-preflight.js', () => preflightMocks);
+vi.mock('../../../src/bus/event.js', () => eventMocks);
 
 const { AgentPTY } = await import('../../../src/pty/agent-pty.js');
 const { HermesPTY } = await import('../../../src/pty/hermes-pty.js');
 
 import type { AgentConfig, CtxEnv } from '../../../src/types/index';
+import { CLAUDE_BYPASS_GATE_2_1_215 } from '../../fixtures/claude-bypass-gate-2.1.215.js';
 
 const TEST_ENV: CtxEnv = {
   instanceId: 'test',
@@ -45,11 +52,8 @@ const TEST_ENV: CtxEnv = {
   projectRoot: '/tmp/fw',
 };
 
-const REAL_BYPASS_DIALOG =
-  'Claude Code is running in Bypass Permissions mode.\n' +
-  'This mode allows potentially DANGEROUS commands.\n' +
-  '  1. No, exit\n' +
-  '  2. Yes, I accept\n';
+const REAL_BYPASS_DIALOG = CLAUDE_BYPASS_GATE_2_1_215;
+const PARTIAL_BYPASS_DIALOG = CLAUDE_BYPASS_GATE_2_1_215.split('https://')[0];
 const REAL_FOLDER_TRUST_DIALOG =
   'Quick safety check: Is this a project you created or one you trust?\n' +
   '  > 1. Yes, I trust this folder\n' +
@@ -108,9 +112,391 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('AgentPTY trust-prompt auto-accept', () => {
+  it('characterizes the real 2.1.215 gate: only the short matcher survives ANSI stripping', async () => {
+    expect(Buffer.byteLength(CLAUDE_BYPASS_GATE_2_1_215)).toBe(779);
+    expect(createHash('sha256').update(CLAUDE_BYPASS_GATE_2_1_215).digest('hex'))
+      .toBe('03ab7f01d0f7d44322da0f8368d7f85e2593b7439bc247de8c1c6472077bf55b');
+    const stripped = CLAUDE_BYPASS_GATE_2_1_215
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+    expect(stripped.includes('running in Bypass Permissions mode')).toBe(false);
+    expect(stripped.includes('Yes, I accept')).toBe(true);
+
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData(CLAUDE_BYPASS_GATE_2_1_215);
+    vi.advanceTimersByTime(5000);
+
+    expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual(['\x1b[B\r']);
+  });
+
+  it('recognizes the real gate after Anthropic retitles the accept option', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+    const retitled = CLAUDE_BYPASS_GATE_2_1_215
+      .replace('Yes, I accept', 'Proceed anyway')
+      .replace('Enter to confirm · Esc to cancel', 'Press Return');
+    expect(retitled).not.toContain('Yes, I accept');
+    expect(retitled).not.toContain('Enter to confirm');
+    handle.emitData(retitled);
+    vi.advanceTimersByTime(5000);
+
+    expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual(['\x1b[B\r']);
+  });
+
+  it('does not navigate when No is not the active selection', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const unselected = CLAUDE_BYPASS_GATE_2_1_215.replace('❯ 1. No', '  1. No');
+    expect(unselected).not.toContain('❯ 1. No');
+    handle.emitData(unselected);
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send another key when a rerender already selects option 2', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData(CLAUDE_BYPASS_GATE_2_1_215);
+    vi.advanceTimersByTime(5000);
+
+    const selectedAccept = CLAUDE_BYPASS_GATE_2_1_215
+      .replace('❯ 1. No', '  1. No')
+      .replace(' 2. Yes', ' ❯ 2. Yes');
+    expect(selectedAccept).not.toContain('❯ 1. No');
+    expect(selectedAccept).toContain('❯ 2. Yes');
+    handle.emitData(selectedAccept);
+    vi.advanceTimersByTime(6000);
+
+    expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual(['\x1b[B\r']);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect((pty as unknown as { bypassAnswerCount: number }).bypassAnswerCount).toBe(1);
+  });
+
+  it('does not navigate when the adjacent option 2 label is empty', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const emptyAccept = CLAUDE_BYPASS_GATE_2_1_215.replace('2. Yes, I accept', '2. ');
+    expect(emptyAccept).not.toContain('2. Yes, I accept');
+    handle.emitData(emptyAccept);
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not navigate when option rows are out of order', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const segments = CLAUDE_BYPASS_GATE_2_1_215.split('\r');
+    const noIndex = segments.findIndex((segment) => segment.includes('1. No'));
+    const acceptIndex = segments.findIndex((segment) => segment.includes('2. Yes'));
+    expect(acceptIndex).toBe(noIndex + 1);
+    [segments[noIndex], segments[acceptIndex]] = [segments[acceptIndex], segments[noIndex]];
+    handle.emitData(segments.join('\r'));
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat stripped byte-real replay as a live TUI gate', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('continue', 'resume');
+    const strippedReplay = CLAUDE_BYPASS_GATE_2_1_215
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+    handle.emitData(strippedReplay);
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('does not bag-match cursor-positioned prose with header words out of order', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('continue', 'resume');
+    handle.emitData(
+      '\x1b[1GWARNING: Bypass Permissions in Claude Code running mode\r' +
+      'By proceeding, you accept all responsibility\r' +
+      '❯ 1. No exit\r' +
+      '2. Continue\r',
+    );
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('does not accept responsibility text collapsed into the header segment', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const segments = CLAUDE_BYPASS_GATE_2_1_215.split('\r');
+    const responsibilityIndex = segments.findIndex((segment) =>
+      segment.includes('responsibility'),
+    );
+    segments[0] += segments[responsibilityIndex];
+    segments.splice(responsibilityIndex, 1);
+    handle.emitData(segments.join('\r'));
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns without navigating when the responsibility copy drifts', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const reworded = CLAUDE_BYPASS_GATE_2_1_215.replace('responsibility', 'accountability');
+    expect(reworded).not.toContain('responsibility');
+    handle.emitData(reworded);
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('remains silent when the warning header copy drifts', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const reworded = CLAUDE_BYPASS_GATE_2_1_215.replace('WARNING', 'CAUTION');
+    expect(reworded).not.toContain('WARNING');
+    handle.emitData(reworded);
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('accepts option rows within the three-segment provisional gate margin', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const segments = CLAUDE_BYPASS_GATE_2_1_215.split('\r');
+    const noIndex = segments.findIndex((segment) => segment.includes('1. No'));
+    segments.splice(noIndex, 0, 'filler', 'filler', 'filler');
+    handle.emitData(segments.join('\r'));
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual(['\x1b[B\r']);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('warns without navigating when option rows exceed the provisional gate margin', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const segments = CLAUDE_BYPASS_GATE_2_1_215.split('\r');
+    const noIndex = segments.findIndex((segment) => segment.includes('1. No'));
+    segments.splice(noIndex, 0, 'filler', 'filler', 'filler', 'filler');
+    handle.emitData(segments.join('\r'));
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns exactly once without sending keys when a bypass gate remains unmatched', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData(PARTIAL_BYPASS_DIALOG);
+    vi.advanceTimersByTime(8000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('unmatched_bypass_gate'));
+    expect(error.mock.calls[0][0]).not.toContain('responsibility');
+    expect(error.mock.calls[0][0]).not.toContain('Bypass Permissions');
+    const internal = pty as unknown as { outputBuffer: { getRecent(): string } };
+    expect(internal.outputBuffer.getRecent()).toContain('unmatched_bypass_gate');
+  });
+
+  it('does not route unmatched-gate warnings through heartbeat-minting events', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData(PARTIAL_BYPASS_DIALOG);
+    vi.advanceTimersByTime(8000);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(eventMocks.logEvent).not.toHaveBeenCalled();
+  });
+
+  it('recognizes delayed option rows after its own unmatched warning is buffered', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const [prefix, suffix] = CLAUDE_BYPASS_GATE_2_1_215.split('https://');
+    handle.emitData(prefix);
+    vi.advanceTimersByTime(8000);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(handle.fake.write).not.toHaveBeenCalled();
+
+    handle.emitData(`https://${suffix}`);
+    vi.advanceTimersByTime(3000);
+
+    expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual(['\x1b[B\r']);
+  });
+
+  it('keeps near-match internal diagnostics in the bounded classifier window', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    const [prefix, suffix] = CLAUDE_BYPASS_GATE_2_1_215.split('https://');
+    const nearMatch =
+      '[claude-prompt] unmatched_bypass_gate agent=test-agent runtime=claude-code' +
+      ' detector=ordered-tui-v2 action=manual-intervention-required\n';
+    handle.emitData(prefix + nearMatch.repeat(4));
+    vi.advanceTimersByTime(8000);
+    expect(error).toHaveBeenCalledTimes(1);
+
+    handle.emitData(`https://${suffix}`);
+    vi.advanceTimersByTime(3000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn when a partial gate becomes actionable by the next retry', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData(PARTIAL_BYPASS_DIALOG);
+    vi.advanceTimersByTime(5000);
+    handle.emitData(CLAUDE_BYPASS_GATE_2_1_215.replace('Yes, I accept', 'Proceed anyway'));
+    vi.advanceTimersByTime(3000);
+
+    expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual(['\x1b[B\r']);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'We should Bypass that slow cache while the session starts.\n',
+    'I accept responsibility for reviewing the migration.\n',
+    'The Bypass Permissions design assigns responsibility to the operator.\n',
+  ])('does not type or warn on ordinary output: %s', async (ordinaryOutput) => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData(ordinaryOutput);
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('does not type into a resumed REPL that quotes the current accept label', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('continue', 'resume');
+    handle.emitData(
+      'Earlier we found that the Bypass Permissions prompt contains the option "Yes, I accept".\n',
+    );
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('does not type into a resumed REPL whose prose contains the retitle fallback tokens', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('continue', 'resume');
+    handle.emitData(
+      'Previous transcript: The Bypass Permissions safeguard assigns responsibility to the operator.\n' +
+      'Troubleshooting checklist: 1. inspect the logs. 2. continue the session. Press Enter to confirm the command.\n',
+    );
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('does not combine fallback tokens from separate ordinary-output chunks', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData('Documentation mentions Bypass Permissions and operator responsibility.\n');
+    handle.emitData('Checklist: 1. inspect output. 2. continue. Press Enter to confirm.\n');
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('does not warn on resumed transcript discussion of an unmatched bypass gate', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('continue', 'resume');
+    handle.emitData(
+      'WARNING: our Bypass Permissions detector must surface responsibility without false alerts.\n',
+    );
+    vi.advanceTimersByTime(32000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('re-arms the unmatched warning only for a new PTY lifecycle', async () => {
+    const first = makeFakePty();
+    const pty = newAgentPty(first);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await pty.spawn('fresh', 'first');
+    first.emitData(PARTIAL_BYPASS_DIALOG);
+    vi.advanceTimersByTime(32000);
+    expect(error).toHaveBeenCalledTimes(1);
+    first.emitExit(0);
+
+    const second = makeFakePty();
+    (pty as unknown as { spawnFn: unknown }).spawnFn = vi.fn(() => second.fake);
+    await pty.spawn('fresh', 'second');
+    second.emitData(PARTIAL_BYPASS_DIALOG);
+    vi.advanceTimersByTime(8000);
+
+    expect(first.fake.write).not.toHaveBeenCalled();
+    expect(second.fake.write).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     { label: 'declined record', record: false, config: {}, flag: false, bypassWrite: false },
     { label: 'accepted record', record: true, config: {}, flag: true, bypassWrite: true },
@@ -265,7 +651,7 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     const pty = newAgentPty(handle);
     await pty.spawn('fresh', 'hello');
 
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(5000);
     handle.emitData('Session restored. Ready for input.\n');
     vi.advanceTimersByTime(27000);
@@ -278,7 +664,7 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     const pty = newAgentPty(handle);
     await pty.spawn('fresh', 'hello');
 
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(5000);
     handle.emitData(REAL_FOLDER_TRUST_DIALOG);
     vi.advanceTimersByTime(3000);
@@ -294,9 +680,9 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     const pty = newAgentPty(handle);
     await pty.spawn('fresh', 'hello');
 
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(5000);
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(3000);
 
     expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual([
@@ -337,13 +723,13 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     const pty = newAgentPty(handle);
     await pty.spawn('fresh', 'hello');
 
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(5000);
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(3000);
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(3000);
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(21000);
 
     expect(handle.fake.write.mock.calls.map((call) => call[0])).toEqual([
@@ -358,7 +744,7 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     const pty = newAgentPty(handle);
     await pty.spawn('fresh', 'hello');
 
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(5000);
     handle.emitData('x'.repeat(5000));
     vi.advanceTimersByTime(27000);
@@ -371,7 +757,7 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     const pty = newAgentPty(handle);
     await pty.spawn('fresh', 'hello');
 
-    handle.emitData('Byp\x1b[1mass\x1b[0m Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(5000);
 
     expect(handle.fake.write).toHaveBeenCalledWith('\x1b[B\r');
@@ -436,7 +822,7 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     await pty.spawn('fresh', 'hello');
 
     vi.advanceTimersByTime(16000);
-    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData(REAL_BYPASS_DIALOG);
     vi.advanceTimersByTime(4000);
 
     expect(handle.fake.write).toHaveBeenCalledWith('\x1b[B\r');

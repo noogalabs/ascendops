@@ -1,0 +1,14 @@
+/**
+ * Byte-exact Claude Code 2.1.215 Bypass Permissions gate captured from a real
+ * PTY under a throwaway CLAUDE_CONFIG_DIR on 2026-07-20. With the production
+ * ANSI stripper, the long matcher is false and the short "Yes, I accept"
+ * matcher is true. SHA-256 of the decoded 779 bytes:
+ * 03ab7f01d0f7d44322da0f8368d7f85e2593b7439bc247de8c1c6472077bf55b
+ * WARNING: these are live detector trigger bytes. Emitting them during the
+ * startup window may cause a key write: an output-only detector cannot
+ * distinguish this byte-exact fixture replay from the rendered gate.
+ */
+export const CLAUDE_BYPASS_GATE_2_1_215 = Buffer.from(
+  'IFdBUk5JTkc6G1sxMkdDbGF1ZGUgQ29kZRtbMjRHcnVubmluZxtbMzJHaW4bWzM1R0J5cGFzcxtbNDJHUGVybWlzc2lvbnMbWzU0R21vZGUNG1sxQxtbMkIgSW4gQnlwYXNzIFBlcm1pc3Npb25zIG1vZGUsIENsYXVkZSBDb2RlG1s0M0d3aWxsG1s0OEdub3QbWzUyR2FzaxtbNTZHZm9yG1s2MEd5b3VyG1s2NUdhcHByb3ZhbA0bWzJDG1sxQmJlZm9yZRtbMTBHcnVubmluZxtbMThHcG90ZW50aWFsbHkbWzMwR2Rhbmdlcm91cxtbNDBHY29tbWFuZHMuDRtbMUMbWzFCIFRoaXMbWzhHbW9kG1sxMkcgc2hvdWxkIG9ubHkbWzI1R2JlIHVzZWQgaW4gYSBzYW5kYm94ZWQgY29udGFpbmVyL1ZNIHRoYXQgaGFzG1s3MEcbW0sNG1sxQxtbMUIgcmVzdHJpY3RlZBtbMTRHaW50ZXJuZXQgYWNjZXNzG1szMEdhbmQgG1szNUdhbiBlYXNpbHkgYmUgcmVzdG9yZWQgaWYgZGFtYWcbWzY2R2QuG1tLDRtbMUMbWzFCG1tLDRtbMkMbWzFCQnkbWzZHcHJvY2VlZGluZywbWzE4R3lvdRtbMjJHYWNjZXB0G1syOUdhbGwbWzMzR3Jlc3BvbnNpYmlsaXR5G1s0OEdmb3IbWzUyR2FjdGlvbnMbWzYwR3Rha2VuG1s2Nkd3aGlsZRtbNzJHcnVubmluZw0bWzFDG1sxQiBpbiBCeXBhc3MgUGVybWlzc2lvbnMbWzI1R20bWzI3R2RlLhtbSw0bWzFDG1syQiBodHRwczovL2NvZGUuY2xhdWRlLmNvbS9kb2NzL2VuL3NlY3VyaXR5DRtbMUMbWzJCIOKdryAxLiBObxtbMTJHZXhpdBtbSw0bWzNDG1sxQiAyLiBZZXMsIEkgYWNjZXB0DRtbMUMbWzJCIEVudGVyIHRvIGNvbmZpcm0gwrcgRXNjIHRvIGNhbmNlbA0=',
+  'base64',
+).toString('utf8');
