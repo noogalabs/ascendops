@@ -437,7 +437,10 @@ def fetch_apify_actor(actor_id, input_payload):
         raise ValueError("APIFY_TOKEN not set")
     try:
         result = subprocess.run(
-            ["apify", "call", actor_id, "--json", "--no-open-browser"],
+            [
+                "apify", "call", actor_id, "--json", "--no-open-browser",
+                "--timeout", "30"
+            ],
             input=json.dumps(input_payload),
             capture_output=True, text=True,
             env={**os.environ, "APIFY_TOKEN": token},
