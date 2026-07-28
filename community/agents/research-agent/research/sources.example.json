@@ -71,12 +71,18 @@
       "enabled": false,
       "actor": "fastdata~twitter-scraper",
       "search_actor": "xquik~x-tweet-scraper",
+      "follower_actor": "xquik~x-follower-scraper",
       "handles": [],
       "max_tweets_per_handle": 5,
       "since_days": 7,
       "search_enabled": false,
       "search_terms": [],
-      "max_results_per_search": 5
+      "max_results_per_search": 5,
+      "audience_enabled": false,
+      "audience_relations": ["followers"],
+      "max_audience_items": 20,
+      "max_audience_items_per_target": 10,
+      "audience_overlap_mode": false
     },
     "tiktok": {
       "enabled": false,
