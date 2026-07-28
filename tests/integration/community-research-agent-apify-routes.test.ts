@@ -11,6 +11,7 @@ describe('community research agent Apify routes', () => {
       read('community/agents/research-agent/research/sources.example.json'),
     ) as {
       apify_social: {
+        _note: string;
         x: {
           actor: string;
           search_actor: string;
@@ -23,6 +24,7 @@ describe('community research agent Apify routes', () => {
     };
     const x = sources.apify_social.x;
 
+    expect(sources.apify_social._note).toContain('process environment');
     expect(x.actor).toBe('fastdata~twitter-scraper');
     expect(x.search_actor).toBe('xquik~x-tweet-scraper');
     expect(x.follower_actor).toBe('xquik~x-follower-scraper');

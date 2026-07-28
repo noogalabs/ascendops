@@ -56,7 +56,7 @@
   ],
   "apify_social": {
     "enabled": false,
-    "_note": "Set enabled true and add APIFY_TOKEN to .env before using. Requires Apify account and may incur cost.",
+    "_note": "Set enabled true and provide APIFY_TOKEN through the process environment before using. Requires an Apify account and may incur cost.",
     "instagram": {
       "enabled": false,
       "actor": "apify~instagram-api-scraper",
