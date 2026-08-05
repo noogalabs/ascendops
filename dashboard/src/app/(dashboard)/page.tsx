@@ -14,6 +14,7 @@ import { LiveActivity } from '@/components/overview/live-activity';
 import { SystemHealth } from '@/components/overview/system-health';
 import { MetricCards } from '@/components/overview/metric-cards';
 import { AgentStatusGrid } from '@/components/overview/agent-status-grid';
+import { AutoRefresh } from '@/components/overview/auto-refresh';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,6 +68,7 @@ export default async function OverviewPage({
 
   return (
     <div className="space-y-6">
+      <AutoRefresh />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

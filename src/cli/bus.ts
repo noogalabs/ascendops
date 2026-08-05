@@ -875,7 +875,7 @@ busCommand
     }
 
     for (const hb of heartbeats) {
-      const stale = new Date(hb.last_heartbeat) < new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const stale = new Date(hb.last_heartbeat) < new Date(Date.now() - 5 * 60 * 60 * 1000);
       const staleFlag = stale ? ' [STALE]' : '';
       const label = hb.display_name ? `${hb.display_name} (${hb.agent})` : hb.agent;
       console.log(`${label} (${hb.org}) — ${hb.status}${staleFlag} — last seen ${hb.last_heartbeat}`);

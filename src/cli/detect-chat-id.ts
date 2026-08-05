@@ -291,7 +291,10 @@ async function detectChatId(opts: DetectOptions): Promise<void> {
     }
 
     const chatId = String(user.chatId);
-    // The daemon accepts numeric Telegram user IDs, never @usernames.
+    // ALLOWED_USER must be the NUMERIC Telegram user id — the daemon rejects a
+    // non-numeric value ("must be a comma-separated list of numeric Telegram
+    // user IDs") and silently refuses to enable Telegram. Never write the
+    // @username here; keep it only for the human-readable display name.
     const allowedUser = String(user.fromId);
     const displayName = user.firstName || user.username || `id ${user.fromId}`;
 
