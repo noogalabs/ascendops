@@ -28,10 +28,59 @@ jobs:
           bash tests/leak-guard-adversarial.test.sh
 
       - name: Scan full pull-request diff
-        run: >-
-          bash .github/scripts/leak-guard.sh --diff
-          "${{ github.event.pull_request.base.sha }}"
-          "${{ github.event.pull_request.head.sha }}"
+        run: |
+          set -o pipefail
+          # BEGIN leak-guard-subject-filter
+          # Only content-bearing blob and symlink modes are scanner subjects.
+          # Gitlinks are tracked commit references, not file content.
+          filter_scannable_changed_subjects() {
+            local ref="$1" f mode staged
+            staged=$(mktemp "${RUNNER_TEMP:-/tmp}/leak-guard-changed.XXXXXX")
+            while IFS= read -r -d '' f; do
+              if ! mode=$(git ls-tree --format='%(objectmode)' "$ref" -- "$f") || [ -z "$mode" ]; then
+                rm -f "$staged"
+                echo "::error::Unable to resolve changed scan subject in $ref: $f" >&2
+                return 2
+              fi
+              case "$mode" in
+                100644|100755|120000) printf '%s\0' "$f" >> "$staged" ;;
+              esac
+            done
+            cat "$staged"
+            rm -f "$staged"
+          }
+          list_scannable_tree_subjects() {
+            local ref="$1" entry mode path tree_list staged
+            tree_list=$(mktemp "${RUNNER_TEMP:-/tmp}/leak-guard-tree.XXXXXX")
+            staged=$(mktemp "${RUNNER_TEMP:-/tmp}/leak-guard-subjects.XXXXXX")
+            if ! git ls-tree -r -z "$ref" > "$tree_list"; then
+              rm -f "$tree_list" "$staged"
+              echo "::error::Unable to enumerate scan subjects in tree $ref" >&2
+              return 2
+            fi
+            while IFS= read -r -d '' entry; do
+              mode=${entry%% *}
+              path=${entry#*$'\t'}
+              case "$mode" in
+                100644|100755|120000) printf '%s\0' "$path" >> "$staged" ;;
+              esac
+            done < "$tree_list"
+            cat "$staged"
+            rm -f "$tree_list" "$staged"
+          }
+          # END leak-guard-subject-filter
+
+          subjects=$(mktemp "${RUNNER_TEMP:-/tmp}/leak-guard-pr-subjects.XXXXXX")
+          git diff --name-only -z --diff-filter=ACMRTUXB \
+            "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+            | filter_scannable_changed_subjects "${{ github.event.pull_request.head.sha }}" \
+            > "$subjects"
+          list_scannable_tree_subjects "${{ github.event.pull_request.head.sha }}" > /dev/null
+          rm -f "$subjects"
+
+          bash .github/scripts/leak-guard.sh --diff \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
 
   scope-reconcile:
     name: Scope Reconcile

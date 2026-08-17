@@ -138,10 +138,26 @@ ROSTER_NAME_HASHES = {
     "ab0fcec08e18a7bccda1e81df4974e3434fcd36000518f7e776fb85495b5a494",
 }
 PIPE_ROW = re.compile(r"^[ \t]*\|")
-CADENCE_EXPR = re.compile(
+MACHINE_CADENCE_EXPR = re.compile(
     r"heartbeat\(\d|pr-monitor\(\d|\(\d+ [\d*]+ \* \* |"
     r"(?:^|[^\d*,/-])[\d*][\d*,/-]* [\d*][\d*,/-]* [\d*][\d*,/-]* "
     r"[\d*][\d*,/-]* [\d*][\d*,/-]*(?:[^\d*,/-]|$)"
+)
+ROSTER_MARKERS = ("morning-review", "evening-review", "human-task-sweep")
+DAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tues|tue|weds|wed|thurs|thur|thu|fri|sat|sun)"
+FULL_DAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+UNIT = r"(?:weekdays?|weekends?|hours?|days?|nights?|mornings?|afternoons?|evenings?|weeks?|months?|quarters?|years?)"
+INTERVAL = r"(?:hourly|daily|nightly|weekly|biweekly|fortnightly|semimonthly|monthly|quarterly|yearly|annually)"
+COUNT = r"(?:\d+|other|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+DAY_SET = rf"(?:{FULL_DAY}s|{DAY}\s*[,/]\s*{DAY}(?:\s*[,/]\s*{DAY})*|{DAY}\s+and\s+{DAY})"
+RECURRENCE = re.compile(
+    rf"(?<![a-z0-9-])(?:{INTERVAL}|(?:every|each)\s+(?:{COUNT}\s+)?(?:{UNIT}|{DAY})|"
+    rf"weekdays?|weekends?|{DAY}\s*-\s*{DAY}|{DAY_SET})(?![a-z0-9-])",
+    re.IGNORECASE,
+)
+CLOCK = re.compile(
+    r"(?:(?:0?[1-9]|1[0-2])\s?(?:am|pm)|(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?(?:am|pm))?)(?![A-Za-z0-9])",
+    re.IGNORECASE,
 )
 FORMATTED_PHONE = re.compile(
     r"(?<!\d)(?P<value>(?:\+?1[ .-]?)?(?:\([2-9]\d{2}\)|[2-9]\d{2})[ .-]\d{3}[ .-]\d{4})(?!\d)"
@@ -284,6 +300,56 @@ def is_test_path(path: str) -> bool:
     )
 
 
+def has_roster_name(text: str) -> bool:
+    identifiers = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", text.lower())
+    return any(
+        hashlib.sha256(identifier.encode()).hexdigest() in ROSTER_NAME_HASHES
+        for identifier in identifiers
+    )
+
+
+def has_natural_cadence(text: str) -> bool:
+    lowered = text.lower()
+    for recurrence in RECURRENCE.finditer(lowered):
+        tail = lowered[recurrence.end():]
+        at_match = re.match(r"[^|]*\bat\s+", tail)
+        if at_match and CLOCK.match(tail, at_match.end()):
+            return True
+    return False
+
+
+def has_bare_marker(text: str) -> bool:
+    lowered = text.lower()
+    for marker in ROSTER_MARKERS:
+        for match in re.finditer(re.escape(marker), lowered):
+            before = lowered[match.start() - 1] if match.start() else ""
+            after = lowered[match.end()] if match.end() < len(lowered) else ""
+            if before and (before.isalnum() or before in "_-"):
+                continue
+            if after and (after.isalnum() or after in "_-"):
+                continue
+            # Only a genuine /marker/ path segment is exempt. A leading slash
+            # without a trailing slash is still a cadence token.
+            if before == "/" and after == "/":
+                continue
+            return True
+    return False
+
+
+def has_single_line_cadence(text: str) -> bool:
+    return (
+        MACHINE_CADENCE_EXPR.search(text.lower()) is not None
+        or has_bare_marker(text)
+        or has_natural_cadence(text)
+    )
+
+
+def has_window_cadence(text: str) -> bool:
+    # Bare skill markers are intentionally excluded from proximity matching:
+    # near a roster row they are normally an inventory, not a schedule.
+    return MACHINE_CADENCE_EXPR.search(text.lower()) is not None or has_natural_cadence(text)
+
+
 def fail(message: str, code: int = 2) -> "None":
     print(f"leak-guard: ERROR: {message}", file=sys.stderr)
     raise SystemExit(code)
@@ -350,7 +416,12 @@ def file_lines(path: str) -> list[tuple[int, str]]:
     return list(enumerate(data.decode("utf-8", errors="replace").splitlines(), start=1))
 
 
-def scan(path: str, lines: list[tuple[int, str]]) -> list[tuple[str, int, str, str]]:
+def scan(
+    path: str,
+    lines: list[tuple[int, str]],
+    *,
+    symlink_target: bool = False,
+) -> list[tuple[str, int, str, str]]:
     hits: list[tuple[str, int, str, str]] = []
     normalized = path.replace(os.sep, "/")
     basename = normalized.rsplit("/", 1)[-1]
@@ -370,19 +441,22 @@ def scan(path: str, lines: list[tuple[int, str]]) -> list[tuple[str, int, str, s
         for match in OPERATOR_HOME.finditer(text):
             username_hash = hashlib.sha256(match.group(1).lower().encode()).hexdigest()
             if username_hash in OPERATOR_USER_HASHES:
-                hits.append((path, line_number, "pii", "operator home path"))
-        if not is_test_path(path) and ROSTER_CRON_ROW.search(text):
+                reason = "operator home path in symlink target" if symlink_target else "operator home path"
+                hits.append((path, line_number, "pii", reason))
+        if (
+            not is_test_path(path)
+            and has_roster_name(text)
+            and has_single_line_cadence(text)
+        ):
             hits.append((path, line_number, "internal", "agent roster and cron schedule"))
             roster_cron_hit = True
         # Windowed scanning is intentionally limited to table rows. In --diff
         # mode it sees only added lines, so a new name beside a pre-existing
         # cadence row can be missed; --tree scans have no such gap.
         if not is_test_path(path) and PIPE_ROW.search(text):
-            lowered = text.lower()
-            identifiers = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", lowered)
-            if any(hashlib.sha256(identifier.encode()).hexdigest() in ROSTER_NAME_HASHES for identifier in identifiers):
+            if has_roster_name(text):
                 last_name_line = line_number
-            if CADENCE_EXPR.search(lowered):
+            if has_window_cadence(text):
                 last_cron_line = line_number
             if (
                 last_name_line is not None
@@ -433,21 +507,39 @@ def usage() -> "None":
 
 args = sys.argv[1:]
 if not args:
-    usage()
+    fail("no files to scan; pass files explicitly, or use --tree [ref]", 2)
 
-targets: list[tuple[str, list[tuple[int, str]]]] = []
+targets: list[tuple[str, list[tuple[int, str]], bool]] = []
 if args[0] == "--diff":
     if len(args) != 3:
         usage()
     base, head = args[1], args[2]
     for path in changed_paths(base, head):
-        targets.append((path, added_lines(base, head, path)))
+        targets.append((path, added_lines(base, head, path), False))
 elif args[0] == "--tree":
-    if len(args) != 2:
-        usage()
-    ref = args[1]
-    raw = git("ls-tree", "-r", "-z", ref, binary=True)
-    assert isinstance(raw, bytes)
+    if len(args) > 2:
+        unexpected = "\n".join(f"  {arg}" for arg in args[2:])
+        fail(f"unexpected argument(s) after optional --tree ref:\n{unexpected}\n  usage: leak-guard.sh --tree [ref]", 2)
+    ref = args[1] if len(args) == 2 else "HEAD"
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{tree}}"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if resolved.returncode:
+        fail(f"unable to resolve tree ref: {ref}", 2)
+    tree_oid = resolved.stdout.strip()
+    enumerated = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", tree_oid],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if enumerated.returncode:
+        fail(f"unable to enumerate tree ref: {ref}", 2)
+    raw = enumerated.stdout
     for item in raw.split(b"\0"):
         if not item:
             continue
@@ -455,24 +547,42 @@ elif args[0] == "--tree":
         if not separator:
             fail(f"unexpected git ls-tree record: {item!r}")
         fields = metadata.split()
-        if len(fields) != 3 or fields[1] != b"blob":
+        if len(fields) != 3 or fields[0] not in {b"100644", b"100755", b"120000"}:
             continue
+        mode = fields[0]
         path = raw_path.decode("utf-8", errors="surrogateescape")
-        content = git("show", f"{ref}:{path}", binary=True)
+        content = git("show", f"{tree_oid}:{path}", binary=True)
         assert isinstance(content, bytes)
         lines = [(0, "__BINARY_CONTENT__")] if b"\0" in content else list(
             enumerate(content.decode("utf-8", errors="replace").splitlines(), start=1)
         )
-        targets.append((path, lines))
+        targets.append((path, lines, mode == b"120000"))
 elif args[0].startswith("-"):
     usage()
 else:
+    invalid: list[str] = []
     for path in args:
-        targets.append((path, file_lines(path)))
+        subject = Path(path)
+        if not os.path.lexists(path):
+            invalid.append(f"{path} (missing)")
+        elif subject.is_dir():
+            invalid.append(f"{path} (directory; pass files explicitly, or use --tree)")
+        else:
+            try:
+                mode = subject.stat().st_mode
+            except OSError:
+                invalid.append(f"{path} (unreadable file)")
+                continue
+            if mode & 0o444 == 0 or not os.access(path, os.R_OK):
+                invalid.append(f"{path} (unreadable file)")
+    if invalid:
+        fail("invalid scan subject(s):\n" + "\n".join(f"  {entry}" for entry in invalid), 2)
+    for path in args:
+        targets.append((path, file_lines(path), Path(path).is_symlink()))
 
 all_hits: list[tuple[str, int, str, str]] = []
-for path, lines in targets:
-    all_hits.extend(scan(path, lines))
+for path, lines, symlink_target in targets:
+    all_hits.extend(scan(path, lines, symlink_target=symlink_target))
 
 if all_hits:
     print(f"leak-guard: FAIL, {len(all_hits)} potential leak(s) found", file=sys.stderr)

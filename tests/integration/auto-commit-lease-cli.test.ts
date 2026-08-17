@@ -26,7 +26,7 @@ describeBuilt('auto-commit lease CLI', () => {
       }));
     }
     execFileSync('git', ['init'], { cwd: frameworkRoot, stdio: 'pipe' });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: frameworkRoot });
+    execFileSync('git', ['config', 'user.email', 'test.invalid'], { cwd: frameworkRoot });
     execFileSync('git', ['config', 'user.name', 'Test'], { cwd: frameworkRoot });
     writeFileSync(join(frameworkRoot, '.gitkeep'), '');
     execFileSync('git', ['add', '.gitkeep', 'orgs'], { cwd: frameworkRoot });

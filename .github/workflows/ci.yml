@@ -72,6 +72,9 @@ jobs:
       - name: Run SSN python parity tests (corpus + set/label drift-guards)
         run: python3 knowledge-base/scripts/test_scrub_ssn.py
 
+      - name: Run shared-ingest privacy-wall tests
+        run: python3 knowledge-base/scripts/test_privacy_wall.py
+
       - name: Run JS↔python SSN differential parity fuzz
         run: npx tsx scripts/ssn-parity-fuzz.ts
 

@@ -139,7 +139,7 @@ function makeActivationFixture(kind: 'ordinary' | 'shared-symlink' | 'cross-agen
   }, null, 2));
   execFileSync('git', ['-C', frameworkRoot, 'add', source, registry]);
   execFileSync('git', [
-    '-C', frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+    '-C', frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture.invalid',
     'commit', '-qm', 'fixture source and registry',
   ]);
   if (kind === 'ordinary') {
@@ -299,7 +299,7 @@ describe('forge-register activate fanout safety', () => {
     writeFileSync(fixture.registry, JSON.stringify(parsed, null, 2));
     execFileSync('git', ['-C', fixture.frameworkRoot, 'add', fixture.registry]);
     execFileSync('git', [
-      '-C', fixture.frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+      '-C', fixture.frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture.invalid',
       'commit', '-qm', 'reviewed registry count drift',
     ]);
     const before = readFileSync(join(fixture.alphaRuntime, 'stage-test-skill', 'SKILL.md'), 'utf8');
@@ -407,7 +407,7 @@ describe('forge-register activate fanout safety', () => {
     execFileSync('git', ['init', '-q', outsideRepo]);
     execFileSync('git', ['-C', outsideRepo, 'add', '.']);
     execFileSync('git', [
-      '-C', outsideRepo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+      '-C', outsideRepo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture.invalid',
       'commit', '-qm', 'outside reviewed source',
     ]);
     rmSync(fixture.source, { recursive: true });

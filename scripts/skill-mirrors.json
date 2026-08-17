@@ -2,6 +2,8 @@
   {
     "skill": "trending-repo-scout",
     "canonical": "templates/agent/.claude/skills/trending-repo-scout",
+    "expectedPopulation": 3,
+    "expectedTrackedPopulation": 3,
     "mirrors": [
       "templates/agent-codex/plugins/cortextos-agent-skills/skills/trending-repo-scout",
       "templates/m2c1-worker/.claude/skills/trending-repo-scout"
@@ -11,6 +13,8 @@
   {
     "skill": "framework-upstream-auto-update",
     "canonical": "templates/agent/.claude/skills/framework-upstream-auto-update",
+    "expectedPopulation": 4,
+    "expectedTrackedPopulation": 1,
     "mirrors": [
       "templates/maintenance-coordinator/.claude/skills/framework-upstream-auto-update",
       "templates/leasing-coordinator/.claude/skills/framework-upstream-auto-update",
@@ -21,6 +25,8 @@
   {
     "skill": "agent-management",
     "canonical": "templates/agent/.claude/skills/agent-management",
+    "expectedPopulation": 9,
+    "expectedTrackedPopulation": 8,
     "mirrors": [
       "templates/analyst/.claude/skills/agent-management",
       "templates/leasing-coordinator/.claude/skills/agent-management",
@@ -36,6 +42,8 @@
   {
     "skill": "onboarding-static",
     "canonical": "community/agents/research-agent/.claude/skills/onboarding",
+    "expectedPopulation": 2,
+    "expectedTrackedPopulation": 2,
     "mirrors": [
       "community/agents/security/.claude/skills/onboarding"
     ],
