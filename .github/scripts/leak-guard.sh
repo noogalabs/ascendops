@@ -144,6 +144,12 @@ MACHINE_CADENCE_EXPR = re.compile(
     r"[\d*][\d*,/-]* [\d*][\d*,/-]*(?:[^\d*,/-]|$)"
 )
 ROSTER_MARKERS = ("morning-review", "evening-review", "human-task-sweep")
+AGENT_SKILL_REFERENCE = re.compile(
+    rf"(?<![A-Za-z0-9_-])(?P<agent>[A-Za-z][A-Za-z0-9_-]{{3,}})/"
+    rf"(?P<marker>{'|'.join(re.escape(marker) for marker in ROSTER_MARKERS)})"
+    rf"(?![A-Za-z0-9_/-])",
+    re.IGNORECASE,
+)
 DAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tues|tue|weds|wed|thurs|thur|thu|fri|sat|sun)"
 FULL_DAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
 UNIT = r"(?:weekdays?|weekends?|hours?|days?|nights?|mornings?|afternoons?|evenings?|weeks?|months?|quarters?|years?)"
@@ -308,6 +314,19 @@ def has_roster_name(text: str) -> bool:
     )
 
 
+def mask_agent_skill_refs(text: str) -> str:
+    """Mask cadence-like skill names only inside canonical roster/skill refs."""
+
+    def replace(match: re.Match[str]) -> str:
+        agent = match.group("agent")
+        agent_hash = hashlib.sha256(agent.lower().encode()).hexdigest()
+        if agent_hash not in ROSTER_NAME_HASHES:
+            return match.group(0)
+        return f"{agent}/__skill_ref__"
+
+    return AGENT_SKILL_REFERENCE.sub(replace, text)
+
+
 def has_natural_cadence(text: str) -> bool:
     lowered = text.lower()
     for recurrence in RECURRENCE.finditer(lowered):
@@ -438,6 +457,7 @@ def scan(
             continue
         if allowed_line(path, text):
             continue
+        roster_text = mask_agent_skill_refs(text)
         for match in OPERATOR_HOME.finditer(text):
             username_hash = hashlib.sha256(match.group(1).lower().encode()).hexdigest()
             if username_hash in OPERATOR_USER_HASHES:
@@ -445,18 +465,18 @@ def scan(
                 hits.append((path, line_number, "pii", reason))
         if (
             not is_test_path(path)
-            and has_roster_name(text)
-            and has_single_line_cadence(text)
+            and has_roster_name(roster_text)
+            and has_single_line_cadence(roster_text)
         ):
             hits.append((path, line_number, "internal", "agent roster and cron schedule"))
             roster_cron_hit = True
         # Windowed scanning is intentionally limited to table rows. In --diff
         # mode it sees only added lines, so a new name beside a pre-existing
         # cadence row can be missed; --tree scans have no such gap.
-        if not is_test_path(path) and PIPE_ROW.search(text):
-            if has_roster_name(text):
+        if not is_test_path(path) and PIPE_ROW.search(roster_text):
+            if has_roster_name(roster_text):
                 last_name_line = line_number
-            if has_window_cadence(text):
+            if has_window_cadence(roster_text):
                 last_cron_line = line_number
             if (
                 last_name_line is not None

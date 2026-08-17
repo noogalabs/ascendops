@@ -363,6 +363,70 @@ cat > "$TMP/docs_path_ref_evening.md" <<'EOF'
 EOF
 expect_pass "roster name and evening-review path segment" "$TMP/docs_path_ref_evening.md"
 
+# (j1b) AGENT/SKILL COMPACT REFERENCES. Work queues name ownership with a
+# canonical `agent/skill` token; the skill name is not cadence evidence. The
+# exact incident-shaped line that exposed the false positive must remain clean.
+cat > "$TMP/docs_agent_skill_ref.md" <<'EOF'
+Run codie/comms incident audit, then dane/evening-review audit, then blue history sweep
+Run Codie/comms incident audit, then Dane/Evening-Review audit, then Blue history sweep
+EOF
+expect_pass "adjacent agent/skill work-queue references" "$TMP/docs_agent_skill_ref.md"
+
+cat > "$TMP/docs_agent_skill_compact_list.md" <<'EOF'
+dane/evening-review,codie/morning-review,blue/human-task-sweep
+Dane/Evening-Review;Codie/Morning-Review|Blue/Human-Task-Sweep
+EOF
+expect_pass "compact adjacent agent/skill reference lists" "$TMP/docs_agent_skill_compact_list.md"
+
+cat > "$TMP/docs_agent_skill_prefixed_ref.md" <<'EOF'
+work/dane/evening-review
+queue/codie/morning-review,owners/blue/human-task-sweep
+agents/dane/evening-review/SKILL.md
+EOF
+expect_pass "prefixed canonical refs and longer paths stay clean" "$TMP/docs_agent_skill_prefixed_ref.md"
+
+# Masking the reference must not hide real cadence evidence elsewhere on the
+# same line, in either order, or a separate bare marker after a compact list.
+cat > "$TMP/docs_agent_skill_ref_with_cadence.md" <<'EOF'
+dane/evening-review runs daily at 9am
+EOF
+expect_fail "agent/skill reference does not hide later cadence" 'roster' "$TMP/docs_agent_skill_ref_with_cadence.md"
+
+cat > "$TMP/docs_cadence_before_agent_skill_ref.md" <<'EOF'
+daily at 9am is the cadence for dane/evening-review
+EOF
+expect_fail "agent/skill reference does not hide earlier cadence" 'roster' "$TMP/docs_cadence_before_agent_skill_ref.md"
+
+cat > "$TMP/docs_agent_skill_list_with_marker.md" <<'EOF'
+dane/evening-review,codie/morning-review,evening-review
+EOF
+expect_fail "compact references do not hide a separate marker" 'roster' "$TMP/docs_agent_skill_list_with_marker.md"
+
+# Keep the transform bounded on untrusted compact input. This also proves every
+# adjacent reference is masked rather than only alternating members.
+awk 'BEGIN {
+  for (i = 0; i < 5000; i++)
+    printf "dane/evening-review%s", (i == 4999 ? "\n" : ",")
+}' > "$TMP/docs_agent_skill_large_compact_list.md"
+if ! node - "$GUARD_ABS" "$TMP/docs_agent_skill_large_compact_list.md" <<'NODE'
+const { spawnSync } = require('node:child_process');
+const result = spawnSync('bash', [process.argv[2], process.argv[3]], {
+  encoding: 'utf8',
+  timeout: 5000,
+});
+if (result.error?.code === 'ETIMEDOUT') {
+  console.error('FAIL: compact-reference masking exceeded 5000ms');
+  process.exit(1);
+}
+if (result.status !== 0) {
+  process.stderr.write(result.stderr || result.stdout || 'compact-reference scan failed\n');
+  process.exit(1);
+}
+NODE
+then
+  fails=1
+fi
+
 # (j2) KNOWN POSITIVE, THE OTHER DIRECTION. The narrowing above must not buy its
 # quiet by blinding the rule: a genuine roster-plus-cadence row, marker NOT
 # preceded by a slash, must still fire. This is the test that makes (j) safe.
