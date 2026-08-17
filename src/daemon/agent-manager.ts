@@ -36,7 +36,7 @@ import {
   writePendingSlot,
   startSideRun,
   sweepSideRuns,
-  clearSlot,
+  clearObservedSlot,
   type SideRunPending,
 } from './cron-side-run-runner.js';
 
@@ -1830,7 +1830,7 @@ export class AgentManager {
     }
 
     for (const action of sweepSideRuns(stateDir, nowMs)) {
-      const { admissionId, cronName, verdict, continuationPrompt } = action;
+      const { slotName, admissionId, cronName, verdict, cronPrompt, continuationPrompt } = action;
       try {
         if (verdict.action === 'done') {
           this.logSideRunEvent(agentName, 'cron_side_run_clean', {
@@ -1852,38 +1852,24 @@ export class AgentManager {
           });
         } else {
           // Fall back to exactly what would have happened without side-runs.
-          const cronDef = this.findCronDefinition(agentName, cronName);
-          if (cronDef?.prompt) this.injectAgent(agentName, cronDef.prompt);
+          // The prompt was frozen in the admission slot. Looking up the current
+          // scheduler definition here lets an edit or delete rewrite an already
+          // admitted fire during its deadline.
+          const injected = typeof cronPrompt === 'string'
+            && cronPrompt.length > 0
+            && this.injectAgent(agentName, cronPrompt);
           this.logSideRunEvent(agentName, 'cron_side_run_fallback', {
             cron: cronName,
             fired_at: admissionId,
             reason: verdict.reason,
-            injected: Boolean(cronDef?.prompt),
+            injected,
           });
         }
       } finally {
         // Cleared even if the injection threw: a slot left behind would be
         // re-actioned on the next tick, turning one missed fire into a loop.
-        clearSlot(stateDir, admissionId);
+        clearObservedSlot(stateDir, slotName);
       }
-    }
-  }
-
-  /**
-   * Look up a cron definition for the fallback injection.
-   *
-   * Uses the scheduler's real accessor. The first version of this reached for a
-   * `definition` field on getNextFireTimes() output, which returns only
-   * { name, nextFireAt } — so it always resolved to null and the fallback would
-   * have injected nothing while logging itself as handled. The optional chain
-   * turned a wrong lookup into a silent empty answer, which is the same shape as
-   * every other absence bug this codebase has hit.
-   */
-  private findCronDefinition(agentName: string, cronName: string): CronDefinition | null {
-    try {
-      return this.cronSchedulers.get(agentName)?.getCronDefinition(cronName) ?? null;
-    } catch {
-      return null;
     }
   }
 

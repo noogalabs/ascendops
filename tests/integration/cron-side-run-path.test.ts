@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 
@@ -8,9 +8,10 @@ import { tmpdir } from 'os';
  *
  * The unit suites prove each piece fails closed in isolation. They do NOT prove
  * the pieces are connected, and this project's near-miss was exactly that: a
- * fallback that reported success while injecting nothing, because a lookup
- * silently resolved to null. Every assertion here is about what the MAIN SESSION
- * actually received, never about whether an event fired.
+ * fallback that reported success while injecting nothing, because it consulted
+ * mutable scheduler state instead of the immutable admission slot. Every
+ * assertion here is about what the MAIN SESSION actually received, never about
+ * whether an event fired.
  */
 
 const injected: Array<{ text: string }> = [];
@@ -47,7 +48,7 @@ vi.mock('child_process', async (orig) => ({
 
 const { AgentManager } = await import('../../src/daemon/agent-manager.js');
 const { AgentProcess } = await import('../../src/daemon/agent-process.js');
-const { writePendingSlot, writeOutcomeSlot, readSlotRaw } = await import('../../src/daemon/cron-side-run-runner.js');
+const { sideRunDir, writePendingSlot, writeOutcomeSlot, readSlotRaw } = await import('../../src/daemon/cron-side-run-runner.js');
 const { resolvePaths } = await import('../../src/utils/paths.js');
 const { SIDE_RUN_DEADLINE_MS } = await import('../../src/daemon/cron-side-run.js');
 
@@ -118,16 +119,6 @@ describe('side-run path — the FALLBACK actually injects, it does not just log'
     const admittedAtMs = Date.parse(admissionId);
     const cronPrompt = 'run the watcher script';
 
-    // Register the cron so the fallback can find its definition. This is the
-    // exact lookup that silently returned null in the first implementation and
-    // would have injected nothing while logging the fire as handled.
-    const scheduler = {
-      getCronDefinition: (n: string) =>
-        n === 'voice-watch' ? { name: 'voice-watch', prompt: cronPrompt, schedule: '*/30 * * * *' } : null,
-      getNextFireTimes: () => [],
-    };
-    (am as unknown as { cronSchedulers: Map<string, unknown> }).cronSchedulers.set(AGENT, scheduler);
-
     const stateDir = stateDirFor(am);
     writePendingSlot(stateDir, {
       admissionId, cronName: 'voice-watch', admittedAtMs,
@@ -155,9 +146,9 @@ describe('side-run path — the FALLBACK actually injects, it does not just log'
     expect(readSlotRaw(stateDir, admissionId)).toBeNull();
   });
 
-  it('records injected:false when the cron definition cannot be found', () => {
-    // The honest failure mode: we could not re-inject. It must be countable,
-    // not reported as a handled fire.
+  it('uses the admitted prompt when the current cron definition cannot be found', () => {
+    // Deleting the scheduler definition cannot revoke a fire already admitted.
+    // The slot is the immutable record of what the main session was owed.
     const am = makeManager(root);
     const admissionId = '2026-08-07T14:20:00.000Z';
     const admittedAtMs = Date.parse(admissionId);
@@ -173,9 +164,56 @@ describe('side-run path — the FALLBACK actually injects, it does not just log'
     (am as unknown as { sweepSideRunsForAgent: (a: string, n: number) => void })
       .sweepSideRunsForAgent(AGENT, admittedAtMs + SIDE_RUN_DEADLINE_MS + 1);
 
-    expect(injected).toHaveLength(0);
+    expect(injected).toEqual([{ text: 'x' }]);
     const ev = logEventMock.mock.calls.filter((c) => c[4] === 'cron_side_run_fallback');
-    expect(ev[0][6]).toMatchObject({ injected: false });
+    expect(ev[0][6]).toMatchObject({ injected: true });
+  });
+
+  it.each([
+    ['edited', 'edited after admission'],
+    ['deleted', null],
+  ])('reinjects the admission-time prompt when the cron is %s before fallback', (_case, currentPrompt) => {
+    const am = makeManager(root);
+    const admissionId = `2026-08-07T14:25:0${currentPrompt ? '0' : '1'}.000Z`;
+    const admittedAtMs = Date.parse(admissionId);
+    const admittedPrompt = 'instructions frozen when this fire was admitted';
+    (am as unknown as { cronSchedulers: Map<string, unknown> }).cronSchedulers.set(AGENT, {
+      getCronDefinition: () => currentPrompt === null
+        ? null
+        : { name: 'voice-watch', prompt: currentPrompt, schedule: '*/30 * * * *' },
+      getNextFireTimes: () => [],
+    });
+
+    const stateDir = stateDirFor(am);
+    writePendingSlot(stateDir, {
+      admissionId, cronName: 'voice-watch', admittedAtMs,
+      deadlineMs: SIDE_RUN_DEADLINE_MS, cronPrompt: admittedPrompt,
+    });
+
+    (am as unknown as { sweepSideRunsForAgent: (a: string, n: number) => void })
+      .sweepSideRunsForAgent(AGENT, admittedAtMs + SIDE_RUN_DEADLINE_MS + 1);
+
+    expect(injected).toEqual([{ text: admittedPrompt }]);
+    const ev = logEventMock.mock.calls.filter((c) => c[4] === 'cron_side_run_fallback');
+    expect(ev[0][6]).toMatchObject({ injected: true });
+  });
+
+  it('clears the observed unreadable slot file once instead of hashing a synthetic identity', () => {
+    const am = makeManager(root);
+    const stateDir = stateDirFor(am);
+    const observedName = 'unreadable-slot.json';
+    mkdirSync(sideRunDir(stateDir), { recursive: true });
+    writeFileSync(join(sideRunDir(stateDir), observedName), '{not json', 'utf8');
+
+    const sweep = () => (am as unknown as {
+      sweepSideRunsForAgent: (a: string, n: number) => void;
+    }).sweepSideRunsForAgent(AGENT, Date.now());
+    sweep();
+
+    expect(existsSync(join(sideRunDir(stateDir), observedName))).toBe(false);
+    sweep();
+    const events = logEventMock.mock.calls.filter((c) => c[4] === 'cron_side_run_fallback');
+    expect(events).toHaveLength(1);
   });
 });
 
@@ -261,11 +299,6 @@ describe('heartbeat preflight — the DELIVERED summary carries the not-stamped 
     const am = makeManager(root);
     const admissionId = '2026-08-07T16:50:00.000Z';
     const admittedAtMs = Date.parse(admissionId);
-    (am as unknown as { cronSchedulers: Map<string, unknown> }).cronSchedulers.set(AGENT, {
-      getCronDefinition: (n: string) =>
-        n === 'heartbeat' ? { name: 'heartbeat', prompt: HB_PROMPT_TXT, schedule: '8h' } : null,
-      getNextFireTimes: () => [],
-    });
     const stateDir = stateDirFor(am);
     writePendingSlot(stateDir, {
       admissionId, cronName: 'heartbeat', admittedAtMs,

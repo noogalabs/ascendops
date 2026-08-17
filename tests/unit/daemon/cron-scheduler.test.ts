@@ -885,18 +885,11 @@ describe('CronScheduler', () => {
   });
 });
 
-describe('getCronDefinition — the fallback lookup must actually resolve', () => {
-  it('returns the live definition for a scheduled cron, not undefined', async () => {
-    // Regression guard. The side-run fallback path originally looked for a
-    // `definition` field on getNextFireTimes() output, which does not have one.
-    // It resolved to null on every call, so the fallback would have injected
-    // nothing while logging itself as handled — a skipped check wearing a pass.
+describe('getCronDefinition accessor', () => {
+  it('returns null rather than undefined for a missing cron', async () => {
     const { CronScheduler } = await import('../../../src/daemon/cron-scheduler.js');
     const s = new CronScheduler({ agentName: '__no_such_agent__', onFire: () => {} });
-    // No crons loaded for a nonexistent agent, so the contract under test is
-    // that a miss returns null rather than throwing or returning undefined.
     expect(s.getCronDefinition('anything')).toBeNull();
-    // And the shape getNextFireTimes returns must NOT be mistaken for a definition.
     for (const row of s.getNextFireTimes()) {
       expect(row).not.toHaveProperty('definition');
     }

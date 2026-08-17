@@ -16,7 +16,7 @@
 
 import { spawn } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { createHash } from 'crypto';
 import {
   SIDE_RUN_MODEL,
@@ -109,7 +109,29 @@ export function clearSlot(stateDir: string, admissionId: string): void {
   }
 }
 
-export function listPendingSlots(stateDir: string): Array<{ slot: unknown; pending: SideRunPending | null }> {
+/**
+ * Clear the exact directory entry observed by the sweep.
+ *
+ * An unreadable slot has no trustworthy admission id, so hashing a synthetic
+ * placeholder can never address the file that was actually read. The filename
+ * comes from readdirSync, but the boundary stays fail-closed for direct callers.
+ */
+export function clearObservedSlot(stateDir: string, slotName: string): void {
+  const dir = resolve(sideRunDir(stateDir));
+  const file = resolve(dir, slotName);
+  if (dirname(file) !== dir || !slotName.endsWith('.json')) return;
+  try {
+    if (existsSync(file)) unlinkSync(file);
+  } catch {
+    /* a slot we cannot delete will be re-classified next tick and cleared then */
+  }
+}
+
+export function listPendingSlots(stateDir: string): Array<{
+  slotName: string;
+  slot: unknown;
+  pending: SideRunPending | null;
+}> {
   const dir = sideRunDir(stateDir);
   if (!existsSync(dir)) return [];
   let names: string[];
@@ -118,13 +140,13 @@ export function listPendingSlots(stateDir: string): Array<{ slot: unknown; pendi
   } catch {
     return [];
   }
-  const out: Array<{ slot: unknown; pending: SideRunPending | null }> = [];
+  const out: Array<{ slotName: string; slot: unknown; pending: SideRunPending | null }> = [];
   for (const name of names) {
     try {
       const parsed = JSON.parse(readFileSync(join(dir, name), 'utf8'));
-      out.push({ slot: parsed, pending: (parsed?.pending ?? null) as SideRunPending | null });
+      out.push({ slotName: name, slot: parsed, pending: (parsed?.pending ?? null) as SideRunPending | null });
     } catch {
-      out.push({ slot: '<unparseable>', pending: null });
+      out.push({ slotName: name, slot: '<unparseable>', pending: null });
     }
   }
   return out;
@@ -200,6 +222,8 @@ export function startSideRun(
 /* ── sweep ──────────────────────────────────────────────────────────────── */
 
 export interface SweepAction {
+  /** Exact directory entry observed by the sweep; cleanup never reconstructs it. */
+  slotName: string;
   admissionId: string;
   cronName: string;
   /**
@@ -208,6 +232,8 @@ export interface SweepAction {
    * never arrives.
    */
   verdict: Exclude<SlotVerdict, { action: 'wait' }>;
+  /** Frozen at admission, so fallback never consults mutable scheduler state. */
+  cronPrompt?: string;
   /** From the slot, so the caller never has to consult the registry. */
   continuationPrompt?: string;
 }
@@ -222,9 +248,10 @@ export interface SweepAction {
  */
 export function sweepSideRuns(stateDir: string, nowMs: number): SweepAction[] {
   const actions: SweepAction[] = [];
-  for (const { slot, pending } of listPendingSlots(stateDir)) {
+  for (const { slotName, slot, pending } of listPendingSlots(stateDir)) {
     if (!pending || typeof pending.admissionId !== 'string') {
       actions.push({
+        slotName,
         admissionId: (slot as { admissionId?: string })?.admissionId ?? '<unknown>',
         cronName: '<unknown>',
         verdict: { action: 'fallback', reason: 'slot_unreadable' as FallbackReason },
@@ -240,9 +267,11 @@ export function sweepSideRuns(stateDir: string, nowMs: number): SweepAction[] {
     });
     if (verdict.action === 'wait') continue;
     actions.push({
+      slotName,
       admissionId: pending.admissionId,
       cronName: pending.cronName,
       verdict,
+      cronPrompt: pending.cronPrompt,
       continuationPrompt: pending.continuationPrompt,
     });
   }

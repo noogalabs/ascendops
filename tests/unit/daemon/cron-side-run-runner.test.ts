@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -9,6 +9,7 @@ import {
   writeOutcomeSlot,
   readSlotRaw,
   clearSlot,
+  clearObservedSlot,
   sweepSideRuns,
   startSideRun,
   type SideRunPending,
@@ -67,6 +68,15 @@ describe('slot storage', () => {
     clearSlot(stateDir, p.admissionId);
     expect(readSlotRaw(stateDir, p.admissionId)).toBeNull();
     expect(() => clearSlot(stateDir, p.admissionId)).not.toThrow();
+  });
+
+  it('refuses an observed filename that resolves outside the side-run directory', () => {
+    const outside = join(stateDir, 'outside.json');
+    writeFileSync(outside, 'keep', 'utf8');
+
+    clearObservedSlot(stateDir, '../outside.json');
+
+    expect(existsSync(outside)).toBe(true);
   });
 });
 

@@ -233,4 +233,18 @@ describe('skill-drift-check', () => {
     expect(result.stdout).not.toContain('SKIP templates/beta');
     expect(readFileSync(join(root, 'templates/alpha/.claude/skills/demo/SKILL.md'), 'utf8')).toBe(before);
   });
+
+  it('pins count fields for every checked-in static mirror group', () => {
+    const manifest = JSON.parse(readFileSync(join(repoRoot, 'scripts', 'skill-mirrors.json'), 'utf8'));
+    const staticGroups = manifest.filter((group: { population?: string }) => !group.population);
+
+    expect(staticGroups.length).toBeGreaterThan(0);
+    for (const group of staticGroups) {
+      expect(Number.isSafeInteger(group.expectedPopulation), `${group.skill} total count`).toBe(true);
+      expect(group.expectedPopulation).toBe(1 + group.mirrors.length);
+      expect(Number.isSafeInteger(group.expectedTrackedPopulation), `${group.skill} tracked count`).toBe(true);
+      expect(group.expectedTrackedPopulation).toBeGreaterThanOrEqual(0);
+      expect(group.expectedTrackedPopulation).toBeLessThanOrEqual(group.expectedPopulation);
+    }
+  });
 });
