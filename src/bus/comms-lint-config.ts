@@ -59,7 +59,6 @@ const DEFAULT_BANNED: CommsLintRule[] = [
   { id: 'banned:asleep', pattern: /\basleep\b/i, reason: 'banned jargon', group: 'banned' },
   { id: 'banned:sleeping', pattern: /\bsleeping\b/i, reason: 'banned jargon', group: 'banned' },
   { id: 'banned:waiting-on', pattern: /\bwaiting[- ]on[- ]\w+\b/i, reason: 'banned jargon', group: 'banned' },
-  { id: 'banned:holding', pattern: /\bholding\b/i, reason: 'banned jargon', group: 'banned' },
 ];
 
 const DEFAULT_PASSIVE: CommsLintRule[] = [
@@ -187,7 +186,14 @@ function compileRuleSpec(
     if (typeof flags !== 'string' || !FLAGS_RE.test(flags)) return null;
     let pattern: RegExp;
     try {
-      pattern = new RegExp(spec.pattern, flags);
+      // Validate the supplied set before normalization so duplicate/invalid
+      // flags still reject the rule. Sticky `y` is incompatible with lint's
+      // match-anywhere contract: at offset zero it corrupts the later telemetry
+      // match, and elsewhere it silently bypasses detection. Preserve the rule
+      // and every other flag, but never let sticky state reach the matcher.
+      // eslint-disable-next-line no-new
+      new RegExp('', flags);
+      pattern = new RegExp(spec.pattern, flags.replace(/y/g, ''));
     } catch {
       return null;
     }

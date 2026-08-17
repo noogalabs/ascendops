@@ -126,7 +126,7 @@ When you receive an inbox message with a skill decision:
 mv skills/drafts/[skill-name]/ .claude/skills/[skill-name]/
 
 # Update status field
-perl -i -pe 's/status: draft/status: active/' .claude/skills/[skill-name]/SKILL.md
+sed -i '' 's/status: draft/status: active/' .claude/skills/[skill-name]/SKILL.md
 
 # Log activation
 cortextos bus log-event action skill_activated info --meta "{\"skill\":\"[skill-name]\",\"agent\":\"$CTX_AGENT_NAME\"}"

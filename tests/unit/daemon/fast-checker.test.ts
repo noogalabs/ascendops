@@ -22,6 +22,7 @@ import { execFile } from 'child_process';
 import { FastChecker } from '../../../src/daemon/fast-checker';
 import { SlackAPI } from '../../../src/slack/api.js';
 import { sendMessage } from '../../../src/bus/message.js';
+import { acquireLock, releaseLock } from '../../../src/utils/lock.js';
 import type { BusPaths, InboxMessage, TelegramCallbackQuery } from '../../../src/types';
 
 // Minimal mock for AgentProcess
@@ -344,6 +345,24 @@ describe('FastChecker', () => {
       const sendTyping = (checker as any).sendTyping.bind(checker);
       // Should not throw
       await expect(sendTyping(api, '12345')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('inbox lock failure visibility', () => {
+    it('logs the failure instead of treating the inbox as empty', async () => {
+      const log = vi.fn();
+      const checker = new FastChecker(createMockAgent(), paths, '/tmp/framework', { log }) as any;
+      const lockHandle = acquireLock(paths.inbox);
+      expect(lockHandle).not.toBe(false);
+
+      try {
+        await checker.pollCycle();
+      } finally {
+        if (lockHandle) releaseLock(lockHandle);
+      }
+
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('Inbox check failed'));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining(paths.inbox));
     });
   });
 
@@ -943,7 +962,10 @@ describe('FastChecker', () => {
     });
   });
 
-  describe('heartbeat watchdog', () => {
+  // Advancing long fake-time intervals can exceed Vitest's 10s wall-clock default when
+  // the complete suite is contending for workers. Keep the behavioral coverage and give
+  // this watchdog group load tolerance instead of shortening its simulated timelines.
+  describe('heartbeat watchdog', { timeout: 30_000 }, () => {
     beforeEach(() => { vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
@@ -1101,6 +1123,34 @@ describe('FastChecker', () => {
       expect(checker.telegramMessages.length).toBe(1);
       await checker.pollCycle();
       expect(agent.injectMessageDetailed).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ['$imagegen make a logo', 'native $skill'],
+      ['/heartbeat now', 'rewritten /skill'],
+    ])('re-queues exact %s Telegram input in FIFO order when durable admission fails', async (skillInput) => {
+      const agent = createMockAgent();
+      agent.injectMessageDetailed = vi.fn()
+        .mockReturnValueOnce({ ok: false, code: 'ADMISSION_FAILED', message: 'custody write failed' })
+        .mockReturnValueOnce({ ok: true });
+      const checker = new FastChecker(agent, paths, '/tmp/framework') as any;
+      const skillMessage = `=== TELEGRAM from Test (chat_id:1) ===\n${skillInput}\n`;
+      checker.queueTelegramMessage(skillMessage);
+      checker.queueTelegramMessage('=== TELEGRAM from Test (chat_id:1) ===\nsecond\n');
+
+      await checker.pollCycle();
+      expect(checker.telegramMessages.map((message: { formatted: string }) => message.formatted))
+        .toEqual([
+          skillMessage,
+          '=== TELEGRAM from Test (chat_id:1) ===\nsecond\n',
+        ]);
+
+      await checker.pollCycle();
+      expect(checker.telegramMessages).toEqual([]);
+      expect(agent.injectMessageDetailed).toHaveBeenNthCalledWith(
+        2,
+        `${skillMessage}=== TELEGRAM from Test (chat_id:1) ===\nsecond\n`,
+      );
     });
 
     it('drops drained Telegram messages on DEDUPED instead of retrying forever', async () => {

@@ -36,6 +36,86 @@ import { join } from 'path';
 import { execFileSync } from 'child_process';
 import { atomicWriteSync } from '../utils/atomic.js';
 
+/**
+ * Timeout tiers for the watchdog's git subprocesses.
+ *
+ * The watchdog exists to notice stalled agents. An unbounded child can make the
+ * watchdog itself stall, and a stalled watchdog does not report that it stalled:
+ * it stops watching while every agent it supervises still looks healthy, because
+ * nothing is producing a failure signal. Every git spawn below is bounded.
+ *
+ * BASIS FOR THE NUMBERS (measured on this host 2026-07-28 at load ~2.6, and this
+ * box has been observed at load 21):
+ *   - local reads (rev-parse / cat-file / merge-base / stash list): ~30ms each.
+ *     15s is ~500x observed, which absorbs heavy load and index.lock contention.
+ *   - network fetch: 472ms observed. Network STALLS are unbounded by nature and
+ *     are the hazard this bound exists for, so 60s is deliberately generous.
+ *   - mutations (stash / tag / reset --hard): NOT MEASURED, deliberately. Timing
+ *     `reset --hard` means running it. Asymmetry decides the value instead:
+ *     interrupting a reset mid-recovery can leave a repository wedged, while a
+ *     slow recovery only costs seconds. So take the longer bound.
+ * Where measurement was unavailable the rule is generosity, because the cost of
+ * killing too early is strictly worse than the cost of waiting.
+ */
+export const GIT_READ_TIMEOUT_MS = 15_000;     // measured ~30ms; 500x headroom
+export const GIT_MUTATE_TIMEOUT_MS = 30_000;   // unmeasured by choice; longer bound
+export const GIT_NETWORK_TIMEOUT_MS = 60_000;  // measured 472ms; stalls unbounded
+
+/**
+ * True only for a timeout-induced abort.
+ *
+ * Deliberately NOT keyed on `signal === 'SIGTERM'`: a child signalled for any
+ * unrelated reason would then be reported as a timeout, and a loud log that lies
+ * is worse than the silence this fix replaced. Node sets code ETIMEDOUT when it
+ * aborts a child for exceeding `timeout`.
+ */
+export function isSubprocessTimeout(err: unknown): boolean {
+  const e = err as (NodeJS.ErrnoException & { killed?: boolean }) | null;
+  return e?.code === 'ETIMEDOUT';
+}
+
+/**
+ * Run a git subprocess with a mandatory, ENFORCEABLE timeout.
+ *
+ * `timeout` alone is not sufficient. Node signals the child with `killSignal`
+ * (default SIGTERM) and a wedged git or a credential helper can ignore SIGTERM
+ * and keep execFileSync blocked - i.e. the bound would hold for the happy case
+ * and fail for the wedge case, which is the only case it exists for. So:
+ *   - killSignal SIGKILL, which cannot be trapped or ignored;
+ *   - GIT_TERMINAL_PROMPT=0 so fetch/credential paths fail instead of waiting
+ *     forever on a prompt no human will ever answer in a daemon.
+ *
+ * Callers wrap these in bare `catch { return null }`. The loud log fires HERE,
+ * before the rethrow, so a timeout stays distinguishable from "not a git
+ * repository" without changing any caller contract.
+ */
+export function runGit(
+  args: string[],
+  opts: { cwd: string; timeoutMs: number; capture?: boolean },
+): string {
+  try {
+    const out = execFileSync('git', args, {
+      cwd: opts.cwd,
+      timeout: opts.timeoutMs,
+      killSignal: 'SIGKILL',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      ...(opts.capture
+        ? { encoding: 'utf-8' as const, stdio: ['pipe', 'pipe', 'pipe'] as const }
+        : { stdio: 'pipe' as const }),
+    });
+    return typeof out === 'string' ? out : '';
+  } catch (err) {
+    if (isSubprocessTimeout(err)) {
+      console.error(
+        `[watchdog] TIMEOUT after ${opts.timeoutMs}ms: git ${args.join(' ')} (cwd=${opts.cwd}). ` +
+        'Agent supervision is DEGRADED for this tick. This is NOT a missing repository ' +
+        'and NOT a clean result.',
+      );
+    }
+    throw err;
+  }
+}
+
 // Number of failures on the same commit before triggering a rollback.
 export const ROLLBACK_THRESHOLD = 3;
 
@@ -155,10 +235,10 @@ function saveStability(stateDir: string, data: CommitStability): void {
  */
 export function findGitRoot(dir: string): string | null {
   try {
-    const result = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+    const result = runGit(['rev-parse', '--show-toplevel'], {
       cwd: dir,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+      capture: true,
     });
     return result.trim() || null;
   } catch {
@@ -171,10 +251,10 @@ export function findGitRoot(dir: string): string | null {
  */
 export function getCurrentCommit(repoRoot: string): string | null {
   try {
-    const hash = execFileSync('git', ['rev-parse', 'HEAD'], {
+    const hash = runGit(['rev-parse', 'HEAD'], {
       cwd: repoRoot,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+      capture: true,
     });
     return hash.trim() || null;
   } catch {
@@ -184,10 +264,10 @@ export function getCurrentCommit(repoRoot: string): string | null {
 
 function getCurrentBranch(repoRoot: string): string {
   try {
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    const branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: repoRoot,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+      capture: true,
     }).trim();
     return branch || 'HEAD';
   } catch {
@@ -283,9 +363,9 @@ export function shouldRollback(
 function targetIsValid(repoRoot: string, target: string): boolean {
   if (!target) return false;
   try {
-    execFileSync('git', ['cat-file', '-e', `${target}^{commit}`], {
+    runGit(['cat-file', '-e', `${target}^{commit}`], {
       cwd: repoRoot,
-      stdio: 'pipe',
+      timeoutMs: GIT_READ_TIMEOUT_MS,
     });
     return true;
   } catch {
@@ -297,9 +377,9 @@ function targetRespectsFloor(repoRoot: string, target: string, floorRef: string)
   if (!floorRef) return true;
   if (!targetIsValid(repoRoot, floorRef)) return false;
   try {
-    execFileSync('git', ['merge-base', '--is-ancestor', floorRef, target], {
+    runGit(['merge-base', '--is-ancestor', floorRef, target], {
       cwd: repoRoot,
-      stdio: 'pipe',
+      timeoutMs: GIT_READ_TIMEOUT_MS,
     });
     return true;
   } catch {
@@ -346,14 +426,14 @@ export async function performRollback(
   if (!target) {
     // No healthy commit on record — fetch and use origin/main
     try {
-      execFileSync('git', ['fetch', 'origin', 'main', '--quiet'], {
+      runGit(['fetch', 'origin', 'main', '--quiet'], {
         cwd: repoRoot,
-        stdio: 'pipe',
+        timeoutMs: GIT_NETWORK_TIMEOUT_MS,
       });
-      const originMain = execFileSync('git', ['rev-parse', 'origin/main'], {
+      const originMain = runGit(['rev-parse', 'origin/main'], {
         cwd: repoRoot,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
+        timeoutMs: GIT_READ_TIMEOUT_MS,
+        capture: true,
       });
       target = originMain.trim();
     } catch {
@@ -429,16 +509,15 @@ export async function performRollback(
   // effort: if stash fails or nothing to stash, continue with reset.
   let stashRef: string | null = null;
   try {
-    execFileSync(
-      'git',
+    runGit(
       ['stash', 'push', '-m', `cct-recovery-${ts}`],
-      { cwd: repoRoot, stdio: 'pipe' },
+      { cwd: repoRoot, timeoutMs: GIT_MUTATE_TIMEOUT_MS },
     );
     // Confirm the stash was created (git stash push is silent on nothing-to-stash)
-    const stashList = execFileSync('git', ['stash', 'list', '--max-count=1'], {
+    const stashList = runGit(['stash', 'list', '--max-count=1'], {
       cwd: repoRoot,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+      capture: true,
     });
     if (stashList.trim().includes('cct-recovery')) {
       stashRef = 'stash@{0}';
@@ -451,18 +530,17 @@ export async function performRollback(
   try {
     // Tag the failed commit for post-mortem reference
     try {
-      execFileSync(
-        'git',
+      runGit(
         ['tag', `failed-${ts}-${failedCommit.slice(0, 7)}`],
-        { cwd: repoRoot, stdio: 'pipe' },
+        { cwd: repoRoot, timeoutMs: GIT_MUTATE_TIMEOUT_MS },
       );
     } catch {
       // Tagging is best-effort — tag may already exist
     }
 
-    execFileSync('git', ['reset', '--hard', target], {
+    runGit(['reset', '--hard', target], {
       cwd: repoRoot,
-      stdio: 'pipe',
+      timeoutMs: GIT_MUTATE_TIMEOUT_MS,
     });
   } catch (err) {
     return {

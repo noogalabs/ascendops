@@ -5,14 +5,56 @@ import { readdirSync } from 'fs';
 import { ensureDir } from '../utils/atomic.js';
 import { TelegramAPI } from '../telegram/api.js';
 import type { BusPaths } from '../types/index.js';
+import {
+  acquireAutoCommitLease,
+  releaseAutoCommitLease,
+  type AutoCommitLeaseAcquireResult,
+  type AutoCommitLeaseHolder,
+} from './auto-commit-lease.js';
 
 // --- Types ---
 
 export interface AutoCommitReport {
-  status: 'staged' | 'clean' | 'nothing_to_stage' | 'dry_run';
+  status: 'staged' | 'clean' | 'nothing_to_stage' | 'dry_run' | 'error';
   staged: string[];
   blocked: string[];
   diff_stat?: string;
+  error?: string;
+  lease: AutoCommitLeaseReport;
+  lease_takeover?: {
+    previous_holder: AutoCommitLeaseHolder;
+    previous_expires_at: number;
+  };
+}
+
+export type AutoCommitLeaseReport =
+  | { status: 'not_acquired'; reason: string }
+  | { status: 'released'; holder: AutoCommitLeaseHolder; released_at: number }
+  | {
+    status: 'held';
+    holder: AutoCommitLeaseHolder;
+    token: string;
+    expires_at: number;
+  }
+  | { status: 'contended'; holder: AutoCommitLeaseHolder; expires_at: number }
+  | { status: 'error'; error: string };
+
+export interface AutoCommitScope {
+  org: string;
+  agent: string;
+}
+
+export interface AutoCommitLeaseContext {
+  ctxRoot: string;
+  ttlMs?: number;
+  now?: number;
+  /** Deterministic token injection for tests. */
+  token?: string;
+  /** Records an expired-lease takeover before any repository inspection. */
+  onTakeover?: (takeover: {
+    previous_holder: AutoCommitLeaseHolder;
+    previous_expires_at: number;
+  }) => void;
 }
 
 export interface AgentGoalStatus {
@@ -48,6 +90,47 @@ const CREDENTIAL_PATTERNS = /(?:token=|key=|password=|secret=|sk-|ghp_|xoxb-|AKI
 const SCRIPT_EXTENSIONS = new Set(['.sh', '.py', '.js']);
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+const AUTO_COMMIT_SCOPE_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+function parsePorcelainPaths(output: string): string[] {
+  const fields = output.split('\0');
+  const paths: string[] = [];
+
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index];
+    if (!field) continue;
+
+    const status = field.slice(0, 2);
+    paths.push(field.slice(3));
+    if (status.includes('R') || status.includes('C')) {
+      index += 1; // porcelain -z emits the original path as the next field
+    }
+  }
+
+  return paths;
+}
+
+function readStagedPaths(projectDir: string): string[] {
+  const output = execFileSync(
+    'git',
+    ['diff', '--cached', '--name-only', '-z'],
+    { cwd: projectDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  return output.split('\0').filter(Boolean);
+}
+
+function formatPathSample(paths: string[]): string {
+  const sample = paths.slice(0, 5).map(path => JSON.stringify(path)).join(', ');
+  return `${paths.length} staged path${paths.length === 1 ? '' : 's'}: ${sample}`;
+}
+
+function isWithinAutoCommitScope(file: string, scope: AutoCommitScope): boolean {
+  const agentRoot = `orgs/${scope.org}/agents/${scope.agent}`;
+  return file === `${agentRoot}/MEMORY.md`
+    || file === `${agentRoot}/GOALS.md`
+    || file === `${agentRoot}/config.json`;
+}
 
 // --- Functions ---
 
@@ -93,40 +176,179 @@ export function hardRestart(paths: BusPaths, agentName: string, reason?: string)
 }
 
 /**
- * Auto-commit safe files in a project directory.
- * Filters out dangerous files (credentials, env, large, binary).
+ * Stage the invoking agent's allowlisted state files in a project directory.
+ * Filters out dangerous files (credentials, env, large, binary) within that
+ * closed scope and refuses to mix with an existing index.
  * Never pushes. Mirrors bash bus/auto-commit.sh.
  */
-export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCommitReport {
+export function autoCommit(
+  projectDir: string,
+  dryRun: boolean = false,
+  scope?: AutoCommitScope,
+  leaseContext?: AutoCommitLeaseContext,
+): AutoCommitReport {
+  if (!scope
+    || !AUTO_COMMIT_SCOPE_SEGMENT.test(scope.org)
+    || !AUTO_COMMIT_SCOPE_SEGMENT.test(scope.agent)) {
+    return {
+      status: 'error',
+      staged: [],
+      blocked: [],
+      error: 'auto-commit requires valid explicit org and agent scope',
+      lease: { status: 'not_acquired', reason: 'invalid_scope' },
+    };
+  }
+
+  let acquiredLease: Extract<AutoCommitLeaseAcquireResult, { status: 'acquired' }> | null = null;
+  if (!leaseContext?.ctxRoot) {
+    return {
+      status: 'error',
+      staged: [],
+      blocked: [],
+      error: 'auto-commit requires state-side lease context before index inspection',
+      lease: { status: 'not_acquired', reason: 'missing_lease_context' },
+    };
+  }
+  const acquisition = acquireAutoCommitLease({
+    ctxRoot: leaseContext.ctxRoot,
+    holder: scope,
+    ttlMs: leaseContext.ttlMs,
+    now: leaseContext.now,
+    token: leaseContext.token,
+  });
+  if (acquisition.status === 'contended') {
+    return {
+      status: 'error',
+      staged: [],
+      blocked: [],
+      error: `auto-commit lease held by ${acquisition.holder.org}/${acquisition.holder.agent} until ${new Date(acquisition.expires_at).toISOString()}`,
+      lease: acquisition,
+    };
+  }
+  if (acquisition.status === 'error') {
+    return {
+      status: 'error',
+      staged: [],
+      blocked: [],
+      error: acquisition.error,
+      lease: acquisition,
+    };
+  }
+  acquiredLease = acquisition;
+  if (acquisition.takeover && leaseContext.onTakeover) {
+    try {
+      leaseContext.onTakeover(acquisition.takeover);
+    } catch (err) {
+      const release = releaseAutoCommitLease({
+        ctxRoot: leaseContext.ctxRoot,
+        token: acquisition.lease.token,
+        now: leaseContext.now,
+      });
+      const auditError = err instanceof Error ? err.message : 'unknown audit error';
+      return {
+        status: 'error',
+        staged: [],
+        blocked: [],
+        error: `auto-commit lease takeover audit failed before index inspection: ${auditError}`,
+        lease: release.status === 'released'
+          ? release
+          : { status: 'error', error: release.error },
+        lease_takeover: acquisition.takeover,
+      };
+    }
+  }
+
+  const finishBeforeIndexMutation = (
+    report: Omit<AutoCommitReport, 'lease'>,
+  ): AutoCommitReport => {
+    if (!acquiredLease || !leaseContext) {
+      return {
+        ...report,
+        lease: { status: 'not_acquired', reason: 'not_required' },
+      };
+    }
+    const release = releaseAutoCommitLease({
+      ctxRoot: leaseContext.ctxRoot,
+      token: acquiredLease.lease.token,
+      now: leaseContext.now,
+    });
+    if (release.status === 'error') {
+      return {
+        ...report,
+        status: 'error',
+        error: `auto-commit stopped before index mutation but lease release failed: ${release.error}`,
+        lease: { status: 'error', error: release.error },
+        ...(acquiredLease.takeover ? { lease_takeover: acquiredLease.takeover } : {}),
+      };
+    }
+    return {
+      ...report,
+      lease: release,
+      ...(acquiredLease.takeover ? { lease_takeover: acquiredLease.takeover } : {}),
+    };
+  };
+
+  const heldLeaseReport = (): Extract<AutoCommitLeaseReport, { status: 'held' }> => {
+    if (!acquiredLease) throw new Error('auto-commit index mutation attempted without a lease');
+    return {
+      status: 'held',
+      holder: acquiredLease.lease.holder,
+      token: acquiredLease.lease.token,
+      expires_at: acquiredLease.lease.expires_at,
+    };
+  };
+
   // Check if git repo
   try {
     execSync('git rev-parse --is-inside-work-tree', { cwd: projectDir, stdio: 'pipe' });
   } catch {
-    return { status: 'clean', staged: [], blocked: [] };
+    return finishBeforeIndexMutation({ status: 'clean', staged: [], blocked: [] });
   }
 
-  // Get changed files
+  let existingIndex: string[];
+  try {
+    existingIndex = readStagedPaths(projectDir);
+  } catch {
+    return finishBeforeIndexMutation({ status: 'error', staged: [], blocked: [], error: 'could not inspect git index' });
+  }
+
+  if (existingIndex.length > 0) {
+    return finishBeforeIndexMutation({
+      status: 'error',
+      staged: existingIndex,
+      blocked: [],
+      error: `refusing to mix auto-commit with existing index (${formatPathSample(existingIndex)})`,
+    });
+  }
+
+  // Get every changed file so out-of-scope subjects are explicitly refused.
   let porcelainOutput: string;
   try {
-    porcelainOutput = execSync('git status --porcelain', { cwd: projectDir, encoding: 'utf-8' });
+    porcelainOutput = execFileSync(
+      'git',
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      { cwd: projectDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
   } catch {
-    return { status: 'clean', staged: [], blocked: [] };
+    return finishBeforeIndexMutation({ status: 'clean', staged: [], blocked: [] });
   }
 
   if (!porcelainOutput.trim()) {
-    return { status: 'clean', staged: [], blocked: [] };
+    return finishBeforeIndexMutation({ status: 'clean', staged: [], blocked: [] });
   }
 
-  const changedFiles = porcelainOutput
-    .split('\n')
-    .filter(line => line.trim())
-    .map(line => line.slice(3)); // cut from column 4 (0-indexed col 3)
+  const changedFiles = parsePorcelainPaths(porcelainOutput);
 
-  const staged: string[] = [];
+  const candidates: string[] = [];
   const blocked: string[] = [];
 
   for (const file of changedFiles) {
     if (!file) continue;
+
+    if (!isWithinAutoCommitScope(file, scope)) {
+      blocked.push(`${file}:outside_agent_state_scope`);
+      continue;
+    }
 
     // Block .env files
     if (file.endsWith('.env') || file.includes('/.env')) {
@@ -184,24 +406,69 @@ export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCom
       }
     }
 
-    staged.push(file);
+    candidates.push(file);
   }
 
-  if (staged.length === 0) {
-    return { status: 'nothing_to_stage', staged: [], blocked };
+  if (candidates.length === 0) {
+    return finishBeforeIndexMutation({ status: 'nothing_to_stage', staged: [], blocked });
   }
 
   if (dryRun) {
-    return { status: 'dry_run', staged, blocked };
+    return finishBeforeIndexMutation({ status: 'dry_run', staged: candidates, blocked });
   }
 
-  // Stage safe files
-  for (const file of staged) {
+  try {
+    execFileSync(
+      'git',
+      ['add', '--all', '--pathspec-from-file=-', '--pathspec-file-nul'],
+      {
+        cwd: projectDir,
+        input: `${candidates.join('\0')}\0`,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+  } catch {
+    let actualIndex: string[] = [];
     try {
-      execFileSync('git', ['add', file], { cwd: projectDir, stdio: 'pipe' });
+      actualIndex = readStagedPaths(projectDir);
     } catch {
-      // Ignore individual add failures
+      // The failure remains explicit even if the post-operation index is unreadable.
     }
+    return {
+      status: 'error',
+      staged: actualIndex,
+      blocked,
+      error: 'git add failed; staged reports the actual post-operation index',
+      lease: heldLeaseReport(),
+      ...(acquiredLease?.takeover ? { lease_takeover: acquiredLease.takeover } : {}),
+    };
+  }
+
+  let actualIndex: string[];
+  try {
+    actualIndex = readStagedPaths(projectDir);
+  } catch {
+    return {
+      status: 'error',
+      staged: [],
+      blocked,
+      error: 'git add completed but the resulting index could not be inspected',
+      lease: heldLeaseReport(),
+      ...(acquiredLease?.takeover ? { lease_takeover: acquiredLease.takeover } : {}),
+    };
+  }
+
+  const expected = [...candidates].sort();
+  const actual = [...actualIndex].sort();
+  if (expected.length !== actual.length || expected.some((file, index) => file !== actual[index])) {
+    return {
+      status: 'error',
+      staged: actualIndex,
+      blocked,
+      error: 'git index does not match the allowlisted candidate set',
+      lease: heldLeaseReport(),
+      ...(acquiredLease?.takeover ? { lease_takeover: acquiredLease.takeover } : {}),
+    };
   }
 
   // Get diff stat
@@ -214,7 +481,14 @@ export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCom
     // Ignore
   }
 
-  return { status: 'staged', staged, blocked, diff_stat: diffStat };
+  return {
+    status: 'staged',
+    staged: actualIndex,
+    blocked,
+    diff_stat: diffStat,
+    lease: heldLeaseReport(),
+    ...(acquiredLease?.takeover ? { lease_takeover: acquiredLease.takeover } : {}),
+  };
 }
 
 /**

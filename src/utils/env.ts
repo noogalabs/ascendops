@@ -175,15 +175,68 @@ export function writeCortextosEnv(agentDir: string, env: CtxEnv): void {
  *   - Inline ` #` comments on unquoted values
  * Lines with no `=` are skipped.
  */
-export function parseEnvFile(filePath: string): Record<string, string> {
-  const result: Record<string, string> = {};
+export function parseEnvFile(
+  filePath: string,
+  options: ParseEnvOptions = {},
+): Record<string, string> {
   try {
+    return parseEnvContent(readFileSync(filePath, 'utf-8'), options);
+  } catch {
+    // Ignore read errors
+    return {};
+  }
+}
+
+export interface ParseEnvOptions {
+  /**
+   * Strip an inline ` #` comment from an UNQUOTED value. Default `true`.
+   *
+   * Set `false` where a value may legitimately contain a literal ` #` — a
+   * password or token, for instance — and truncating it would silently change
+   * a working credential. Callers replacing a parser that did not strip inline
+   * comments must pass `false` to preserve their existing semantics; no other
+   * env reader in this repo strips them.
+   */
+  stripInlineComments?: boolean;
+}
+
+/**
+ * Like {@link parseEnvFile}, but does NOT swallow read errors.
+ *
+ * Callers that treat a present-but-unreadable env file as a fatal startup
+ * condition must use this. `parseEnvFile` returns `{}` on EACCES/EISDIR, which
+ * for a secrets file means the process continues with the secrets simply absent
+ * — a silent failure that surfaces later as a confusing downstream error rather
+ * than at the point the file could not be read.
+ *
+ * Added 2026-08-13: routing AgentPTY through the tolerant `parseEnvFile` would
+ * have converted its startup from fail-loud to fail-open, because the loop it
+ * replaced used a bare `readFileSync` that threw.
+ */
+export function parseEnvFileStrict(
+  filePath: string,
+  options: ParseEnvOptions = {},
+): Record<string, string> {
+  return parseEnvContent(readFileSync(filePath, 'utf-8'), options);
+}
+
+/**
+ * Parse already-read env-file text. Pure — no IO, so the caller owns the
+ * failure semantics of reading the file.
+ */
+export function parseEnvContent(
+  raw: string,
+  options: ParseEnvOptions = {},
+): Record<string, string> {
+  const stripInlineComments = options.stripInlineComments ?? true;
+  const result: Record<string, string> = {};
+  {
     // stripBom + CRLF-aware split: Windows tooling (PowerShell Out-File,
     // Notepad) writes .env files with a UTF-8 BOM at position 0 AND CRLF
     // line endings. Without stripBom the first KEY line never matches
     // because position 0 is the BOM byte; without the regex split, each
     // value gets a trailing \r that breaks downstream validators.
-    const content = stripBom(readFileSync(filePath, 'utf-8'));
+    const content = stripBom(raw);
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
@@ -197,7 +250,7 @@ export function parseEnvFile(filePath: string): Record<string, string> {
         value = value.slice(1, -1);
       } else if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
         value = value.slice(1, -1);
-      } else {
+      } else if (stripInlineComments) {
         // Unquoted: strip inline comments starting with ' #'
         const hashIdx = value.indexOf(' #');
         if (hashIdx >= 0) {
@@ -207,8 +260,6 @@ export function parseEnvFile(filePath: string): Record<string, string> {
 
       result[key] = value;
     }
-  } catch {
-    // Ignore read errors
   }
   return result;
 }

@@ -131,21 +131,9 @@ Sessions auto-restart with `--continue` every ~71 hours. On context exhaustion, 
 
 ## Local Version Control (Daily Snapshots)
 
-If `ecosystem.local_version_control.enabled` is true in your config.json, run the daily snapshot at the configured time:
+**DISARMED FOR THIS PUBLIC AGENT PACKAGE:** catalog agent installation copies only the agent item tree and does not ship `.claude/skills/local-version-control/SKILL.md`; the catalog `dependencies` field is not implemented by the installer. Keep `ecosystem.local_version_control.enabled` false and do not register an `auto-commit` cron.
 
-```bash
-# Layer 1: auto-commit.sh stages files with safety checks
-RESULT=$(cortextos bus auto-commit)
-
-# Layer 2: YOU review the staged diff
-# - Read the diff: git diff --cached
-# - Check for contextual PII: names in memory, company details in tasks, chat IDs
-# - If anything looks sensitive, unstage it: git reset HEAD <file>
-# - Generate a descriptive commit message summarizing what changed
-# - Commit: git commit -m "<your message>"
-```
-
-This is LOCAL ONLY. Never push. The user's data stays on their machine.
+Re-arm is gated on `task_1785554595214_38473619`, which must implement catalog dependency resolution and pass its own review and community publish gates. The shared community skill already documents the corrected closed-allowlist contract for installations that have it.
 
 ---
 

@@ -252,9 +252,11 @@ export function isClaudeDirOperation(
   // Canonicalize the agent dir first (resolves legitimate symlinks on the install
   // path, e.g. /tmp -> /private/tmp), so the .claude subtree below it is the only
   // thing left to vet.
-  const canonAgentDir = canonicalizePath(resolve(base));
+  const lexicalAgentDir = resolve(base);
+  const canonAgentDir = canonicalizePath(lexicalAgentDir);
   const claudeRoot = join(canonAgentDir, '.claude');
-  const target = canonicalizePath(resolve(canonAgentDir, filePath));
+  const requestedTarget = resolve(lexicalAgentDir, filePath);
+  const target = canonicalizePath(requestedTarget);
 
   // Lexical containment within the agent's own .claude/.
   if (target !== claudeRoot && !target.startsWith(claudeRoot + sep)) return false;
@@ -270,17 +272,50 @@ export function isClaudeDirOperation(
   // A planted symlink could otherwise redirect an "inside .claude" write out of
   // the tree. We lstat each component because realpathSync can't observe a
   // *dangling* symlink (it throws, and canonicalize would fall back to lexical).
-  return !hasSymlinkComponent(claudeRoot, target);
+  // Rebase only the below-agent tail onto the canonical agent boundary. Trust
+  // exactly the supplied lexical spelling and its canonical spelling; unknown
+  // aliases refuse rather than discovering trust through an untrusted path.
+  // When both spellings are prefixes, the shorter boundary preserves every
+  // below-root component for lstat instead of erasing a planted symlink.
+  const componentTarget = rebaseRequestedTarget(lexicalAgentDir, canonAgentDir, requestedTarget);
+  if (!componentTarget) return false;
+  return !hasSymlinkComponent(canonAgentDir, componentTarget);
+}
+
+/**
+ * Map a requested path from one of the two trusted agent-dir spellings onto the
+ * canonical boundary without canonicalizing any component below it. Never
+ * discover trust by asking an untrusted requested ancestor what it resolves to.
+ */
+function rebaseRequestedTarget(
+  lexicalAgentDir: string,
+  canonAgentDir: string,
+  requestedTarget: string,
+): string | null {
+  const boundary = [...new Set([lexicalAgentDir, canonAgentDir])]
+    .filter(candidate => requestedTarget === candidate || requestedTarget.startsWith(candidate + sep))
+    .sort((a, b) => a.length - b.length)[0];
+  if (!boundary) return null;
+
+  const tail = requestedTarget === boundary
+    ? ''
+    : requestedTarget.slice(boundary.length + 1);
+  return tail ? resolve(canonAgentDir, tail) : canonAgentDir;
 }
 
 /**
  * Whether any path component strictly below `rootDir` (assumed already
  * canonical) up to and including `target` is a symlink (live or dangling).
+ * Returns true when target is not inspectable under rootDir so callers fail
+ * closed rather than converting an incomparable path spelling into approval.
  * Stops at the first non-existent component — a name that doesn't exist yet
  * cannot be a symlink, and deeper components can't exist under it.
  */
-function hasSymlinkComponent(rootDir: string, target: string): boolean {
-  if (!target.startsWith(rootDir + sep)) return false;
+export function hasSymlinkComponent(rootDir: string, target: string): boolean {
+  // A security gate must not translate "cannot inspect under this boundary"
+  // into "safe". Treat incomparable spellings as unsafe even though correct
+  // callers rebase them before reaching this helper.
+  if (!target.startsWith(rootDir + sep)) return true;
   const rel = target.slice(rootDir.length + 1);
   let cur = rootDir;
   for (const part of rel.split(sep).filter(Boolean)) {

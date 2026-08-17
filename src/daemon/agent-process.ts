@@ -4,13 +4,14 @@ import { homedir } from 'os';
 import { execFileSync } from 'child_process';
 import type { AgentConfig, AgentStatus, CtxEnv } from '../types/index.js';
 import { AgentPTY } from '../pty/agent-pty.js';
-import { CodexAppServerPTY } from '../pty/codex-app-server-pty.js';
+import { CodexAppServerPTY, type CodexTurnRouting } from '../pty/codex-app-server-pty.js';
 import { HermesPTY, hermesDbExists } from '../pty/hermes-pty.js';
 import { OpencodePTY, opencodeSessionExists } from '../pty/opencode-pty.js';
 import { MessageDedup, injectMessage as injectMessageIntoPty } from '../pty/inject.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { ensureDir } from '../utils/atomic.js';
-import { writeCortextosEnv } from '../utils/env.js';
+import { writeCortextosEnv, parseEnvFile } from '../utils/env.js';
+import { resolveClaudeProjectDir } from '../utils/claude-project-dir.js';
 import { getOverdueReminders } from '../bus/reminders.js';
 import { resolvePaths } from '../utils/paths.js';
 import {
@@ -29,6 +30,23 @@ import {
 } from './watchdog.js';
 type LogFn = (msg: string) => void;
 type StartOptions = { partOfFleetStart?: boolean };
+export interface AgentInjectionOptions {
+  codexRouting?: CodexTurnRouting;
+  codexContinuation?: string;
+  codexFallback?: string;
+  /** Daemon-owned identity for deduping structured injections without altering prompt bytes. */
+  dedupIdentity?: string;
+}
+
+export type AgentInjectionResult =
+  | { ok: true }
+  | {
+      ok: false;
+      code: 'NOT_RUNNING' | 'DEDUPED' | 'ADMISSION_FAILED';
+      message: string;
+      /** Present only when the duplicate is the same daemon-owned structured identity. */
+      dedupIdentity?: string;
+    };
 
 /**
  * Manages a single agent's lifecycle.
@@ -70,6 +88,8 @@ export class AgentProcess {
   // from an old PTY can race past stopRequested and trigger crash recovery on
   // the new agent.
   private lifecycleGeneration: number = 0;
+  /** Invalidates a start that is still waiting in startup_delay. */
+  private startAdmissionGeneration: number = 0;
   // BUG-011 fix: stop() awaits this promise (resolved by the onExit handler in start())
   // to guarantee the PTY exit has fired before stopping=false is reset. Without
   // this, the exit handler can fire after stopping=false and trigger spurious
@@ -143,6 +163,12 @@ export class AgentProcess {
       return;
     }
 
+    // Registry liveness checks must see an admitted start before this method's
+    // first await. Otherwise a concurrent start during startup_delay can evict
+    // this AgentProcess as "stopped" while its original start later resumes.
+    this.status = 'starting';
+    const admissionGeneration = this.startAdmissionGeneration;
+
     // Apply startup delay
     const delay = this.config.startup_delay || 0;
     if (delay > 0) {
@@ -150,13 +176,33 @@ export class AgentProcess {
       await sleep(delay * 1000);
     }
 
+    // stop() can complete while startup_delay is sleeping. Refuse before any
+    // environment write, marker mutation, or PTY construction if that happened.
+    if (admissionGeneration !== this.startAdmissionGeneration) {
+      this.log('Start cancelled during startup delay');
+      return;
+    }
+
     // Write .cortextos-env for backward compat (D6)
     if (this.env.agentDir) {
       writeCortextosEnv(this.env.agentDir, this.env);
     }
 
-    // Determine start mode
-    const mode = this.shouldContinue() ? 'continue' : 'fresh';
+    // ONE OBSERVATION serves BOTH the mode decision and the consume.
+    //
+    // These were two independent probes: shouldContinue() probed, and a second
+    // probe captured the identity for the post-spawn delete. A marker created
+    // BETWEEN them was invisible to the mode decision and visible to the
+    // capture, so the launch went CONTINUE and the post-spawn delete consumed a
+    // request that had never been honoured. Identity binding did not help --
+    // the marker was unchanged between capture and delete; the problem is that
+    // the capture saw something the decision did not.
+    //
+    // CONSUME ONLY WHAT YOU HONOURED. One probe feeds the decision, the same
+    // observation authorises the delete, and the delete is gated on that
+    // observation having actually selected `fresh`.
+    const observedForceFresh = this.probeForceFreshMarker();
+    const mode = this.shouldContinue(observedForceFresh) ? 'continue' : 'fresh';
     // Read the recovery note and rate-limit marker before building the prompt
     // but do NOT delete them yet. Both are deleted only after pty.spawn() succeeds
     // so that a spawn failure doesn't permanently swallow the recovery context
@@ -169,12 +215,17 @@ export class AgentProcess {
       : this.buildContinuePrompt(recoveryNote, options);
 
     this.log(`Starting in ${mode} mode`);
-    this.status = 'starting';
 
     // BUG-040 fix: clear any stale stop request from a previous lifecycle
     // (e.g. if the previous stop() timed out before the PTY actually exited).
     // We're starting fresh — the new PTY has no pending stop.
     this.stopRequested = false;
+    // A direct start/enable begins a new enabled lifecycle. The disable marker
+    // otherwise suppresses crash recovery indefinitely.
+    try {
+      const disableMarker = join(this.env.ctxRoot, 'state', this.name, '.user-disable');
+      if (existsSync(disableMarker)) unlinkSync(disableMarker);
+    } catch { /* best effort */ }
     // BUG-040 fix: bump generation. The onExit closure below captures THIS
     // value and uses it to detect "I'm an old PTY whose exit fired after a
     // new lifecycle began" — in which case it bails out without touching
@@ -244,6 +295,9 @@ export class AgentProcess {
       // permanently lose the recovery context (Bug-1 fix pattern).
       if (recoveryNote) deleteRecoveryNote(stateDir);
       if (hadRateLimit) this.deleteRateLimitMarker(stateDir);
+      // Gated on mode: a marker that did not select `fresh` was never honoured
+      // and must survive for the next start.
+      if (mode === 'fresh' && observedForceFresh) this.deleteForceFreshMarker(observedForceFresh);
 
       this.maybeSendRuntimeLifecycleNotification(options);
 
@@ -284,6 +338,8 @@ export class AgentProcess {
   }
 
   private async performStop(): Promise<void> {
+    // Synchronously revoke any performStart still blocked in startup_delay.
+    this.startAdmissionGeneration += 1;
     this.stopping = true;
     // BUG-040 fix: stopRequested persists ACROSS stop()'s return until
     // handleExit clears it. This is the safety net for the case where the
@@ -496,27 +552,61 @@ export class AgentProcess {
   /**
    * Inject a message into the agent's PTY — structured outcome.
    *
-   * Distinguishes NOT_RUNNING (agent registered but no live PTY) from
-   * DEDUPED (content collapsed against the in-process MessageDedup window).
+   * Distinguishes NOT_RUNNING (agent registered but no live PTY), DEDUPED
+   * (content collapsed against the in-process MessageDedup window), and
+   * ADMISSION_FAILED (the live PTY refused the message before taking custody).
    * See issue #346 — both used to surface as a bare `false` and got mistaken
    * for "agent not found" by operators investigating restart/cron failures.
    */
-  injectMessageDetailed(content: string): { ok: true } | { ok: false; code: 'NOT_RUNNING' | 'DEDUPED'; message: string } {
+  injectMessageDetailed(
+    content: string,
+    options?: AgentInjectionOptions,
+  ): AgentInjectionResult {
     if (!this.pty || this.status !== 'running') {
       return { ok: false, code: 'NOT_RUNNING', message: `agent "${this.name}" is registered but not running (status: ${this.status})` };
     }
 
-    if (this.dedup.isDuplicate(content)) {
+    const structuredIdentity = options?.dedupIdentity;
+    const dedupKey = structuredIdentity ?? content;
+    const dedupScope = structuredIdentity === undefined ? 'ordinary-content' : 'daemon-structured';
+    if (this.dedup.isDuplicate(dedupKey, dedupScope)) {
       this.log('Dedup: skipping duplicate message');
-      return { ok: false, code: 'DEDUPED', message: `inject for "${this.name}" deduped — content matches MessageDedup hash window` };
+      return {
+        ok: false,
+        code: 'DEDUPED',
+        message: `inject for "${this.name}" deduped — identity matches MessageDedup hash window`,
+        ...(structuredIdentity === undefined ? {} : { dedupIdentity: structuredIdentity }),
+      };
     }
 
-    if ('injectMessage' in this.pty && typeof this.pty.injectMessage === 'function') {
-      this.pty.injectMessage(content);
-    } else {
-      // CodexAppServerPTY intentionally models stdin writes itself and does not
-      // inherit AgentPTY. Feed it through the same write path used historically.
-      injectMessageIntoPty((data) => this.pty?.write(data), content);
+    try {
+      if (this.pty instanceof CodexAppServerPTY) {
+        if (options?.codexRouting && options.codexContinuation && options.codexFallback) {
+          this.pty.injectCronSequence(
+            content,
+            options.codexRouting,
+            options.codexContinuation,
+            options.codexFallback,
+          );
+        } else {
+          this.pty.injectMessage(content, options?.codexRouting);
+        }
+      } else if ('injectMessage' in this.pty && typeof this.pty.injectMessage === 'function') {
+        this.pty.injectMessage(content);
+      } else {
+        // CodexAppServerPTY intentionally models stdin writes itself and does not
+        // inherit AgentPTY. Feed it through the same write path used historically.
+        injectMessageIntoPty((data) => this.pty?.write(data), content);
+      }
+    } catch (err) {
+      this.dedup.remove?.(dedupKey, dedupScope);
+      const detail = err instanceof Error ? err.message : String(err);
+      this.log(`Injection admission failed: ${detail}`);
+      return {
+        ok: false,
+        code: 'ADMISSION_FAILED',
+        message: `inject for "${this.name}" failed before admission: ${detail}`,
+      };
     }
     this.lastInjectedAt = Date.now();
     return { ok: true };
@@ -528,7 +618,7 @@ export class AgentProcess {
 
   /**
    * Inject a message into the agent's PTY (back-compat boolean wrapper).
-   * New callers that need to distinguish DEDUPED from NOT_RUNNING should use
+   * New callers that need the failure disposition should use
    * `injectMessageDetailed()` instead.
    */
   injectMessage(content: string): boolean {
@@ -592,6 +682,10 @@ export class AgentProcess {
       sessionStart: this.sessionStart?.toISOString(),
       crashCount: this.crashCount,
       model: this.config.model,
+      awaitingConfirmation:
+        this.pty && 'isAwaitingInteractiveConfirmation' in this.pty
+          ? this.pty.isAwaitingInteractiveConfirmation()
+          : false,
     };
   }
 
@@ -642,6 +736,12 @@ export class AgentProcess {
             CORTEXTOS_DIR: this.env.frameworkRoot || process.env.CORTEXTOS_DIR,
           },
           stdio: 'pipe',
+          // The daemon is spawning its OWN CLI here. Unbounded, a CLI that blocks
+          // (lock contention, a wedged child of its own) stalls the daemon thread
+          // that is trying to report a rollback preflight - the supervisor waiting
+          // on the thing it supervises. 15s is generous for a local log-event.
+          timeout: 15_000,
+          killSignal: 'SIGKILL',
         },
       );
     } catch (err) {
@@ -791,6 +891,14 @@ export class AgentProcess {
     // cleanup stays with agent-manager / hook-crash-alert per the existing
     // separation of concerns.
     if (this.isDaemonShuttingDown()) {
+      return;
+    }
+
+    // A user disable is persistent intent, not a transient stop marker. Never
+    // let either crash-recovery path resurrect the agent while it is present.
+    if (this.isUserDisabled()) {
+      this.status = 'stopped';
+      this.notifyStatusChange();
       return;
     }
 
@@ -967,6 +1075,14 @@ export class AgentProcess {
     }, backoff);
   }
 
+  private isUserDisabled(): boolean {
+    try {
+      return existsSync(join(this.env.ctxRoot, 'state', this.name, '.user-disable'));
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Check whether the rate-limit recovery marker exists (read-only).
    * The caller is responsible for deleting it after a successful spawn via
@@ -988,7 +1104,60 @@ export class AgentProcess {
     } catch { /* ignore */ }
   }
 
-  private shouldContinue(): boolean {
+  /**
+   * Probe for the `.force-fresh` marker WITHOUT consuming it, returning the
+   * IDENTITY of the file observed — not just whether one existed.
+   *
+   * The identity is load-bearing. Deferring the consume to after spawn opens a
+   * seconds-wide window in which another writer can replace the marker with a
+   * NEW request: `.force-fresh` has three writers, and `bus/system.ts`
+   * hard-restart runs in a separate CLI process entirely. An unconditional
+   * post-spawn delete cannot tell that newer request apart from the one
+   * observed at mode decision, and swallows it — so the concurrent restart
+   * boots `--continue`, which is the very failure this deferral exists to
+   * prevent, reintroduced on a narrower window.
+   *
+   * Returns null when absent. Mirrors hasRateLimitMarker(), except that a
+   * boolean is not enough here.
+   */
+  private probeForceFreshMarker(): { ino: number; mtimeMs: number; size: number } | null {
+    try {
+      const stat = statSync(join(this.env.ctxRoot, 'state', this.name, '.force-fresh'));
+      return { ino: Number(stat.ino), mtimeMs: stat.mtimeMs, size: stat.size };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Consume the `.force-fresh` marker. Call only after pty.spawn() succeeds.
+   *
+   * Consumes ONLY the exact file observed at probe time. If the marker on disk
+   * is a different file (replaced mid-spawn) it is LEFT IN PLACE, because it
+   * represents a request this launch did not satisfy.
+   *
+   * Tolerates an already-absent file: start() can be re-entered after a failed
+   * spawn, and the marker may have been consumed by an earlier successful one.
+   */
+  private deleteForceFreshMarker(observed: { ino: number; mtimeMs: number; size: number }): void {
+    const current = this.probeForceFreshMarker();
+    if (!current) return;
+    if (
+      current.ino !== observed.ino ||
+      current.mtimeMs !== observed.mtimeMs ||
+      current.size !== observed.size
+    ) {
+      this.log('.force-fresh changed during spawn — leaving the newer request for the next start');
+      return;
+    }
+    try {
+      unlinkSync(join(this.env.ctxRoot, 'state', this.name, '.force-fresh'));
+    } catch { /* ignore */ }
+  }
+
+  private shouldContinue(
+    observedForceFresh: { ino: number; mtimeMs: number; size: number } | null,
+  ): boolean {
     // Check for force-fresh marker FIRST (all runtimes honor it).
     //
     // Ordering matters: this check used to sit BELOW the Hermes early-return,
@@ -996,15 +1165,21 @@ export class AgentProcess {
     // never actually forced a fresh session — the marker was bypassed (the
     // agent kept resuming via --continue as long as state.db existed) AND
     // never consumed, so it leaked in the state dir indefinitely.
-    const forceFreshPath = join(this.env.ctxRoot, 'state', this.name, '.force-fresh');
-    if (existsSync(forceFreshPath)) {
-      // Context watchdog and hard-restart use this marker to force a fresh
-      // session instead of `--continue`. The marker is consumed here in the
-      // daemon launch decision, before runtime-specific boot prompts run; do
-      // not expect codex-app-server itself to read or clear `.force-fresh`.
-      try {
-        unlinkSync(forceFreshPath);
-      } catch { /* ignore */ }
+    // This is a PROBE ONLY — it must not consume the marker.
+    //
+    // The consume moved to start()'s post-spawn block, beside
+    // deleteRateLimitMarker(). Consuming here spent the authorization at the
+    // MODE DECISION, 74 lines before pty.spawn(); any failure in between lost
+    // the marker, and the next start() then booted `--continue` into the exact
+    // session the marker existed to escape. That is the same hazard the
+    // recovery note and `.rate-limited` are already protected from — see the
+    // comment at the call site and deleteRateLimitMarker()'s contract.
+    //
+    // Context watchdog and hard-restart use this marker to force a fresh
+    // session instead of `--continue`. The consume happens in the daemon launch
+    // path, not in any runtime adapter; do not expect codex-app-server itself
+    // to read or clear `.force-fresh`.
+    if (observedForceFresh !== null) {
       return false;
     }
 
@@ -1043,15 +1218,10 @@ export class AgentProcess {
     const launchDir = this.config.working_directory || this.env.agentDir;
     if (!launchDir) return false;
 
-    // Claude projects dir uses the absolute path with all separators replaced by dashes
-    // e.g. /home/example/agents/boss -> -home-example-agents-boss (leading sep becomes -)
-    // Use homedir() for cross-platform compatibility (HOME is not set on Windows).
-    const convDir = join(
-      homedir(),
-      '.claude',
-      'projects',
-      launchDir.split(sep).join('-'),
-    );
+    // Predict Claude's project directory from the launch path. If Claude changes
+    // its private naming scheme, discover the matching JSONL and log the drift.
+    const convDir = resolveClaudeProjectDir(launchDir, homedir(), (message) => this.log(message));
+    if (!convDir) return false;
 
     try {
       const files = require('fs').readdirSync(convDir);
@@ -1100,23 +1270,56 @@ export class AgentProcess {
    * path (~/.hermes) for state.db.
    */
   private resolveHermesHome(): string | undefined {
-    try {
-      const envFile = join(this.env.agentDir, '.env');
-      if (existsSync(envFile)) {
-        for (const line of readFileSync(envFile, 'utf-8').split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#')) continue;
-          const eqIdx = trimmed.indexOf('=');
-          if (eqIdx > 0 && trimmed.slice(0, eqIdx).trim() === 'HERMES_HOME') {
-            const value = trimmed.slice(eqIdx + 1).trim();
-            if (value) return value;
-          }
-        }
-      }
-    } catch {
-      // Unreadable/malformed .env — fall through to the daemon's env.
+    // MUST parse with the same options AgentPTY.spawn() uses on this same file,
+    // or the two disagree about what HERMES_HOME is. The hand-rolled loop that
+    // used to live here was quote-blind, so once AgentPTY began stripping
+    // surrounding quotes a value like HERMES_HOME="/srv/hermes-home" gave the
+    // child /srv/hermes-home while this probed a path containing literal quote
+    // characters. state.db is then never found and shouldContinue() launches
+    // every restart in fresh mode — silently, since a missing db is
+    // indistinguishable from a first run. Found by Codex review 2026-08-13.
+    //
+    // Tolerant reader, matching the try/catch this replaced: an unreadable .env
+    // falls through to the daemon's env rather than killing the process.
+    // ABSENCE and an explicitly BLANK value are different answers, and treating
+    // them alike breaks the agreement this method exists to maintain. AgentPTY
+    // Object.assigns whatever the file says, so `HERMES_HOME=` puts an empty
+    // string in the child's environment. A truthiness test here would instead
+    // fall through to the daemon's own process.env, so the daemon would probe
+    // /whatever/state.db while the child runs with the empty value and resolves
+    // to the default — continue-vs-fresh decided from a DB the child never uses.
+    //
+    // So: key present wins, blank included, and hermesDbExists applies its own
+    // `|| ~/.hermes` default exactly as it does for the child. Only true absence
+    // falls through to the daemon env.
+    //
+    // Predates this PR (origin/main had the same truthiness test) but is fixed
+    // here because this PR is what claims the two readers agree.
+    // MIRROR AgentPTY's FULL precedence, not just the last layer. It builds
+    //   base env (HERMES_HOME passes the getBaseEnv allowlist)
+    //     <- orgs/<org>/secrets.env
+    //       <- agent .env
+    // so checking only the agent .env meant an org-level HERMES_HOME reached the
+    // child while the daemon fell through to its own process.env — the daemon
+    // probing one state.db and the child using another.
+    let value = process.env['HERMES_HOME'];
+
+    const layers: string[] = [];
+    if (this.env.org && this.env.projectRoot) {
+      layers.push(join(this.env.projectRoot, 'orgs', this.env.org, 'secrets.env'));
     }
-    return process.env['HERMES_HOME'];
+    layers.push(join(this.env.agentDir, '.env'));
+
+    for (const file of layers) {
+      if (!existsSync(file)) continue;
+      const vars = parseEnvFile(file, { stripInlineComments: false });
+      // Key-presence, not truthiness, at EVERY layer: `HERMES_HOME=` is an
+      // explicit blank that AgentPTY assigns into the child, so it must override
+      // an earlier layer here too rather than silently falling through.
+      if ('HERMES_HOME' in vars) value = vars['HERMES_HOME'];
+    }
+
+    return value;
   }
 
   private buildStartupPrompt(recoveryNote: string | null, options: StartOptions = {}): string {

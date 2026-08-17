@@ -67,7 +67,7 @@ export interface FireCronResult {
 export function handleFireCron(
   agent: string | undefined,
   cronName: string | undefined,
-  injectFn: (agent: string, text: string) => boolean,
+  injectFn: (agent: string, text: string, cron: CronDefinition) => boolean,
   nowMs = Date.now(),
 ): FireCronResult {
   if (!agent || !agent.trim()) {
@@ -97,7 +97,7 @@ export function handleFireCron(
 
   // Inject into PTY
   const injection = `[CRON: ${cronName}] ${cron.prompt}`;
-  const injected = injectFn(agent, injection);
+  const injected = injectFn(agent, injection, cron);
   if (!injected) {
     return { ok: false, error: `Agent '${agent}' not found or not running.` };
   }
@@ -183,6 +183,7 @@ function listAllCrons(): CronSummaryRow[] {
         cron,
         lastFire: lastEntry?.ts ?? null,
         lastStatus: lastEntry?.status ?? null,
+        lastFireKind: lastEntry?.fire_kind ?? null,
         nextFire: computeNextFire(cron.schedule, cron.last_fired_at, now),
       });
     }
@@ -628,8 +629,11 @@ export class IPCServer {
           if (!request.agent) {
             response = { success: false, error: 'Agent name required', code: 'INVALID_INPUT' };
           } else {
+            // Inspect synchronously so the IPC response can report NOT_FOUND.
+            // stopAgent's own registry check remains the downstream gate; this
+            // read-only verdict shapes the operator response (issue #346).
             const insp = this.agentManager.inspectAgentOp('stop', request.agent);
-            this.agentManager.stopAgent(request.agent)
+            this.agentManager.stopAgent(request.agent, request.userInitiated ?? true)
               .catch(err => console.error(`Failed to stop ${request.agent}:`, err));
             if (insp.ok) {
               response = { success: true, data: `Stopping ${request.agent}` };
@@ -648,14 +652,19 @@ export class IPCServer {
             const isFleetRestart = request.source === 'cortextos bus soft-restart-all';
             const fleetTotal = typeof request.data?.fleetTotal === 'number' ? request.data.fleetTotal : undefined;
             const fleetIndex = typeof request.data?.fleetIndex === 'number' ? request.data.fleetIndex : undefined;
-            this.agentManager.restartAgent(request.agent, isFleetRestart
-              ? { partOfFleetStart: true, fleetTotal, fleetIndex }
-              : undefined)
-              .catch(err => console.error(`Failed to restart ${request.agent}:`, err));
             if (insp.ok) {
+              this.agentManager.restartAgent(request.agent, isFleetRestart
+                ? { partOfFleetStart: true, fleetTotal, fleetIndex }
+                : undefined)
+                .catch(err => console.error(`Failed to restart ${request.agent}:`, err));
               response = { success: true, data: `Restarting ${request.agent}` };
             } else {
               console.log(`[ipc] restart-agent ${request.agent}: ${insp.code} — ${insp.message}`);
+              // A refused FLEET member must still be accounted for, or the coordinator
+              // strands at completed < expected and suppresses the next fleet batch.
+              if (isFleetRestart) {
+                this.agentManager.recordFleetStartRejection(request.agent, fleetTotal);
+              }
               response = { success: false, error: insp.message, code: insp.code };
             }
           }
@@ -736,8 +745,9 @@ export class IPCServer {
             response = { success: false, error: 'inject-agent requires: agent, data.text', code: 'INVALID_INPUT' };
           } else {
             // Structured outcome distinguishes NOT_FOUND (agent not in registry)
-            // from NOT_RUNNING (registered but PTY dead) from DEDUPED (content
-            // collision in MessageDedup window). Closes the conflation Boris
+            // from NOT_RUNNING (registered but PTY dead), DEDUPED (content
+            // collision in MessageDedup window), and ADMISSION_FAILED (runtime
+            // could not durably take custody). Closes the conflation Boris
             // surfaced — the harness "3 not found errors" were dedup hits.
             // See issue #346.
             const result = this.agentManager.injectAgentDetailed(agentToInject, textToInject);
@@ -770,7 +780,7 @@ export class IPCServer {
           const fireCronResult = handleFireCron(
             agentToFire,
             fireCronName,
-            (a, text) => this.agentManager.injectAgent(a, text),
+            (a, text, cron) => this.agentManager.injectCronAgent(a, cron, text),
           );
           if (fireCronResult.ok) {
             // Invalidate fleet health cache so next poll reflects the new fire

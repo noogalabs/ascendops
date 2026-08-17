@@ -247,6 +247,20 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     warn.mockRestore();
   });
 
+  it('rejects a whitespace-only configured working directory', async () => {
+    const handle = makeFakePty();
+    const pty = new AgentPTY(TEST_ENV, { vendor: 'anthropic', working_directory: '   ' });
+    (pty as unknown as { spawnFn: unknown }).spawnFn = vi.fn(() => handle.fake);
+    await expect(pty.spawn('fresh', 'hello')).rejects.toThrow(/whitespace-only/);
+  });
+
+  it('rejects a missing configured working directory', async () => {
+    const handle = makeFakePty();
+    const pty = new AgentPTY(TEST_ENV, { vendor: 'anthropic', working_directory: '/definitely/missing' });
+    (pty as unknown as { spawnFn: unknown }).spawnFn = vi.fn(() => handle.fake);
+    await expect(pty.spawn('fresh', 'hello')).rejects.toThrow(/does not exist/);
+  });
+
   it('navigates Down+Enter for the Bypass Permissions prompt', async () => {
     const handle = makeFakePty();
     const pty = newAgentPty(handle);
@@ -443,6 +457,46 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     expect(handle.fake.write).not.toHaveBeenCalledWith('\r');
   });
 
+  it('never types after bootstrap when old bypass tokens remain in the tail', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+
+    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    handle.emitData('accept edits · permissions');
+    expect(pty.getOutputBuffer().isBootstrapped()).toBe(true);
+
+    vi.advanceTimersByTime(32_000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+  });
+
+  it('never types when prompt-like ordinary text arrives after bootstrap', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+
+    handle.emitData('accept edits · permissions');
+    expect(pty.getOutputBuffer().isBootstrapped()).toBe(true);
+    handle.emitData('documentation: Do you trust this folder? Yes, continue.\n');
+
+    vi.advanceTimersByTime(32_000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+    expect(pty.getOutputBuffer().isBootstrapped()).toBe(true);
+  });
+
+  it('does not type on unpaired trust or yes words in ordinary output', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+
+    handle.emitData('Yes — model loaded. trust region configured.\n');
+    vi.advanceTimersByTime(32_000);
+
+    expect(handle.fake.write).not.toHaveBeenCalled();
+  });
+
   it('fires Enter at 5s when the trust prompt is visible', async () => {
     const handle = makeFakePty();
     const pty = newAgentPty(handle);
@@ -507,5 +561,35 @@ describe('AgentPTY trust-prompt auto-accept', () => {
     expect(writes).not.toContain('\r');
     expect(preflightMocks.ensureFolderTrusted).not.toHaveBeenCalled();
     expect(preflightMocks.ensureBypassPromptSuppressed).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a first-run prompt that remains wedged at the backstop', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(pty.isAwaitingInteractiveConfirmation()).toBe(true);
+  });
+
+  it('does not mistake a lowercase bypass dialog for the permissions status bar', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData('bypass permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    expect(pty.getOutputBuffer().isBootstrapped()).toBe(false);
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(pty.isAwaitingInteractiveConfirmation()).toBe(true);
+  });
+
+  it('does not report a wedge after late bootstrap', async () => {
+    const handle = makeFakePty();
+    const pty = newAgentPty(handle);
+    await pty.spawn('fresh', 'hello');
+    handle.emitData('Bypass Permissions\n  1. No, exit\n  2. Yes, I accept\n');
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(pty.isAwaitingInteractiveConfirmation()).toBe(true);
+    handle.emitData('accept edits · permissions');
+    expect(pty.isAwaitingInteractiveConfirmation()).toBe(false);
   });
 });

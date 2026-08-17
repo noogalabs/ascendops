@@ -230,17 +230,20 @@ describe('Sprint 1: Template Completeness', () => {
       }
     });
 
-    it('has config.json with 5 analyst crons + ecosystem config', () => {
+    it('keeps local version control disabled and cron-absent before onboarding consent', () => {
       const config = JSON.parse(readFileSync(join(analystDir, 'config.json'), 'utf-8'));
-      expect(config.crons.length).toBe(5);
+      expect(config.crons.length).toBe(4);
       const cronNames = config.crons.map((c: any) => c.name);
       expect(cronNames).toContain('heartbeat');
       expect(cronNames).toContain('nightly-metrics');
-      expect(cronNames).toContain('auto-commit');
+      expect(cronNames).not.toContain('auto-commit');
       expect(cronNames).toContain('check-upstream');
       expect(cronNames).toContain('catalog-browse');
       expect(config.ecosystem).toBeDefined();
-      expect(config.ecosystem.local_version_control).toBeDefined();
+      expect(config.ecosystem.local_version_control).toEqual({
+        enabled: false,
+        blocked_reason: 'Onboarding consent and a reviewed live lock/lease are required; gated on task_1785555336924_76305344',
+      });
     });
 
     it('goals.json exists with all expected fields', () => {

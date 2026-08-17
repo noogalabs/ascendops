@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -7,6 +7,7 @@ import {
   loadEnv,
   formatToolSummary,
   isClaudeDirOperation,
+  hasSymlinkComponent,
   sanitizeCodeBlock,
   buildPermissionKeyboard,
   buildPlanKeyboard,
@@ -155,6 +156,156 @@ describe('Hook Utilities', () => {
       } finally {
         rmSync(base, { recursive: true, force: true });
       }
+    });
+
+    it('accepts an absolute target through the macOS /var -> /private/var path alias', () => {
+      // /var/tmp is a real path alias on macOS and an ordinary directory on
+      // Linux. Use it directly so the macOS regression is not hidden by a
+      // synthetic TMPDIR or skipped outside one platform.
+      const base = mkdtempSync('/var/tmp/hookperm-alias-');
+      try {
+        const agentDirViaAlias = join(base, 'agent');
+        mkdirSync(join(agentDirViaAlias, '.claude'), { recursive: true });
+
+        expect(isClaudeDirOperation('Write',
+          { file_path: join(agentDirViaAlias, '.claude', 'ok.txt') }, agentDirViaAlias)).toBe(true);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a live symlink inside .claude even when it currently points inside', () => {
+      const base = mkdtempSync(join(tmpdir(), 'hookperm-'));
+      try {
+        const realAgentDir = join(base, 'agent');
+        const inside = join(realAgentDir, '.claude', 'inside');
+        mkdirSync(inside, { recursive: true });
+        symlinkSync(inside, join(realAgentDir, '.claude', 'link'));
+
+        // An inside-pointing link can be retargeted between check and write.
+        expect(isClaudeDirOperation('Write',
+          { file_path: join(realAgentDir, '.claude', 'link', 'ok.txt') }, realAgentDir)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses an alias-spelled internal symlink target with a canonical agentDir', () => {
+      const base = mkdtempSync(join(realpathSync(tmpdir()), 'hookperm-inverse-alias-'));
+      try {
+        const realAgentDir = join(base, 'agent');
+        const agentDirViaAlias = join(base, 'agent-alias');
+        const inside = join(realAgentDir, '.claude', 'inside');
+        mkdirSync(inside, { recursive: true });
+        symlinkSync(inside, join(realAgentDir, '.claude', 'link'));
+        symlinkSync(realAgentDir, agentDirViaAlias);
+
+        const canonicalAgentDir = realpathSync(realAgentDir);
+        expect(agentDirViaAlias).not.toBe(canonicalAgentDir);
+        expect(realpathSync(agentDirViaAlias)).toBe(canonicalAgentDir);
+        expect(isClaudeDirOperation('Write', {
+          file_path: join(agentDirViaAlias, '.claude', 'link', 'ok.txt'),
+        }, canonicalAgentDir)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses an unknown alias spelling even when it currently resolves inside', () => {
+      const base = mkdtempSync(join(realpathSync(tmpdir()), 'hookperm-inverse-alias-safe-'));
+      try {
+        const realAgentDir = join(base, 'agent');
+        const agentDirViaAlias = join(base, 'agent-alias');
+        mkdirSync(join(realAgentDir, '.claude'), { recursive: true });
+        symlinkSync(realAgentDir, agentDirViaAlias);
+
+        const canonicalAgentDir = realpathSync(realAgentDir);
+        expect(agentDirViaAlias).not.toBe(canonicalAgentDir);
+        expect(realpathSync(agentDirViaAlias)).toBe(canonicalAgentDir);
+        expect(isClaudeDirOperation('Write', {
+          file_path: join(agentDirViaAlias, '.claude', 'ok.txt'),
+        }, canonicalAgentDir)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('accepts the known canonical spelling when agentDir uses an alias', () => {
+      const base = mkdtempSync(join(realpathSync(tmpdir()), 'hookperm-canonical-target-'));
+      try {
+        const realAgentDir = join(base, 'agent');
+        const agentDirViaAlias = join(base, 'agent-alias');
+        mkdirSync(join(realAgentDir, '.claude'), { recursive: true });
+        symlinkSync(realAgentDir, agentDirViaAlias);
+        const canonicalAgentDir = realpathSync(realAgentDir);
+        expect(agentDirViaAlias).not.toBe(canonicalAgentDir);
+        expect(realpathSync(agentDirViaAlias)).toBe(canonicalAgentDir);
+
+        expect(isClaudeDirOperation('Write', {
+          file_path: join(canonicalAgentDir, '.claude', 'ok.txt'),
+        }, agentDirViaAlias)).toBe(true);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses an arbitrary agent-root alias for ordinary and symlink targets', () => {
+      const base = mkdtempSync(join(tmpdir(), 'hookperm-arbitrary-alias-'));
+      try {
+        const realAgentDir = join(base, 'real');
+        const inside = join(realAgentDir, '.claude', 'inside');
+        mkdirSync(inside, { recursive: true });
+        symlinkSync(inside, join(realAgentDir, '.claude', 'link'));
+        const aliasAgentDir = join(base, 'alias');
+        symlinkSync(realAgentDir, aliasAgentDir);
+
+        expect(isClaudeDirOperation('Write', {
+          file_path: join(aliasAgentDir, '.claude', 'ok.txt'),
+        }, realAgentDir)).toBe(false);
+        expect(isClaudeDirOperation('Write', {
+          file_path: join(aliasAgentDir, '.claude', 'link', 'ok.txt'),
+        }, realAgentDir)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('does not mistake a below-root loop-back symlink for the trusted boundary', () => {
+      const base = mkdtempSync(join(tmpdir(), 'hookperm-loop-back-'));
+      try {
+        const realAgentDir = join(base, 'agent');
+        mkdirSync(join(realAgentDir, '.claude'), { recursive: true });
+        symlinkSync(realAgentDir, join(realAgentDir, '.claude', 'link'));
+
+        expect(isClaudeDirOperation('Write', {
+          file_path: join(realAgentDir, '.claude', 'link', '.claude', 'ok.txt'),
+        }, realAgentDir)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('uses the shortest trusted prefix so a nested agent-dir alias remains inspectable', () => {
+      const base = mkdtempSync(join(realpathSync(tmpdir()), 'hookperm-nested-agent-alias-'));
+      try {
+        const realAgentDir = join(base, 'agent');
+        mkdirSync(join(realAgentDir, '.claude'), { recursive: true });
+        const nestedAlias = join(realAgentDir, 'alias');
+        symlinkSync(realAgentDir, nestedAlias);
+
+        expect(isClaudeDirOperation('Write', {
+          file_path: join(nestedAlias, '.claude', 'ok.txt'),
+        }, nestedAlias)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('fails closed when the component target cannot be inspected under the trusted boundary', () => {
+      expect(hasSymlinkComponent(
+        '/trusted/agent',
+        '/different-spelling/agent/.claude/link/ok.txt',
+      )).toBe(true);
     });
 
     it('refuses a symlinked .claude root that redirects the gate (codex)', () => {

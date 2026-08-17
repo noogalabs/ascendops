@@ -8,7 +8,9 @@ model: haiku
 
 # Trending Repo Scout
 
-Run one safe daily scanner that finds a small number of potentially useful public repos and turns them into a concise borrow digest for your orchestrator. This is an external-pattern scout, not an implementation step.
+`OPERATING_MODEL.md` is the active gate for authority, approvals, external comms, and system-of-record boundaries. If this skill conflicts with `OPERATING_MODEL.md`, follow `OPERATING_MODEL.md` unless David gave a newer direct instruction.
+
+Run one safe daily scanner that finds a small number of potentially useful public repos and turns them into a concise borrow digest for an agent. This is an external-pattern scout, not an implementation step.
 
 ## Hard Rules
 

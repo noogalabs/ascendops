@@ -1,0 +1,39 @@
+[
+  {
+    "schemaVersion": 1,
+    "population": "framework.skill-templates",
+    "expectedPopulation": 13,
+    "root": "templates",
+    "discovery": { "kind": "direct-children", "marker": "AGENTS.md" },
+    "layouts": {
+      "claude-skills": { "skillHome": ".claude/skills" },
+      "codex-plugin-skills": { "skillHome": "plugins/cortextos-agent-skills/skills" }
+    },
+    "subjects": [
+      { "id": "agent", "layout": "claude-skills", "tracked_root": true },
+      { "id": "agent-accounting-coordinator", "layout": "claude-skills", "tracked_root": true, "enabled": false },
+      { "id": "agent-bd", "layout": "claude-skills", "tracked_root": true, "enabled": false },
+      { "id": "agent-codex", "layout": "codex-plugin-skills", "tracked_root": true },
+      { "id": "agent-dev", "layout": "claude-skills", "tracked_root": true, "enabled": false },
+      { "id": "analyst", "layout": "claude-skills", "tracked_root": true },
+      { "id": "hermes", "layout": "claude-skills", "tracked_root": true, "enabled": false },
+      { "id": "leasing-coordinator", "layout": "claude-skills", "tracked_root": true },
+      { "id": "m2c1-worker", "layout": "claude-skills", "tracked_root": true, "enabled": false },
+      { "id": "maintenance-coordinator", "layout": "claude-skills", "tracked_root": true },
+      { "id": "orchestrator", "layout": "claude-skills", "tracked_root": true },
+      { "id": "renewals-coordinator", "layout": "claude-skills", "tracked_root": true },
+      { "id": "turnover-coordinator", "layout": "claude-skills", "tracked_root": true }
+    ],
+    "bindings": {
+      "heartbeat": {
+        "subjects": {
+          "agent-codex": {
+            "representation": "pointer",
+            "canonical": "templates/agent-codex/HEARTBEAT.md",
+            "pointerReference": "canonical Codex heartbeat procedure is root `HEARTBEAT.md`"
+          }
+        }
+      }
+    }
+  }
+]

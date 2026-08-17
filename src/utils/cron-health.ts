@@ -22,13 +22,77 @@
  */
 
 import { parseDurationMs } from '../bus/cron-state.js';
-import type { CronSummaryRow, CronExecutionLogEntry } from '../types/index.js';
+import type { CronSummaryRow, CronExecutionLogEntry, CronFireKind } from '../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
 export type HealthState = 'healthy' | 'warning' | 'failure' | 'never-fired';
+
+/**
+ * Compile-time exhaustiveness guard for the summary COUNTER switches.
+ *
+ * ## WHY THIS EXISTS
+ *
+ * `allHealthy` on the health page is derived from the counters:
+ * `warning === 0 && failure === 0 && neverFired === 0`. The counter switches
+ * below enumerate all four states today and are correct — but nothing FORCED
+ * them to be exhaustive, so adding a fifth `HealthState` would leave rows in
+ * that state incrementing nothing. All three checked counters would stay zero
+ * and the page would render "All systems nominal" over them.
+ *
+ * That is UNKNOWN SHOWN AS GREEN, which is strictly worse than unknown shown as
+ * red, and it is the `never-fired` lesson one member further out: `never-fired`
+ * was given its own counter precisely so it could not hide inside `healthy`,
+ * and the mechanism that protects it does not protect its successor.
+ *
+ * ## WHY IT DOES NOT THROW
+ *
+ * A literal `assertNever` that throws would move the failure from build time to
+ * RENDER time, on a health dashboard — the page would crash instead of
+ * degrading, and it would do so on exactly the malformed input a health view
+ * exists to show you. The guard that matters here is the one that fails the
+ * BUILD, because it survives the person who adds a member without knowing the
+ * counters exist. So this takes `never` (compile-time) and does nothing at
+ * runtime (safe).
+ *
+ * ## THE DASHBOARD PAGE'S OWN PROTECTIONS — corrected, and the correction matters
+ *
+ * An earlier version of this comment said the three switches in
+ * `workflows/health/page.tsx` (`stateColor`, `stateBgColor`, `StateIcon`) all
+ * need no guard because each is an expression switch with a declared return
+ * type. **That was true of two of the three.** Verified by adding a fifth
+ * member and reading which lines `tsc` reports:
+ *
+ *   page.tsx(87)  TS2366  stateColor    — caught, declared `: string`
+ *   page.tsx(96)  TS2366  stateBgColor  — caught, declared `: string`
+ *   page.tsx(80)  TS2741  a `Record<HealthState, number>` literal — caught
+ *   page.tsx(105)         StateIcon     — NOT REPORTED
+ *
+ * `StateIcon` has NO declared return type. TypeScript infers
+ * `Element | undefined` and raises nothing, so it is **not independently
+ * protected**. It is safe today only because its first line calls
+ * `stateColor(state)`, and that sibling — in the same file — fails first.
+ * Safe by cohabitation, not by its own signature.
+ *
+ * The enumeration was also short in the other direction: the `Record<HealthState,
+ * number>` literal at :80 is a third independent guard that was not counted.
+ *
+ * Adding a return annotation to `StateIcon` would make it self-protecting and is
+ * a post-merge cleanup, ruled not a new head.
+ *
+ * **Why this paragraph was worth its own successor:** the PR body carrying this
+ * same claim was corrected append-only, and that was not enough. A body is read
+ * once at review; a source comment is read at every future refactor. Correcting
+ * the conversation is not correcting the artifact, and the durable copy of a
+ * falsehood is the one that ships in the code.
+ *
+ * Only the statement-position counter switches were unprotected.
+ */
+function assertCounted(_state: never): void {
+  /* compile-time only, deliberately no runtime effect — see above */
+}
 
 export interface CronHealth {
   /** Agent that owns this cron. */
@@ -43,6 +107,8 @@ export interface CronHealth {
   reason: string;
   /** Unix ms of the most recent fire attempt; null if never fired. */
   lastFire: number | null;
+  /** Kind of the most recent fire, or null for legacy/no history. */
+  lastFireKind: CronFireKind | null;
   /** Expected interval in ms (derived from schedule); 0 if not parseable (cron expr). */
   expectedIntervalMs: number;
   /** Gap (now - lastFire) in ms; null if never fired. */
@@ -107,7 +173,7 @@ export function computeHealth(
   executionsLast24h: CronExecutionLogEntry[],
   nowMs = Date.now(),
 ): CronHealth {
-  const { agent, org, cron, lastFire: lastFireTs, lastStatus, nextFire } = row;
+  const { agent, org, cron, lastFire: lastFireTs, lastStatus, lastFireKind, nextFire } = row;
 
   // ── Derived timing values ──────────────────────────────────────────────────
 
@@ -134,7 +200,7 @@ export function computeHealth(
         // Still within grace window — healthy
         return makeHealth(agent, org, cron.name, nextFire, 'healthy',
           `one-shot scheduled in the future (fire_at: ${cron.fire_at})`,
-          lastFireMs, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
+          lastFireMs, lastFireKind, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
       }
       // Past grace window, never fired — fall through to never-fired
     }
@@ -144,26 +210,26 @@ export function computeHealth(
   if (lastFireMs === null) {
     return makeHealth(agent, org, cron.name, nextFire, 'never-fired',
       'cron has never fired — no execution history',
-      lastFireMs, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
+      lastFireMs, lastFireKind, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
   }
 
   // failure: most recent status is 'failed' AND no later success in log
   if (lastStatus === 'failed') {
     return makeHealth(agent, org, cron.name, nextFire, 'failure',
       `most recent execution failed (${formatRelativeMs(gapMs!)} ago)`,
-      lastFireMs, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
+      lastFireMs, lastFireKind, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
   }
 
   if (lastStatus === 'noop_persistent') {
     return makeHealth(agent, org, cron.name, nextFire, 'failure',
       'persistent cron no-op detected after re-inject verification',
-      lastFireMs, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
+      lastFireMs, lastFireKind, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
   }
 
   if (lastStatus === 'noop_unconfirmed' || lastStatus === 'noop_reinjected') {
     return makeHealth(agent, org, cron.name, nextFire, 'warning',
       `most recent cron fire was not confirmed by transcript detector (${lastStatus})`,
-      lastFireMs, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
+      lastFireMs, lastFireKind, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
   }
 
   // warning: gap > 2x expected interval (only applies when interval is known)
@@ -172,14 +238,14 @@ export function computeHealth(
     const gapLabel = formatMs(gapMs);
     return makeHealth(agent, org, cron.name, nextFire, 'warning',
       `last fire ${gapLabel} ago, expected within ${expectedLabel} (2x threshold exceeded)`,
-      lastFireMs, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
+      lastFireMs, lastFireKind, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
   }
 
   // healthy
   const gapLabel = gapMs !== null ? `${formatRelativeMs(gapMs)} ago` : 'never';
   return makeHealth(agent, org, cron.name, nextFire, 'healthy',
     `last fired ${gapLabel}`,
-    lastFireMs, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
+    lastFireMs, lastFireKind, expectedIntervalMs, gapMs, successRate24h, firesLast24h);
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +273,7 @@ export function aggregateFleetHealth(rows: CronHealth[]): FleetHealthResult {
       case 'warning':    summary.warning++;    break;
       case 'failure':    summary.failure++;    break;
       case 'never-fired': summary.neverFired++; break;
+      default: assertCounted(row.state);
     }
 
     // Per-agent breakdown
@@ -228,6 +295,7 @@ export function aggregateFleetHealth(rows: CronHealth[]): FleetHealthResult {
       case 'warning':    agentSummary.warning++;    break;
       case 'failure':    agentSummary.failure++;    break;
       case 'never-fired': agentSummary.neverFired++; break;
+      default: assertCounted(row.state);
     }
   }
 
@@ -246,6 +314,7 @@ function makeHealth(
   state: HealthState,
   reason: string,
   lastFire: number | null,
+  lastFireKind: CronFireKind | null,
   expectedIntervalMs: number,
   gapMs: number | null,
   successRate24h: number,
@@ -258,6 +327,7 @@ function makeHealth(
     state,
     reason,
     lastFire,
+    lastFireKind,
     expectedIntervalMs,
     gapMs,
     successRate24h,

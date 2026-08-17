@@ -13,6 +13,12 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  loadPopulation,
+  reconcilePopulation,
+  resolvePopulationPaths,
+  formatReceipt,
+} from './fleet-population.mjs';
 
 const DEFAULT_MANIFEST = 'scripts/skill-mirrors.json';
 
@@ -82,11 +88,29 @@ function loadManifest(path) {
     if (!group || typeof group !== 'object') {
       throw new Error(`Manifest group ${idx} must be an object`);
     }
-    for (const key of ['skill', 'canonical', 'mirrors']) {
+    for (const key of ['skill', 'canonical']) {
       if (!(key in group)) throw new Error(`Manifest group ${idx} missing ${key}`);
     }
-    if (!Array.isArray(group.mirrors)) {
+    if (!Array.isArray(group.mirrors) && typeof group.population !== 'string') {
+      throw new Error(`Manifest group ${group.skill} needs mirrors or population`);
+    }
+    if (group.mirrors && !Array.isArray(group.mirrors)) {
       throw new Error(`Manifest group ${group.skill} mirrors must be an array`);
+    }
+    if (!group.population) {
+      if (!Number.isSafeInteger(group.expectedPopulation) || group.expectedPopulation < 1) {
+        throw new Error(`Manifest group ${group.skill} needs a positive expectedPopulation`);
+      }
+      if (!Number.isSafeInteger(group.expectedTrackedPopulation) || group.expectedTrackedPopulation < 0) {
+        throw new Error(`Manifest group ${group.skill} needs a nonnegative expectedTrackedPopulation`);
+      }
+      const declared = 1 + group.mirrors.length;
+      if (declared !== group.expectedPopulation) {
+        throw new Error(`Manifest group ${group.skill} total population mismatch: expected=${group.expectedPopulation} declared=${declared}`);
+      }
+    }
+    if (group.layouts && !Array.isArray(group.layouts)) {
+      throw new Error(`Manifest group ${group.skill} layouts must be an array`);
     }
     return group;
   });
@@ -243,6 +267,7 @@ function checkGroup(group, opts) {
   const lines = [];
   const failures = [];
   const skipped = [];
+  const mutations = [];
   const canonicalAbs = resolveMember(opts.root, group.canonical);
   const canonicalMap = treeMap(canonicalAbs);
   lines.push(`\n${group.skill}`);
@@ -251,13 +276,13 @@ function checkGroup(group, opts) {
 
   if (!canonicalMap) {
     lines.push(`  FAIL canonical missing: ${group.canonical}`);
-    return { lines, failures: [`${group.skill}: canonical missing`], skipped };
+    return { lines, failures: [`${group.skill}: canonical missing`], skipped, mutations };
   }
 
-  for (const mirrorPath of group.mirrors) {
+  for (const mirrorPath of group.resolvedMirrors || group.mirrors) {
     const mirrorAbs = resolveMember(opts.root, mirrorPath);
     const tracked = isTrackedMember(opts.root, mirrorPath);
-    if (opts.tier === 'ci' && !tracked) {
+    if (opts.tier === 'ci' && !tracked && !group.population) {
       lines.push(`  SKIP ${mirrorPath}: not present in tracked tree`);
       skipped.push(mirrorPath);
       continue;
@@ -282,13 +307,13 @@ function checkGroup(group, opts) {
     for (const file of diff.extra) lines.push(`    extra: ${file}`);
 
     if (opts.fix) {
-      const result = opts.write
-        ? writeFix({ root: opts.root, canonicalAbs, mirrorAbs, mirrorPath, diff })
-        : applyFix({ root: opts.root, group, canonicalAbs, mirrorAbs, mirrorPath, diff });
+      const result = applyFix({ root: opts.root, group, canonicalAbs, mirrorAbs, mirrorPath, diff });
       lines.push(...result.lines);
       if (result.conflict) {
         failures.push(`${group.skill}: conflict ${mirrorPath}`);
-      } else if (!opts.write) {
+      } else if (opts.write) {
+        mutations.push({ root: opts.root, canonicalAbs, mirrorAbs, mirrorPath, diff });
+      } else {
         failures.push(`${group.skill}: drift ${mirrorPath}`);
       }
     } else {
@@ -296,7 +321,36 @@ function checkGroup(group, opts) {
     }
   }
 
-  return { lines, failures, skipped };
+  return { lines, failures, skipped, mutations };
+}
+
+function resolvePopulationGroups(manifest, opts) {
+  const receipts = [];
+  const failures = [];
+  const registryPath = resolve(opts.root, 'scripts/fleet-populations.json');
+  const resolved = manifest.map((group) => {
+    if (!group.population) {
+      const members = [group.canonical, ...group.mirrors];
+      const tracked = members.filter((member) => isTrackedMember(opts.root, member));
+      if (tracked.length !== group.expectedTrackedPopulation) {
+        failures.push(
+          `${group.skill}: tracked population mismatch expected=${group.expectedTrackedPopulation} observed=${tracked.length}`,
+        );
+      }
+      return group;
+    }
+    const { registryAbs, population } = loadPopulation(registryPath, group.population);
+    const receipt = reconcilePopulation({ population, registryAbs, root: opts.root });
+    const paths = resolvePopulationPaths(population, receipt, group.skill);
+    receipts.push(formatReceipt(receipt, paths.targets.length, paths.errors));
+    if (!paths.ok) failures.push(...paths.errors.map((error) => `${group.skill}: topology ${error}`));
+    const selected = paths.targets
+      .filter((target) => !group.layouts || group.layouts.includes(target.layout))
+      .map((target) => target.relativePath)
+      .filter((path) => path !== group.canonical);
+    return { ...group, resolvedMirrors: selected };
+  });
+  return { resolved, receipts, failures };
 }
 
 export function runSkillDriftCheck(rawOpts = {}) {
@@ -311,18 +365,39 @@ export function runSkillDriftCheck(rawOpts = {}) {
   const lines = [`skill-drift-check tier=${opts.tier} root=${opts.root}${opts.fix ? opts.write ? ' fix=write' : ' fix=dry-run' : ''}`];
   const failures = [];
   const skipped = [];
+  const mutations = [];
 
-  for (const group of manifest) {
+  // Resolve and reconcile every population before reading content or writing.
+  // A topology failure returns before checkGroup can reach --fix --write.
+  const populationPreflight = resolvePopulationGroups(manifest, opts);
+  lines.push(...populationPreflight.receipts);
+  failures.push(...populationPreflight.failures);
+  if (failures.length > 0) {
+    lines.push(`\nFAIL ${failures.length} topology issue(s)`);
+    for (const failure of failures) lines.push(`  - ${failure}`);
+    return { ok: false, output: `${lines.join('\n')}\n`, failures, skipped };
+  }
+
+  for (const group of populationPreflight.resolved) {
     const result = checkGroup(group, opts);
     lines.push(...result.lines);
     failures.push(...result.failures);
     skipped.push(...result.skipped);
+    mutations.push(...result.mutations);
   }
 
   if (failures.length > 0) {
     lines.push(`\nFAIL ${failures.length} issue(s)`);
     for (const failure of failures) lines.push(`  - ${failure}`);
     return { ok: false, output: `${lines.join('\n')}\n`, failures, skipped };
+  }
+
+  // Every group and every target has now been read and validated. Only this
+  // second phase may write, so a late content conflict cannot partially fix an
+  // earlier subject.
+  for (const mutation of mutations) {
+    const applied = writeFix(mutation);
+    lines.push(...applied.lines);
   }
 
   lines.push(`\nOK all declared skill mirrors match canonical${skipped.length > 0 ? ` (${skipped.length} skipped in ${opts.tier} tier)` : ''}`);

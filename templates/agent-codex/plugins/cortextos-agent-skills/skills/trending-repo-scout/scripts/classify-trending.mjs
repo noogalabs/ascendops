@@ -5,6 +5,10 @@ import fs from "node:fs";
 const USAGE = "usage: classify-trending.mjs <candidates.json> <seen.json> [output.json]";
 const MODEL = process.env.TRENDING_SCOUT_CLASSIFIER_MODEL || "haiku";
 const MAX_BUDGET_USD = process.env.TRENDING_SCOUT_CLASSIFIER_MAX_BUDGET_USD || "0.50";
+const CLASSIFIER_TIMEOUT_MS = Number.parseInt(
+  process.env.TRENDING_SCOUT_CLASSIFIER_TIMEOUT_MS || "45000",
+  10,
+);
 const RECENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 function readJson(path, fallback) {
@@ -128,10 +132,15 @@ function runHaiku(candidates) {
   ], {
     encoding: "utf8",
     maxBuffer: 2 * 1024 * 1024,
+    timeout: Number.isFinite(CLASSIFIER_TIMEOUT_MS) ? CLASSIFIER_TIMEOUT_MS : 45000,
   });
 
+  if (result.error) {
+    throw new Error(result.error.message);
+  }
+
   if (result.status !== 0) {
-    const message = (result.stderr || result.stdout || `exit ${result.status}`).trim();
+    const message = (result.stderr || result.stdout || result.signal || `exit ${result.status}`).trim();
     throw new Error(message);
   }
 

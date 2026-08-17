@@ -6,7 +6,7 @@ import { PRIORITY_MAP } from '../types/index.js';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { acquireLock, releaseLock } from '../utils/lock.js';
 import { randomString } from '../utils/random.js';
-import { validateAgentName, validatePriority } from '../utils/validate.js';
+import { validateAgentName, validatePriority, validateMessageText } from '../utils/validate.js';
 import { redactSSN } from '../utils/ssn-redaction.js';
 // added 2026-04-29 via internal dispatch — RFC #15 Wave 1 events implementation
 import { logEvent } from './event.js';
@@ -62,6 +62,12 @@ export function sendMessage(
   validateAgentName(from);
   validateAgentName(to);
   validatePriority(priority);
+  // Fail LOUD at the sender, BEFORE any side effect — before the inbox write, before
+  // signing, before the arrival event. An empty body that gets past here is delivered and
+  // ACKed silently, so the sender never learns the content was lost. Validated at the
+  // primitive rather than per-call-site for the same reason as the SSN scrub below: every
+  // inbox writer flows through this chokepoint, and per-call-site checks leave bypasses.
+  validateMessageText(text);
 
   // Layer-2 backstop at the PRIMITIVE: never STORE/SHARE an SSN in an inbox
   // message, regardless of caller. Every inbox writer flows through here
@@ -112,16 +118,70 @@ export function sendMessage(
   return msgId;
 }
 
-// added 2026-04-29 via internal dispatch — RFC #15 Wave 1 events implementation
-// Resolve org from BusPaths by walking analyticsDir which has shape `<root>/analytics/<org>`.
+// Added 2026-04-29 via internal dispatch — RFC #15 Wave 1 events implementation.
+// Fixed 2026-08-03: the original walked for `<root>/analytics/<org>`, a shape
+// getBusPaths has never produced. buildBusPaths (utils/paths.ts:46) sets
+//   analyticsDir = join(ctxRoot, 'orgs', <org>, 'analytics')   when an org is scoped
+//   analyticsDir = join(ctxRoot, 'analytics')                  when it is not
+// so 'analytics' is ALWAYS the final segment and the org sits BEFORE it, not after. The
+// old guard `idx + 1 < parts.length` was therefore never true on any real path: the
+// branch had never executed once in production. The helper silently degraded to CTX_ORG,
+// and to '' wherever that env var was absent — which is how single-org events landed
+// under two different roots. Positional, not off-by-one: reading parts[idx + 1] could
+// not have worked from either direction.
+//
+// Separator-agnostic split. `join()` emits '\' on win32 and '/' elsewhere, and this
+// parsing must not depend on the platform it happens to run on — a win32-shaped path
+// has to be readable on any host, otherwise the only place the behaviour can be
+// checked is the platform where it is hardest to check it.
+function _splitPathSegments(p: string): string[] {
+  return p.split(/[\\/]+/).filter(Boolean);
+}
 // Falls back to env CTX_ORG, then '' as last resort. logEvent treats '' as a no-op org tag.
 function _orgFromPaths(paths: BusPaths): string {
   try {
-    const parts = paths.analyticsDir.split('/');
-    const idx = parts.indexOf('analytics');
-    if (idx >= 0 && idx + 1 < parts.length) return parts[idx + 1];
+    const root = _splitPathSegments(paths.ctxRoot);
+    const full = _splitPathSegments(paths.analyticsDir);
+
+    // ANCHOR at the authoritative ctxRoot. A suffix heuristic is not enough: a ctxRoot
+    // that itself ends in `orgs/<something>` makes an UNSCOPED analyticsDir
+    // (<ctxRoot>/analytics) look org-scoped, and the helper would hand back the last
+    // segment of the ROOT as if it were an org.
+    if (full.length <= root.length) return process.env.CTX_ORG ?? '';
+    for (let i = 0; i < root.length; i++) {
+      if (full[i] !== root[i]) return process.env.CTX_ORG ?? '';
+    }
+
+    // buildBusPaths (utils/paths.ts:46) produces exactly two shapes below ctxRoot, and
+    // only one of them carries an org. Accept those two and nothing else:
+    //   ['analytics']                 unscoped   -> no org, fall through to CTX_ORG
+    //   ['orgs', <org>, 'analytics']  org-scoped -> the org
+    const rest = full.slice(root.length);
+    if (rest.length === 3 && rest[0] === 'orgs' && rest[2] === 'analytics' && rest[1]) {
+      return rest[1];
+    }
   } catch { /* ignore */ }
   return process.env.CTX_ORG ?? '';
+}
+
+// Test seam. `_orgFromPaths` is pure and its win32 behaviour must be checkable from a
+// posix host — routing that check through sendMessage would mean creating 'C:\...'
+// directories on the test machine. Exported for tests only; production callers use
+// sendMessage.
+export const orgFromPathsForTest = _orgFromPaths;
+
+/**
+ * Distinguishes an unreadable inbox from a successfully-read empty inbox.
+ * Production callers must surface this state and retry; they must never emit
+ * the successful empty representation (`[]`).
+ */
+export class InboxLockUnavailableError extends Error {
+  readonly code = 'INBOX_LOCK_UNAVAILABLE';
+
+  constructor(readonly inbox: string) {
+    super(`Inbox lock unavailable: ${inbox}`);
+    this.name = 'InboxLockUnavailableError';
+  }
 }
 
 /**
@@ -136,8 +196,9 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
   ensureDir(inflight);
 
   // Acquire lock
-  if (!acquireLock(inbox)) {
-    return [];
+  const lockHandle = acquireLock(inbox);
+  if (!lockHandle) {
+    throw new InboxLockUnavailableError(inbox);
   }
 
   try {
@@ -196,7 +257,7 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
 
     return messages;
   } finally {
-    releaseLock(inbox);
+    releaseLock(lockHandle);
   }
 }
 

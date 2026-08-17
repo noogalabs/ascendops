@@ -41,23 +41,7 @@ triggers: ["worker", "parallelize", "spawn worker", "spin up", "parallel work", 
 
 ---
 
-## Contract-at-dispatch (load-bearing)
-
-Every non-trivial worker dispatch you SEND must follow the 4-part structure from the durable spec at `your org internal docs`:
-
-1. **Index-doc framing** - files to read with "why" annotations, not inlined docs
-2. **High-level workflow steps** - outcome-oriented, not bash-by-bash
-3. **Validation loop** - proof-not-word baked in (exit codes, line counts, `git diff --stat`)
-4. **Past + future contracts (KEYSTONE)** - input shape + output shape + explicit ownership of edge cases
-   - **Research artifact sub-bullet (v2)**: include `RESEARCH_ARTIFACT_PATH=<repo-relative-path>.md` when the dispatch involves research. Subagent writes raw facts there (URLs, code excerpts, line numbers, quotes); main-agent reads on demand. Keeps facts addressable without polluting context. See canonical spec §Part 4 sub-bullet for the artifact file format.
-
-**Receiver-side enforcement**: if you RECEIVE a dispatch missing any of the 4 parts (especially past/future contracts), PUSH BACK and request them before starting. Refusal-to-start is the enforcement - neither agent needs the orchestrator to police it.
-
-This applies equally to spawn-worker dispatches (this skill) and peer-agent dispatches. The durable spec carries the worked example.
-
----
-
-## Workflow (Concepts - Implementation TBD)
+## Workflow (Concepts — Implementation TBD)
 
 ### Step 1: Scope the Work
 

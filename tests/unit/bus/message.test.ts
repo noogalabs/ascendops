@@ -12,7 +12,15 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { sendMessage, checkInbox, ackInbox, pruneProcessed, PROCESSED_TTL_DAYS } from '../../../src/bus/message';
+import {
+  InboxLockUnavailableError,
+  sendMessage,
+  checkInbox,
+  ackInbox,
+  pruneProcessed,
+  PROCESSED_TTL_DAYS,
+} from '../../../src/bus/message';
+import { acquireLock, releaseLock } from '../../../src/utils/lock';
 import { resolvePaths } from '../../../src/utils/paths';
 import type { BusPaths } from '../../../src/types';
 
@@ -142,6 +150,39 @@ describe('Message Bus', () => {
 
       expect(inboxFiles.length).toBe(0);
       expect(inflightFiles.length).toBe(1);
+    });
+
+    it('throws a distinct failure instead of returning an empty inbox when the lock is unavailable', () => {
+      mkdirSync(receiverPaths.inbox, { recursive: true });
+      const lockHandle = acquireLock(receiverPaths.inbox);
+      expect(lockHandle).not.toBe(false);
+
+      expect(() => checkInbox(receiverPaths)).toThrow(InboxLockUnavailableError);
+
+      if (!lockHandle) throw new Error('expected lock handle');
+      expect(releaseLock(lockHandle)).toBe(true);
+      expect(checkInbox(receiverPaths)).toEqual([]);
+    });
+
+    it('delivers queued messages after reaping a stale lock with no pid file', () => {
+      const messageId = sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'no-pid recovery');
+      const lockDir = join(receiverPaths.inbox, '.lock.d');
+      mkdirSync(lockDir);
+      const stale = new Date(Date.now() - 60_000);
+      utimesSync(lockDir, stale, stale);
+
+      expect(checkInbox(receiverPaths).map(message => message.id)).toEqual([messageId]);
+    });
+
+    it('delivers queued messages after reaping a stale lock with an empty pid file', () => {
+      const messageId = sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'empty-pid recovery');
+      const lockDir = join(receiverPaths.inbox, '.lock.d');
+      mkdirSync(lockDir);
+      writeFileSync(join(lockDir, 'pid'), '');
+      const stale = new Date(Date.now() - 60_000);
+      utimesSync(lockDir, stale, stale);
+
+      expect(checkInbox(receiverPaths).map(message => message.id)).toEqual([messageId]);
     });
   });
 

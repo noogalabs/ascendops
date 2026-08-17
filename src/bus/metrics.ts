@@ -7,8 +7,16 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, m
 import { join, basename, dirname } from 'path';
 import { execSync } from 'child_process';
 import { ensureDir } from '../utils/atomic.js';
+import {
+  discoverSourceAgentCandidates,
+  isAgentStartCandidate,
+  type AgentRegistryEntry,
+  type SourceAgentCandidate,
+} from '../daemon/agent-discovery.js';
 
 // --- Types ---
+
+export type MetricsPopulationClass = 'agent' | 'infrastructure';
 
 export interface AgentMetrics {
   tasks_completed: number;
@@ -16,6 +24,7 @@ export interface AgentMetrics {
   tasks_in_progress: number;
   errors_today: number;
   heartbeat_stale: boolean;
+  population_class: MetricsPopulationClass;
 }
 
 export interface SystemMetrics {
@@ -25,10 +34,28 @@ export interface SystemMetrics {
   approvals_pending: number;
 }
 
+export interface MetricsConfigConflict {
+  agent: string;
+  org: string;
+  registry_enabled: boolean | null;
+  source_enabled: boolean | null;
+  effective_enabled: boolean;
+  resolution: 'source-config-disabled' | 'registry-disabled';
+}
+
+export interface MetricsPopulation {
+  source: 'agent-manager-start-candidates' | 'enabled-registry-fallback';
+  managed_total: number;
+  agent_total: number;
+  infrastructure_total: number;
+  config_conflicts: MetricsConfigConflict[];
+}
+
 export interface MetricsReport {
   timestamp: string;
   agents: Record<string, AgentMetrics>;
   system: SystemMetrics;
+  population: MetricsPopulation;
 }
 
 export interface UsageData {
@@ -97,22 +124,122 @@ function isErrorEvent(line: string): boolean {
   return evt.severity === 'error' || evt.severity === 'critical';
 }
 
-export function collectMetrics(ctxRoot: string, org?: string): MetricsReport {
+interface MetricsCandidate {
+  name: string;
+  org: string;
+  populationClass: MetricsPopulationClass;
+}
+
+function readMetricsRegistry(ctxRoot: string): Record<string, AgentRegistryEntry> {
+  const enabledFile = join(ctxRoot, 'config', 'enabled-agents.json');
+  if (!existsSync(enabledFile)) return {};
+
+  try {
+    const registry: unknown = JSON.parse(readFileSync(enabledFile, 'utf-8'));
+    if (!registry || typeof registry !== 'object' || Array.isArray(registry)) return {};
+    return registry as Record<string, AgentRegistryEntry>;
+  } catch {
+    return {};
+  }
+}
+
+function classifyMetricsCandidate(candidate: SourceAgentCandidate): MetricsPopulationClass {
+  const hasRuntimeConfig =
+    existsSync(join(candidate.dir, 'config.json')) &&
+    typeof candidate.config.model === 'string' &&
+    existsSync(join(candidate.dir, '.env'));
+  const hasPersonaFileSet = ['IDENTITY.md', 'SOUL.md', 'OPERATING_MODEL.md']
+    .every(file => existsSync(join(candidate.dir, file)));
+
+  return hasRuntimeConfig || hasPersonaFileSet ? 'agent' : 'infrastructure';
+}
+
+function getMetricsPopulation(
+  ctxRoot: string,
+  org?: string,
+  frameworkRoot?: string,
+): { candidates: MetricsCandidate[]; population: MetricsPopulation } {
+  const registry = readMetricsRegistry(ctxRoot);
+
+  if (frameworkRoot) {
+    const discovered = discoverSourceAgentCandidates(frameworkRoot)
+      .filter(candidate => !org || candidate.org === org);
+    const configConflicts: MetricsConfigConflict[] = [];
+
+    for (const candidate of discovered) {
+      const registryEntry = registry[candidate.name];
+      if (!registryEntry) continue;
+
+      const registryEnabled = registryEntry.enabled !== false;
+      const sourceEnabled = candidate.config.enabled !== false;
+      if (registryEnabled === sourceEnabled) continue;
+
+      configConflicts.push({
+        agent: candidate.name,
+        org: candidate.org,
+        registry_enabled: typeof registryEntry.enabled === 'boolean'
+          ? registryEntry.enabled
+          : null,
+        source_enabled: typeof candidate.config.enabled === 'boolean'
+          ? candidate.config.enabled
+          : null,
+        effective_enabled: false,
+        resolution: sourceEnabled ? 'registry-disabled' : 'source-config-disabled',
+      });
+    }
+
+    const candidates = discovered
+      .filter(candidate => isAgentStartCandidate(candidate.config, registry[candidate.name]))
+      .map(candidate => ({
+        name: candidate.name,
+        org: candidate.org,
+        populationClass: classifyMetricsCandidate(candidate),
+      }));
+    const agentTotal = candidates.filter(candidate => candidate.populationClass === 'agent').length;
+    const infrastructureTotal = candidates.length - agentTotal;
+
+    return {
+      candidates,
+      population: {
+        source: 'agent-manager-start-candidates',
+        managed_total: candidates.length,
+        agent_total: agentTotal,
+        infrastructure_total: infrastructureTotal,
+        config_conflicts: configConflicts,
+      },
+    };
+  }
+
+  const candidates = Object.entries(registry)
+    .filter(([, entry]) => entry && typeof entry === 'object' && entry.enabled !== false)
+    .filter(([, entry]) => !org || entry.org === org)
+    .map(([name, entry]) => ({
+      name,
+      org: entry.org || '',
+      populationClass: 'agent' as const,
+    }));
+
+  return {
+    candidates,
+    population: {
+      source: 'enabled-registry-fallback',
+      managed_total: candidates.length,
+      agent_total: candidates.length,
+      infrastructure_total: 0,
+      config_conflicts: [],
+    },
+  };
+}
+
+export function collectMetrics(ctxRoot: string, org?: string, frameworkRoot?: string): MetricsReport {
   const timestamp = new Date().toISOString();
   const today = timestamp.split('T')[0];
-
-  const enabledFile = join(ctxRoot, 'config', 'enabled-agents.json');
-  let agentNames: string[] = [];
-  if (existsSync(enabledFile)) {
-    try {
-      agentNames = Object.keys(JSON.parse(readFileSync(enabledFile, 'utf-8')));
-    } catch { /* empty */ }
-  }
+  const { candidates, population } = getMetricsPopulation(ctxRoot, org, frameworkRoot);
 
   const agents: Record<string, AgentMetrics> = {};
   let totalCompleted = 0;
   let agentsHealthy = 0;
-  const agentsTotal = agentNames.length;
+  const agentsTotal = population.agent_total;
 
   // Gather task directories
   const taskDirs: string[] = [];
@@ -131,7 +258,8 @@ export function collectMetrics(ctxRoot: string, org?: string): MetricsReport {
     } catch { /* ignore */ }
   }
 
-  for (const agent of agentNames) {
+  for (const candidate of candidates) {
+    const agent = candidate.name;
     let completed = 0, pending = 0, inProgress = 0;
 
     // Count tasks by status
@@ -188,7 +316,7 @@ export function collectMetrics(ctxRoot: string, org?: string): MetricsReport {
           const age = Date.now() - hbTime;
           if (age < 5 * 60 * 60 * 1000) {
             heartbeatStale = false;
-            agentsHealthy++;
+            if (candidate.populationClass === 'agent') agentsHealthy++;
           }
         }
       } catch { /* stale by default */ }
@@ -200,6 +328,7 @@ export function collectMetrics(ctxRoot: string, org?: string): MetricsReport {
       tasks_in_progress: inProgress,
       errors_today: errorsToday,
       heartbeat_stale: heartbeatStale,
+      population_class: candidate.populationClass,
     };
   }
 
@@ -233,6 +362,7 @@ export function collectMetrics(ctxRoot: string, org?: string): MetricsReport {
       agents_total: agentsTotal,
       approvals_pending: approvalsPending,
     },
+    population,
   };
 
   // Write to analytics reports

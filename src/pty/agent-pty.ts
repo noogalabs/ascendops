@@ -10,6 +10,7 @@ import {
   ensureFolderTrusted,
   readUnattendedConsent,
 } from '../utils/claude-preflight.js';
+import { parseEnvFileStrict } from '../utils/env.js';
 
 // node-pty types
 interface IPty {
@@ -45,6 +46,7 @@ function stripAnsi(value: string): string {
 export class AgentPTY {
   private pty: IPty | null = null;
   private _alive = false;
+  private _awaitingInteractiveConfirmation = false;
   private outputBuffer: OutputBuffer;
   protected env: CtxEnv;
   protected config: AgentConfig;
@@ -76,6 +78,11 @@ export class AgentPTY {
     if (this.pty) {
       throw new Error('PTY already spawned. Kill first.');
     }
+    this._awaitingInteractiveConfirmation = false;
+    // One AgentPTY instance can respawn multiple child processes. Bootstrap
+    // readiness is monotonic only within a child lifecycle, so discard the
+    // previous child's ring and latch before admitting output from the next.
+    this.outputBuffer.clear();
 
     const explicitSkip = this.config.dangerously_skip_permissions;
     let effectiveSkip = explicitSkip;
@@ -90,7 +97,17 @@ export class AgentPTY {
       this.spawnFn = nodePty.spawn;
     }
 
-    const cwd = this.config.working_directory || this.env.agentDir || process.cwd();
+    const configuredCwd = this.config.working_directory;
+    if (configuredCwd !== undefined && configuredCwd !== '') {
+      const trimmed = configuredCwd.trim();
+      if (trimmed === '') {
+        throw new Error(`[agent-pty] ${this.env.agentName}: working_directory is whitespace-only; set a valid path or remove it`);
+      }
+      if (!existsSync(trimmed)) {
+        throw new Error(`[agent-pty] ${this.env.agentName}: working_directory does not exist: ${trimmed}`);
+      }
+    }
+    const cwd = (configuredCwd && configuredCwd.trim()) || this.env.agentDir || process.cwd();
 
     // Build environment variables for the PTY process
     const ptyEnv: Record<string, string> = {
@@ -110,34 +127,32 @@ export class AgentPTY {
     // Source org-level shared secrets (orgs/{org}/secrets.env).
     // These are shared across all agents in the org: OPENAI_KEY, APIFY_TOKEN, GEMINI_API_KEY, etc.
     // Agent .env is loaded after and overrides org values — agent-specific keys win.
+    // parseEnvFileStrict (utils/env.ts) shares the canonical parser — it strips
+    // surrounding quotes, tolerates a UTF-8 BOM, and handles CRLF. The hand-rolled
+    // loops that used to live here did none of that, so a QUOTED value reached the
+    // agent with its quote characters still attached, which made quoting unusable
+    // as a fix for values containing shell metacharacters (2026-08-13 secrets.env
+    // DATABASE_URL: a bare `&` breaks every `source` of the file).
+    //
+    // STRICT, not the tolerant `parseEnvFile`, and the distinction is load-bearing.
+    // The replaced loops used a bare readFileSync, so a present-but-unreadable
+    // secrets file (EACCES, EISDIR) threw and the agent refused to start. The
+    // tolerant reader returns {} instead, which would spawn the agent with its
+    // secrets silently absent — BOT_TOKEN missing, failing later as something
+    // unrecognisable. Startup must keep failing loudly here.
     if (this.env.org && this.env.projectRoot) {
       const orgEnvFile = join(this.env.projectRoot, 'orgs', this.env.org, 'secrets.env');
       if (existsSync(orgEnvFile)) {
-        const content = readFileSync(orgEnvFile, 'utf-8');
-        for (const line of content.split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#')) continue;
-          const eqIdx = trimmed.indexOf('=');
-          if (eqIdx > 0) {
-            ptyEnv[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
-          }
-        }
+        Object.assign(ptyEnv, parseEnvFileStrict(orgEnvFile, { stripInlineComments: false }));
       }
     }
 
     // Source agent .env file (overrides org secrets.env for same key names).
     // Contains agent-specific secrets: BOT_TOKEN, CHAT_ID, CLAUDE_CODE_OAUTH_TOKEN.
+    // Strict for the same reason as above.
     const agentEnvFile = join(this.env.agentDir, '.env');
     if (existsSync(agentEnvFile)) {
-      const content = readFileSync(agentEnvFile, 'utf-8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx > 0) {
-          ptyEnv[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
-        }
-      }
+      Object.assign(ptyEnv, parseEnvFileStrict(agentEnvFile, { stripInlineComments: false }));
     }
 
     // Add convenience CTX_* aliases used throughout agent templates.
@@ -242,15 +257,16 @@ export class AgentPTY {
     if (handlesClaudeTrustPrompts) {
       for (const delayMs of [5000, 8000, 11000, 14000, 20000, 26000, 32000]) {
         const timer = setTimeout(() => {
-          if (!this.pty) return;
+          if (!this.pty || this.outputBuffer.isBootstrapped()) return;
           const candidate = this.promptAnswerSent
             ? this.outputBuffer.getSafeTailSince(this.promptOutputCursor, 4096)
             : this.outputBuffer.getRecentTail(4096);
           const tail = stripAnsi(candidate);
+          const lower = tail.toLowerCase();
           try {
             const bypassGateVisible =
-              tail.includes('Yes, I accept') ||
-              tail.includes('running in Bypass Permissions mode');
+              tail.includes('Yes, I accept')
+              || tail.includes('running in Bypass Permissions mode');
             if (bypassGateVisible && effectiveSkip !== false) {
               if (this.bypassAnswerCount >= 3) return;
               // Bypass Permissions defaults to exit. Move to accept, then confirm.
@@ -260,10 +276,13 @@ export class AgentPTY {
               this.promptOutputCursor = this.outputBuffer.createSafeCursor();
               return;
             }
-            const folderTrustVisible =
-              tail.includes('Yes, I trust this folder') ||
-              tail.includes('trust the files in this folder');
-            if (folderTrustVisible) {
+            const trustGateVisible =
+              (lower.includes('trust this folder') ||
+                lower.includes('trust this directory') ||
+                lower.includes('trust the files in this folder')) &&
+              (lower.includes('yes') || lower.includes('proceed'));
+            if (trustGateVisible) {
+              // Folder trust defaults to accept. Down+Enter would select exit here.
               this.pty.write('\r');
               this.promptAnswerSent = true;
               this.promptOutputCursor = this.outputBuffer.createSafeCursor();
@@ -274,6 +293,22 @@ export class AgentPTY {
         }, delayMs);
         this.trustPromptTimers.push(timer);
       }
+
+      const backstop = setTimeout(() => {
+        if (!this.pty || this.outputBuffer.isBootstrapped()) return;
+        const tail = stripAnsi(this.outputBuffer.getRecentTail(4096));
+        const promptVisible =
+          tail.includes('No, exit') ||
+          tail.includes('dangerously') ||
+          tail.includes('Bypass Permissions') ||
+          tail.includes('trust this folder') ||
+          tail.includes('trust this directory');
+        if (promptVisible) {
+          this._awaitingInteractiveConfirmation = true;
+          console.warn(`[agent-pty] ${this.env.agentName}: awaiting interactive confirmation — first-run prompt still showing at backstop`);
+        }
+      }, 45_000);
+      this.trustPromptTimers.push(backstop);
     }
   }
 
@@ -437,6 +472,10 @@ export class AgentPTY {
     return this.outputBuffer;
   }
 
+  isAwaitingInteractiveConfirmation(): boolean {
+    return this._awaitingInteractiveConfirmation && !this.outputBuffer.isBootstrapped();
+  }
+
   /**
    * Get a clean base environment (excluding potentially harmful vars).
    */
@@ -447,6 +486,12 @@ export class AgentPTY {
       'PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG', 'LC_ALL',
       'TMPDIR', 'TEMP', 'TMP', 'ANTHROPIC_API_KEY', 'CLAUDE_API_KEY',
       'NODE_PATH', 'COMSPEC', 'USERPROFILE',
+      // HERMES_HOME: without this the child could NEVER inherit the daemon's
+      // value, while AgentProcess.resolveHermesHome() falls back to it when no
+      // env file supplies one — so the daemon probed a state.db the child would
+      // never use. Passing it through makes the daemon's documented
+      // process.env fallback true for the child as well. See resolveHermesHome.
+      'HERMES_HOME',
       // Windows path-expansion essentials.
       'SystemDrive', 'SystemRoot', 'windir',
       'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ALLUSERSPROFILE',

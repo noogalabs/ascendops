@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { existsSync, mkdirSync, writeFileSync, copyFileSync, readFileSync, readdirSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { execFileSync } from 'child_process';
 import { ensureDir } from '../utils/atomic.js';
 import { validateOrgName } from '../utils/validate.js';
 import { stripBom } from '../utils/strip-bom.js';
@@ -260,6 +261,21 @@ export const initCommand = new Command('init')
         if (regenerated > 0) {
           console.log(`  Regenerated SYSTEM.md for ${regenerated} agent(s)`);
         }
+      }
+    }
+
+    // Best-effort local security gates for newly initialized clones. The
+    // installer is non-clobbering, so operator-owned hooks remain untouched.
+    if (
+      process.platform !== 'win32' &&
+      existsSync(join(projectRoot, '.git')) &&
+      existsSync(join(projectRoot, 'scripts', 'setup-hooks.sh'))
+    ) {
+      try {
+        execFileSync('bash', ['scripts/setup-hooks.sh'], { cwd: projectRoot, stdio: 'ignore' });
+        console.log('  Installed local git hooks (pre-commit + pre-push gates)');
+      } catch {
+        console.log('  Skipped local git hook install (run: bash scripts/setup-hooks.sh)');
       }
     }
 

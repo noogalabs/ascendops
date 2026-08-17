@@ -55,6 +55,7 @@ const fsMocks = {
   writeFileSync: vi.fn(),
   appendFileSync: vi.fn(),
   statSync: vi.fn(),
+  unlinkSync: vi.fn(),
 };
 
 vi.mock('fs', async () => {
@@ -83,6 +84,7 @@ vi.mock('fs', async () => {
     get writeFileSync() { return fsMocks.writeFileSync; },
     get appendFileSync() { return fsMocks.appendFileSync; },
     get statSync() { return fsMocks.statSync; },
+    get unlinkSync() { return fsMocks.unlinkSync; },
   };
 });
 
@@ -114,6 +116,26 @@ beforeEach(() => {
   fsMocks.writeFileSync.mockReset();
   fsMocks.appendFileSync.mockReset();
   fsMocks.statSync.mockReset();
+  fsMocks.unlinkSync.mockReset();
+});
+
+describe('AgentProcess disable-resurrection gate (#859)', () => {
+  it('does not crash-recover when .user-disable is present', async () => {
+    fsMocks.existsSync.mockImplementation((p: unknown) => String(p).endsWith('/state/alice/.user-disable'));
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+    capturedOnExit!(1, 0);
+    expect(ap.getStatus().status).toBe('stopped');
+    expect(fsMocks.appendFileSync).not.toHaveBeenCalled();
+  });
+
+  it('clears a lingering .user-disable marker on explicit start', async () => {
+    const marker = '/tmp/test-ctx/state/alice/.user-disable';
+    fsMocks.existsSync.mockImplementation((p: unknown) => String(p) === marker);
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+    expect(fsMocks.unlinkSync).toHaveBeenCalledWith(marker);
+  });
 });
 
 describe('AgentProcess - daemon injection timestamp', () => {
@@ -361,6 +383,30 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     releaseSpawn();
     await Promise.all([first, second]);
     expect(ap.getStatus().status).toBe('running');
+  });
+
+  it('keeps a delayed start visible as one in-flight lifecycle to concurrent callers', async () => {
+    vi.useFakeTimers();
+    try {
+      const ap = new AgentProcess('alice', mockEnv, { startup_delay: 5 });
+      const first = ap.start();
+
+      // This is the AgentManager liveness boundary: a mapped delayed start
+      // must never look stopped and enter stale-entry eviction.
+      expect(ap.getStatus().status).toBe('starting');
+
+      const second = ap.start();
+      expect(ap.getStatus().status).toBe('starting');
+      expect(mockPty.spawn).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await Promise.all([first, second]);
+
+      expect(mockPty.spawn).toHaveBeenCalledTimes(1);
+      expect(ap.getStatus().status).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('sessionRefresh() escalates exhausted retries to a fresh hard restart', async () => {

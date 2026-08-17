@@ -12,6 +12,12 @@ import { redactSSN } from '../utils/ssn-redaction.js';
 import { updateHeartbeat, readAllHeartbeats } from '../bus/heartbeat.js';
 import { queryCap } from '../bus/query-cap.js';
 import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity } from '../bus/system.js';
+import {
+  assertAutoCommitLeaseHeld,
+  getAutoCommitLeaseStatus,
+  releaseAutoCommitLease,
+  resolveAutoCommitLeaseTtlMs,
+} from '../bus/auto-commit-lease.js';
 import { createExperiment, runExperiment, evaluateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
 import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunityItem } from '../bus/catalog.js';
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
@@ -29,12 +35,16 @@ import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, 
 import { createSkillPr, createSkillAuditPr } from '../bus/skill-autopr.js';
 import { atomicWriteSync } from '../utils/atomic.js';
 import { resolvePaths } from '../utils/paths.js';
-import { resolveEnv } from '../utils/env.js';
-import { resolveCommsLintRules, type ResolvedCommsLintRules } from '../bus/comms-lint-config.js';
+import { parseEnvFile, resolveEnv } from '../utils/env.js';
+import {
+  resolveCommsLintRules,
+  type CommsLintRule,
+  type ResolvedCommsLintRules,
+} from '../bus/comms-lint-config.js';
 import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent, rotateMessageLogIfNeeded } from '../telegram/logging.js';
-import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition } from '../types/index.js';
+import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition, BusPaths } from '../types/index.js';
 
 /**
  * Check if the org requires deliverables and the task has none attached.
@@ -83,6 +93,16 @@ type OutboundLintResult = {
   phrase?: string;
   reason?: string;
   suggest?: string;
+  ruleClass?: CommsLintRule['group'];
+  ruleId?: string;
+};
+
+type CommsLintTargetType = 'agent' | 'telegram' | 'mobile';
+
+type CommsLintTelemetryContext = {
+  paths: BusPaths;
+  agentName: string;
+  org: string;
 };
 
 // The banned/passive/telegram/agent-name rule data formerly lived as
@@ -101,6 +121,8 @@ function lintOutboundMessage(text: string, rules: ResolvedCommsLintRules): Outbo
         phrase: m[0],
         reason: 'banned jargon',
         suggest: rule.suggest,
+        ruleClass: rule.group,
+        ruleId: rule.id,
       };
     }
   }
@@ -110,14 +132,20 @@ function lintOutboundMessage(text: string, rules: ResolvedCommsLintRules): Outbo
     const hasActiveContext = rules.activeContext.test(text) || rules.nextSignalContext.test(text);
     if (!hasActiveContext) {
       let m: RegExpMatchArray | null = null;
+      let matchedRule: CommsLintRule | undefined;
       for (const r of rules.passive) {
         m = text.match(r.pattern);
-        if (m) break;
+        if (m) {
+          matchedRule = r;
+          break;
+        }
       }
       return {
         ok: false,
         phrase: m?.[0] ?? 'passive posture framing',
         reason: 'passive posture framing without active-work or specific next-signal context',
+        ruleClass: matchedRule?.group ?? 'passive',
+        ruleId: matchedRule?.id,
       };
     }
   }
@@ -183,6 +211,52 @@ function resolveLintRules(): ResolvedCommsLintRules {
   });
 }
 
+function logCommsLintBlocked(
+  result: OutboundLintResult,
+  targetType: CommsLintTargetType,
+  telemetryContext?: CommsLintTelemetryContext,
+): void {
+  try {
+    const context = telemetryContext ?? currentCommsLintTelemetryContext();
+    logEvent(context.paths, context.agentName, context.org, 'action', 'comms_lint_blocked', 'warning', {
+      matched_phrase: result.phrase ?? null,
+      rule_class: result.ruleClass ?? null,
+      rule_id: result.ruleId ?? null,
+      target_type: targetType,
+    });
+  } catch {
+    // Telemetry must never change the lint decision.
+  }
+}
+
+function logCommsLintSkipped(
+  result: OutboundLintResult,
+  targetType: CommsLintTargetType,
+  telemetryContext?: CommsLintTelemetryContext,
+): void {
+  try {
+    const context = telemetryContext ?? currentCommsLintTelemetryContext();
+    logEvent(context.paths, context.agentName, context.org, 'action', 'comms_lint_skipped', 'warning', {
+      skip_lint: true,
+      matched_phrase: result.phrase ?? null,
+      rule_class: result.ruleClass ?? null,
+      rule_id: result.ruleId ?? null,
+      target_type: targetType,
+    });
+  } catch {
+    // Telemetry must never change the lint decision.
+  }
+}
+
+function currentCommsLintTelemetryContext(): CommsLintTelemetryContext {
+  const env = resolveEnv();
+  return {
+    paths: resolvePaths(env.agentName, env.instanceId, env.org),
+    agentName: env.agentName,
+    org: env.org,
+  };
+}
+
 /**
  * Print a --suggest dry-run report to stdout and never send. On a would-be
  * block, surface the offending phrase + the rewrite hint (suggest) or reason.
@@ -212,9 +286,19 @@ function printSuggestReport(result: OutboundLintResult): void {
 function enforceOutboundLintOrExit(
   text: string,
   skipLint: boolean | undefined,
-  opts?: { suggest?: boolean },
+  targetType: Exclude<CommsLintTargetType, 'telegram'>,
+  opts?: { suggest?: boolean; telemetryContext?: CommsLintTelemetryContext },
 ): boolean {
-  if (skipLint) return true;
+  if (skipLint) {
+    let result: OutboundLintResult = { ok: true };
+    try {
+      result = lintOutboundMessage(text, resolveLintRules());
+    } catch {
+      // Preserve the pre-telemetry --skip-lint behavior on any probe failure.
+    }
+    logCommsLintSkipped(result, targetType, opts?.telemetryContext);
+    return true;
+  }
   const rules = resolveLintRules();
   const result = lintOutboundMessage(text, rules);
   if (opts?.suggest) {
@@ -222,6 +306,7 @@ function enforceOutboundLintOrExit(
     return false;
   }
   if (!result.ok) {
+    logCommsLintBlocked(result, targetType, opts?.telemetryContext);
     const phrase = result.phrase ?? 'unknown';
     const reason = result.reason ?? 'policy violation';
     console.error(
@@ -261,6 +346,8 @@ function lintOutboundTelegramMessage(
         // surface suggest separately for --suggest.
         reason: rule.suggest ? `${rule.reason} — ${rule.suggest}` : rule.reason,
         suggest: rule.suggest,
+        ruleClass: rule.group,
+        ruleId: rule.id,
       };
     }
   }
@@ -278,6 +365,8 @@ function lintOutboundTelegramMessage(
           ? `${rules.agentName.reason} — ${rules.agentName.suggest}`
           : rules.agentName.reason,
         suggest: rules.agentName.suggest,
+        ruleClass: rules.agentName.group,
+        ruleId: rules.agentName.id,
       };
     }
   }
@@ -295,7 +384,16 @@ function enforceTelegramLintOrExit(
   explicitNaming: boolean | undefined,
   opts?: { suggest?: boolean },
 ): boolean {
-  if (skipLint) return true;
+  if (skipLint) {
+    let result: OutboundLintResult = { ok: true };
+    try {
+      result = lintOutboundTelegramMessage(text, !!explicitNaming, resolveLintRules());
+    } catch {
+      // Preserve the pre-telemetry --skip-lint behavior on any probe failure.
+    }
+    logCommsLintSkipped(result, 'telegram');
+    return true;
+  }
   const rules = resolveLintRules();
   const result = lintOutboundTelegramMessage(text, !!explicitNaming, rules);
   if (opts?.suggest) {
@@ -303,6 +401,7 @@ function enforceTelegramLintOrExit(
     return false;
   }
   if (!result.ok) {
+    logCommsLintBlocked(result, 'telegram');
     const phrase = result.phrase ?? 'unknown';
     const reason = result.reason ?? 'policy violation';
     console.error(
@@ -406,7 +505,7 @@ busCommand
 
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org);
-    if (!enforceOutboundLintOrExit(text, opts.skipLint, { suggest: opts.suggest })) return;
+    if (!enforceOutboundLintOrExit(text, opts.skipLint, 'agent', { suggest: opts.suggest })) return;
     // SSN scrub happens at the sendMessage() primitive (src/bus/message.ts),
     // so it covers this path AND every other inbox writer (create-task notify,
     // notifyAgent). No per-call-site scrub needed here.
@@ -432,8 +531,13 @@ busCommand
   .action(() => {
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org);
-    const messages = checkInbox(paths);
-    console.log(JSON.stringify(messages));
+    try {
+      const messages = checkInbox(paths);
+      console.log(JSON.stringify(messages));
+    } catch (err) {
+      console.error(`check-inbox failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
   });
 
 busCommand
@@ -1062,11 +1166,85 @@ busCommand
   .action((opts: { dryRun?: boolean }) => {
     const env = resolveEnv();
     const projectDir = env.projectRoot || env.frameworkRoot || process.cwd();
-    const report = autoCommit(projectDir, opts.dryRun ?? false);
+    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+    let ttlMs: number;
+    try {
+      ttlMs = resolveAutoCommitLeaseTtlMs(env.agentDir);
+    } catch (err) {
+      emitResult({
+        status: 'error',
+        staged: [],
+        blocked: [],
+        error: err instanceof Error ? err.message : 'invalid auto-commit lease configuration',
+        lease: { status: 'not_acquired', reason: 'invalid_lease_configuration' },
+      });
+      return;
+    }
+    const report = autoCommit(projectDir, opts.dryRun ?? false, {
+      org: env.org,
+      agent: env.agentName,
+    }, {
+      ctxRoot: env.ctxRoot,
+      ttlMs,
+      onTakeover: takeover => {
+        logEvent(paths, env.agentName, env.org, 'action', 'auto_commit_lease_takeover', 'warning', {
+          previous_holder: takeover.previous_holder,
+          previous_expires_at: new Date(takeover.previous_expires_at).toISOString(),
+          new_holder: { org: env.org, agent: env.agentName },
+          lease_disposition: 'acquired',
+        });
+      },
+    });
     // emitResult fails loud (exit 1) if autoCommit ever returns status 'error'/
     // 'conflict'; valid states (clean, nothing_to_stage, dry_run, staged) stay
     // exit 0. Drain-safe — sets exitCode, never raw exit after the envelope.
     emitResult(report);
+  });
+
+busCommand
+  .command('auto-commit-release <token>')
+  .description('Release the active auto-commit lease with its exact token')
+  .action((token: string) => {
+    const env = resolveEnv();
+    const result = releaseAutoCommitLease({ ctxRoot: env.ctxRoot, token });
+    let output: typeof result & {
+      telemetry?: { status: 'degraded'; error: string };
+    } = result;
+    if (result.status === 'released') {
+      try {
+        const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+        logEvent(paths, env.agentName, env.org, 'action', 'auto_commit_lease_released', 'info', {
+          lease_holder: result.holder,
+          released_by: { org: env.org, agent: env.agentName },
+          released_at: new Date(result.released_at).toISOString(),
+        });
+      } catch (err) {
+        output = {
+          ...result,
+          telemetry: {
+            status: 'degraded',
+            error: `release succeeded but telemetry failed: ${err instanceof Error ? err.message : 'unknown telemetry error'}`,
+          },
+        };
+      }
+    }
+    emitResult(output);
+  });
+
+busCommand
+  .command('auto-commit-assert-held <token>')
+  .description('Require the exact auto-commit lease token and 60 seconds of remaining life')
+  .action((token: string) => {
+    const env = resolveEnv();
+    emitResult(assertAutoCommitLeaseHeld(env.ctxRoot, token));
+  });
+
+busCommand
+  .command('auto-commit-lease-status')
+  .description('Read the current auto-commit lease without modifying it')
+  .action(() => {
+    const env = resolveEnv();
+    emitResult(getAutoCommitLeaseStatus(env.ctxRoot));
   });
 
 busCommand
@@ -1313,7 +1491,11 @@ busCommand
   .description('Collect and aggregate system metrics across all agents')
   .action(() => {
     const env = resolveEnv();
-    const report = collectMetrics(env.ctxRoot, env.org || undefined);
+    const report = collectMetrics(
+      env.ctxRoot,
+      env.org || undefined,
+      env.frameworkRoot || env.projectRoot || undefined,
+    );
     console.log(JSON.stringify(report, null, 2));
   });
 
@@ -2194,7 +2376,17 @@ busCommand
   .action((agent: string, reply: string, msgId?: string, opts?: { skipLint?: boolean; suggest?: boolean }) => {
     // Same literal '\n'/'\t' normalize as send-telegram (codex agent fix).
     reply = reply.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-    if (!enforceOutboundLintOrExit(reply, opts?.skipLint, { suggest: opts?.suggest })) return;
+    let telemetryContext: CommsLintTelemetryContext | undefined;
+    try {
+      const { env, agentName, paths } = resolveAgentBusPaths(agent);
+      telemetryContext = { paths, agentName, org: env.org };
+    } catch {
+      // Telemetry context is best-effort and must not change lint behavior.
+    }
+    if (!enforceOutboundLintOrExit(reply, opts?.skipLint, 'mobile', {
+      suggest: opts?.suggest,
+      telemetryContext,
+    })) return;
     // Layer-2 backstop: never SHARE/STORE an SSN in the mobile reply log.
     reply = redactSSN(reply);
     const { mkdirSync, appendFileSync } = require('fs');
@@ -2606,7 +2798,9 @@ busCommand
   .argument('<interval>', 'Schedule: interval ("6h", "30m", "1d") or 5-field cron expr ("0 8 * * *")')
   .argument('<prompt...>', 'Prompt text injected when the cron fires (all remaining words joined)')
   .option('--desc <description>', 'Human-readable description (optional)')
-  .action(async (agent: string, name: string, interval: string, promptWords: string[], opts: { desc?: string }) => {
+  .option('--wake-on-fire', 'Pierce ALL off-shift suppression. Use sparingly — this is the blunt tier.')
+  .option('--emergency-class <class>', 'Wake off-shift IF this class is in the agent\'s off_shift_can_wake_for (e.g. flood, fire, safety, no_heat_freezing)')
+  .action(async (agent: string, name: string, interval: string, promptWords: string[], opts: { desc?: string; wakeOnFire?: boolean; emergencyClass?: string }) => {
     // Validate agent name format
     try { validateAgentName(agent); } catch (err) { console.error(String(err)); process.exit(1); }
 
@@ -2630,6 +2824,11 @@ busCommand
       enabled: true,
       created_at: new Date().toISOString(),
       ...(opts.desc ? { description: opts.desc } : {}),
+      // Emergency-path flags. Before 2026-08-10 `wake_on_fire` was readable by
+      // the daemon but settable only by hand-editing a live crons.json, so the
+      // one working exemption was unreachable through the tool.
+      ...(opts.wakeOnFire ? { wake_on_fire: true } : {}),
+      ...(opts.emergencyClass ? { emergency_class: opts.emergencyClass } : {}),
     };
 
     try {

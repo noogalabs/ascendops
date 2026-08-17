@@ -21,7 +21,7 @@ If `ONBOARDED`: continue with the session start protocol below.
 2. Read org knowledge base: `../../knowledge.md` (shared facts all agents need)
 3. Discover available skills: `cortextos bus list-skills --format text`
 4. Discover active agents: `cortextos bus list-agents` (live roster from enabled-agents.json)
-5. **Crons are daemon-managed.** External crons auto-load from `${CTX_ROOT}/state/${CTX_AGENT_NAME}/crons.json` on daemon start; you do not need to restore them. Use `cortextos bus list-crons $CTX_AGENT_NAME` to confirm what's scheduled. Do NOT use `CronCreate` or `/loop` - those are session-only and won't survive restarts.
+5. **Crons are daemon-managed.** External crons auto-load from `${CTX_ROOT}/.cortextOS/state/agents/${CTX_AGENT_NAME}/crons.json` on daemon start; you do not need to restore them. Use `cortextos bus list-crons $CTX_AGENT_NAME` to confirm what's scheduled. Do NOT use `CronCreate` or `/loop` — those are session-only and won't survive restarts.
 6. Check today's memory file (`memory/YYYY-MM-DD.md`) for any in-progress work
 7. Check inbox for pending messages
 8. **Goals check**: Read `goals.json` - if `focus` and `goals` are both empty, message your orchestrator: "I'm online but have no goals set. Can you send me today's goals?" Then read GOALS.md for any pre-set goals.
@@ -105,7 +105,7 @@ Always include `msg_id` as reply_to (auto-ACKs the original). Un-ACK'd messages 
 
 ## Crons
 
-External crons are daemon-managed and live in `${CTX_ROOT}/state/${CTX_AGENT_NAME}/crons.json`. The daemon scheduler owns dispatch - you do not register or restore crons in-session.
+External crons are daemon-managed and live in `${CTX_ROOT}/.cortextOS/state/agents/${CTX_AGENT_NAME}/crons.json`. The daemon scheduler owns dispatch — you do not register or restore crons in-session.
 
 **View:** `cortextos bus list-crons $CTX_AGENT_NAME`
 **Add:** `cortextos bus add-cron $CTX_AGENT_NAME <name> <interval-or-cron-expr> <prompt>`
@@ -128,21 +128,9 @@ Sessions auto-restart with `--continue` every ~71 hours. On context exhaustion, 
 
 ## Local Version Control (Daily Snapshots)
 
-If `ecosystem.local_version_control.enabled` is true in your config.json, run the daily snapshot at the configured time:
+The workflow was disarmed after the 2026-07-31 broad-staging incident. The replacement is now active under a closed per-agent allowlist and actual-index verification. If `ecosystem.local_version_control.enabled` is true, follow `.claude/skills/local-version-control/SKILL.md` exactly.
 
-```bash
-# Layer 1: auto-commit.sh stages files with safety checks
-RESULT=$(cortextos bus auto-commit)
-
-# Layer 2: YOU review the staged diff
-# - Read the diff: git diff --cached
-# - Check for contextual PII: names in memory, company details in tasks, chat IDs
-# - If anything looks sensitive, unstage it: git reset HEAD <file>
-# - Generate a descriptive commit message summarizing what changed
-# - Commit: git commit -m "<your message>"
-```
-
-This is LOCAL ONLY. Never push. The user's data stays on their machine.
+The workflow requires a clean index, permits only the invoking agent's `MEMORY.md`, `GOALS.md`, and `config.json`, reviews the actual staged diff, commits locally, and never pushes. Daily `memory/` journals remain excluded from Git pending David's privacy ruling in `task_1785556710544_11012959`; do not restore them or any broader candidate-filter safety claims.
 
 ---
 

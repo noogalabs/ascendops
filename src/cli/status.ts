@@ -79,7 +79,7 @@ export const statusCommand = new Command('status')
     }
   });
 
-function displayStatuses(statuses: AgentStatus[]): void {
+export function displayStatuses(statuses: AgentStatus[]): void {
   if (statuses.length === 0) {
     console.log('No agents running.');
     console.log('Add one with: cortextos add-agent <name>');
@@ -94,14 +94,22 @@ function displayStatuses(statuses: AgentStatus[]): void {
   console.log(header);
   console.log(separator);
 
+  let anyAwaiting = false;
   for (const s of statuses) {
     const name = s.name.padEnd(18);
-    const status = s.status.padEnd(12);
+    let label: string = s.status;
+    if (s.awaitingConfirmation) {
+      label = 'unhealthy*';
+      anyAwaiting = true;
+    }
+    const status = label.padEnd(12);
     const pid = (s.pid?.toString() || '-').padEnd(10);
     const uptime = s.uptime ? formatUptime(s.uptime).padEnd(12) : '-'.padEnd(12);
-    const model = s.model || '-';
+    const model = s.model || 'default';
     console.log(`  ${name}${status}${pid}${uptime}${model}`);
   }
+
+  if (anyAwaiting) console.log('  * awaiting interactive confirmation (first-run prompt not accepted)\n');
 
   console.log('');
 }

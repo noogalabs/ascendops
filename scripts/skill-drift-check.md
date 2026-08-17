@@ -1,8 +1,9 @@
 # Skill Drift Check
 
 `skill-drift-check.mjs` compares declared shared skill directories against their
-canonical template copy. It hashes the whole skill tree by relative file path,
-including `SKILL.md` and helper scripts.
+canonical template copy. Population-backed groups first invoke the generic
+fleet registry engine and print its complete receipt; content comparison or fix
+work cannot begin until topology is green.
 
 ## Run Modes
 
@@ -11,9 +12,9 @@ node scripts/skill-drift-check.mjs --tier ci
 node scripts/skill-drift-check.mjs --tier local
 ```
 
-- `--tier ci` checks only git-tracked template mirrors. Gitignored deployed
-  runtime copies are reported as skipped so fresh CI checkouts do not fail
-  because `orgs/*/agents/*` is absent.
+- `--tier ci` checks the tracked `framework.skill-templates` population. A
+  declared population member is never skipped because its path is absent.
+  Legacy non-population groups may still contain explicitly local-only mirrors.
 - `--tier local` checks every declared mirror, including deployed runtime copies.
   This is the primary safety check after editing a deployed skill because it
   catches template/runtime drift that CI cannot see. Run it from the canonical
@@ -34,9 +35,18 @@ The installed `pre-commit` hook runs the CI tier:
 node scripts/skill-drift-check.mjs --tier ci
 ```
 
-This is intentional: agents usually commit framework changes from isolated
-worktrees where gitignored deployed agent copies are absent. Commit-time checks
-must stay worktree-safe and cover only tracked template mirrors.
+The hook runs the framework population check first, then the drift check. The
+org runtime has its own separately tracked registry and CI gate; framework CI
+does not pretend that private runtime subjects are present.
+
+## Receipts and failure meaning
+
+The receipt names the population, independent expected count, registry and
+observed sets, tracked/declared-untracked boundary, resolved targets,
+repository root, and HEAD. `status=OK` appears only on exact agreement. Exit 1
+means a topology or content mismatch. Exit 2 means malformed schema, unsafe
+paths, unreadable observation, or another invocation error. Neither code is a
+skip, and `paths` emits no target JSON on failure.
 
 ## Periodic Deployed-Parity Runner
 
@@ -55,8 +65,8 @@ node scripts/skill-drift-check.mjs --tier local
 ```
 
 Wire this script into a heartbeat or daemon cron only after activation is gated.
-It is the check that catches gitignored deployed skill drift; CI and pre-commit
-cannot see those runtime copies from fresh checkouts or isolated worktrees.
+For a runtime sweep, use the org registry and its canonical org root; do not
+reuse the tracked-template gate as proof of runtime completeness.
 
 Runner exit codes are stable for automation:
 

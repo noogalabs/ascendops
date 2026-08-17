@@ -87,7 +87,10 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 |---|---|
 | `self-restart --reason "<why>"` | Restart with --continue (keeps history) |
 | `hard-restart --reason "<why>"` | Fresh session (no history) |
-| `auto-commit [--dry-run]` | Daily workspace snapshot (local only) |
+| `auto-commit [--dry-run]` | Acquire the single-writer lease and stage only the invoking agent's allowlisted state; never pushes |
+| `auto-commit-lease-status` | Read the active lease holder and expiry without changing state |
+| `auto-commit-assert-held <token>` | Require the exact token and at least 60 seconds remaining immediately before commit |
+| `auto-commit-release <token>` | Release only the exact lease token after commit or after unstaging an abort |
 | `check-upstream [--apply]` | Check for framework updates |
 
 ### Goals

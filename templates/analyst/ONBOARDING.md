@@ -423,12 +423,16 @@ Proceed with the rest of the session start protocol in AGENTS.md. Crons are alre
 ### Step 20: Ask about ecosystem preferences
 
 > "I can manage some automated workflows for the team. Quick yes/no for each:
-> 1. Daily git snapshots - I commit agent changes daily so nothing is lost
+> 1. Daily local snapshots - I commit only this agent's allowlisted `MEMORY.md`, `GOALS.md`, and config changes after reviewing the actual staged diff; I never push
 > 2. Framework updates - I check for cortextOS updates and tell you what changed before applying
 > 3. Community catalog - I browse for new skills weekly and recommend useful ones
 > 4. Community publishing - I can help package your custom skills to share with the community
 >
 > Which of these do you want enabled?"
+
+The snapshot workflow was disarmed after the 2026-07-31 broad-staging incident. It is available again only under the closed per-agent allowlist, clean-index refusal, actual-index verification, reviewed local commit, and never-push contract. Consent alone does not arm it: `task_1785555336924_76305344` must be reviewed and live before the feature is enabled or its recurring cron is registered.
+
+Daily `memory/` journals remain excluded from Git pending David's privacy ruling in `task_1785556710544_11012959`; onboarding must not promise or enable that fourth class.
 
 **END YOUR TURN.** You need their ecosystem preferences before writing config.
 
@@ -436,7 +440,7 @@ Proceed with the rest of the session start protocol in AGENTS.md. Crons are alre
 
 ```bash
 jq --argjson eco '{
-  "local_version_control": {"enabled": true},
+  "local_version_control": {"enabled": false},
   "upstream_sync": {"enabled": false},
   "catalog_browse": {"enabled": false},
   "community_publish": {"enabled": false}
@@ -445,6 +449,8 @@ jq --argjson eco '{
 ```
 
 (Set each feature's `enabled` value to true/false based on user answers before running.)
+
+For `local_version_control`, keep `enabled: false` even when the user accepts unless `task_1785555336924_76305344` is verified live. Before that gate, record that the preference is accepted but deferred, do not register the cron, and tell the user the feature remains disabled pending the reviewed lock/lease. After the gate is live, acceptance may set it to `true` under the closed contract.
 
 ### Step 22: Set up ecosystem crons for enabled features
 
@@ -461,9 +467,9 @@ DAILY_HOUR=$(( (NIGHT_HOUR + 1) % 24 ))
 
 For each enabled feature, create a persistent cron via `cortextos bus add-cron`. Do NOT use CronCreate or config.json edits - all crons are daemon-managed from `crons.json`:
 
-**local_version_control** (time-anchored, daily):
+**local_version_control** - register the closed-allowlist workflow only when the user enabled it **and** `task_1785555336924_76305344` is verified live. If the lock/lease is not live, do not run this command and leave the feature disabled:
 ```bash
-cortextos bus add-cron $CTX_AGENT_NAME auto-commit "0 ${DAILY_HOUR} * * *" Run daily git snapshot. cortextos bus auto-commit - review the staged diff for PII - commit with descriptive message. Never push.
+cortextos bus add-cron $CTX_AGENT_NAME auto-commit "0 ${DAILY_HOUR} * * *" "Read .claude/skills/local-version-control/SKILL.md and execute the closed-allowlist daily snapshot. Require a clean index and the state-side lease, verify the report against the actual staged paths, review the diff, require the exact token with at least 60 seconds remaining before commit, then either commit and exact-token release or unstage and report or exact-token release as applicable. Never push."
 ```
 
 **upstream_sync** (time-anchored, same hour, 2 minutes offset):
@@ -529,7 +535,7 @@ fi
 
 ### Step 26: If theta wave enabled, register the cron
 
-Compute the theta wave hour (2 hours into night mode, so it runs after auto-commit and check-upstream):
+Compute the theta wave hour (2 hours into night mode, after the framework-update check):
 
 ```bash
 # Re-read night hour (each bash block is a separate shell invocation)

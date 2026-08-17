@@ -85,6 +85,104 @@ describe('Sprint 5: Observability & Metrics', () => {
       expect(report.system.agents_healthy).toBe(0);
     });
 
+    it('discovers a source agent in the requested org when its registry org is missing', () => {
+      writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), JSON.stringify({
+        worker: { enabled: true },
+      }), 'utf-8');
+
+      const agentDir = join(ctxRoot, 'orgs', 'ascendops', 'agents', 'worker');
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(join(agentDir, 'config.json'), JSON.stringify({ model: 'test-model' }), 'utf-8');
+      for (const personaFile of ['IDENTITY.md', 'SOUL.md', 'OPERATING_MODEL.md']) {
+        writeFileSync(join(agentDir, personaFile), '# worker\n', 'utf-8');
+      }
+
+      const report = collectMetrics(ctxRoot, 'ascendops', ctxRoot);
+
+      expect(Object.keys(report.agents)).toEqual(['worker']);
+      expect(report.system.agents_total).toBe(1);
+    });
+
+    it('defaults a discovered source agent to enabled when registry enabled is missing', () => {
+      writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), JSON.stringify({
+        worker: { org: 'ascendops' },
+      }), 'utf-8');
+
+      const agentDir = join(ctxRoot, 'orgs', 'ascendops', 'agents', 'worker');
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(join(agentDir, 'config.json'), JSON.stringify({ model: 'test-model' }), 'utf-8');
+      for (const personaFile of ['IDENTITY.md', 'SOUL.md', 'OPERATING_MODEL.md']) {
+        writeFileSync(join(agentDir, personaFile), '# worker\n', 'utf-8');
+      }
+
+      const report = collectMetrics(ctxRoot, 'ascendops', ctxRoot);
+
+      expect(Object.keys(report.agents)).toEqual(['worker']);
+      expect(report.system.agents_total).toBe(1);
+    });
+
+    it('excludes a source-disabled agent and reports its registry conflict', () => {
+      writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), JSON.stringify({
+        relay: { enabled: true, org: 'ascendops' },
+      }), 'utf-8');
+
+      const agentDir = join(ctxRoot, 'orgs', 'ascendops', 'agents', 'relay');
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(join(agentDir, 'config.json'), JSON.stringify({
+        enabled: false,
+        model: 'test-model',
+      }), 'utf-8');
+      for (const personaFile of ['IDENTITY.md', 'SOUL.md', 'OPERATING_MODEL.md']) {
+        writeFileSync(join(agentDir, personaFile), '# relay\n', 'utf-8');
+      }
+
+      const report = collectMetrics(ctxRoot, 'ascendops', ctxRoot);
+
+      expect(report.agents.relay).toBeUndefined();
+      expect(report.population.config_conflicts).toEqual([{
+        agent: 'relay',
+        org: 'ascendops',
+        registry_enabled: true,
+        source_enabled: false,
+        effective_enabled: false,
+        resolution: 'source-config-disabled',
+      }]);
+    });
+
+    it('reports infrastructure candidates without inflating headline agent health', () => {
+      writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), JSON.stringify({
+        coordinator: { enabled: true, org: 'ascendops' },
+        gateway: { enabled: true, org: 'ascendops' },
+        'fast-checker': { enabled: true, org: 'ascendops' },
+      }), 'utf-8');
+
+      const daneDir = join(ctxRoot, 'orgs', 'ascendops', 'agents', 'coordinator');
+      mkdirSync(daneDir, { recursive: true });
+      writeFileSync(join(daneDir, 'config.json'), JSON.stringify({ model: 'test-model' }), 'utf-8');
+      for (const personaFile of ['IDENTITY.md', 'SOUL.md', 'OPERATING_MODEL.md']) {
+        writeFileSync(join(daneDir, personaFile), '# coordinator\n', 'utf-8');
+      }
+
+      mkdirSync(join(ctxRoot, 'orgs', 'ascendops', 'agents', 'gateway'), { recursive: true });
+
+      const daneState = join(ctxRoot, 'state', 'coordinator');
+      mkdirSync(daneState, { recursive: true });
+      writeFileSync(join(daneState, 'heartbeat.json'), JSON.stringify({
+        last_heartbeat: new Date().toISOString(),
+      }), 'utf-8');
+
+      const report = collectMetrics(ctxRoot, 'ascendops', ctxRoot);
+
+      expect(Object.keys(report.agents)).toEqual(['coordinator', 'gateway']);
+      expect(report.agents.coordinator.population_class).toBe('agent');
+      expect(report.agents.gateway.population_class).toBe('infrastructure');
+      expect(report.population.managed_total).toBe(2);
+      expect(report.population.agent_total).toBe(1);
+      expect(report.population.infrastructure_total).toBe(1);
+      expect(report.system.agents_total).toBe(1);
+      expect(report.system.agents_healthy).toBe(1);
+    });
+
     it('counts pending approvals', () => {
       writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), '{}', 'utf-8');
       writeFileSync(join(ctxRoot, 'approvals', 'pending', 'ap1.json'), '{}', 'utf-8');

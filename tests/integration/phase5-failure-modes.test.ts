@@ -700,9 +700,13 @@ describe('FM-5: Catch-up storm — 100+ overdue crons, bounded + no tick drift',
 
     await vi.advanceTimersByTimeAsync(2 * TICK_MS);
 
-    // 100 catch-up log messages
-    const catchUpLogs = logs.filter(l => l.includes('catch-up'));
-    expect(catchUpLogs.length).toBe(CRON_COUNT);
+    // Each overdue cron records both the scheduling decision and the marked fire.
+    const catchUpScheduleLogs = logs.filter(l => l.includes('catch-up:'));
+    const catchUpFireLogs = logs.filter(
+      l => l.includes('firing cron') && l.includes('[catch-up]')
+    );
+    expect(catchUpScheduleLogs.length).toBe(CRON_COUNT);
+    expect(catchUpFireLogs.length).toBe(CRON_COUNT);
 
     scheduler.stop();
   }, 30_000);

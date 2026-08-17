@@ -4,11 +4,13 @@ import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 
 const sendMessageSpy = vi.fn().mockReturnValue('msg-test-1');
+const checkInboxSpy = vi.fn().mockReturnValue([]);
 const telegramSendSpy = vi.fn().mockResolvedValue({ result: { message_id: 1 } });
+const logEventSpy = vi.fn();
 
 vi.mock('../../../src/bus/message.js', () => ({
   sendMessage: (...args: unknown[]) => sendMessageSpy(...args),
-  checkInbox: vi.fn(() => []),
+  checkInbox: (...args: unknown[]) => checkInboxSpy(...args),
   ackInbox: vi.fn(),
   // prune-processed (f12-f13-disk-leaks) is imported by src/cli/bus.ts at
   // module-eval; the mock must expose these or bus.ts fails to load here.
@@ -18,7 +20,7 @@ vi.mock('../../../src/bus/message.js', () => ({
 }));
 
 vi.mock('../../../src/bus/event.js', () => ({
-  logEvent: vi.fn(),
+  logEvent: (...args: unknown[]) => logEventSpy(...args),
 }));
 
 vi.mock('../../../src/telegram/api.js', () => ({
@@ -81,7 +83,9 @@ beforeEach(() => {
   delete process.env.CTX_AGENT_DIR;
 
   sendMessageSpy.mockClear();
+  checkInboxSpy.mockReset().mockReturnValue([]);
   telegramSendSpy.mockClear();
+  logEventSpy.mockReset();
 });
 
 afterEach(() => {
@@ -116,6 +120,151 @@ afterEach(() => {
 });
 
 describe('outbound comms lint', () => {
+  it('surfaces check-inbox lock failure on stderr with a non-zero exit and no empty-array output', async () => {
+    const previousExitCode = process.exitCode;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    checkInboxSpy.mockImplementationOnce(() => {
+      throw Object.assign(new Error(`Inbox lock unavailable: ${join(tempCtx, 'inbox', 'test-agent')}`), {
+        code: 'INBOX_LOCK_UNAVAILABLE',
+      });
+    });
+
+    try {
+      await busCommand.parseAsync(['check-inbox'], { from: 'user' });
+
+      expect(errorSpy.mock.calls.flat().join('\n')).toContain('check-inbox failed');
+      expect(errorSpy.mock.calls.flat().join('\n')).toContain('Inbox lock unavailable');
+      expect(logSpy).not.toHaveBeenCalledWith('[]');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = previousExitCode;
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it('logs a blocked base-lint event with matched phrase, rule class, and target type', async () => {
+    await expect(
+      busCommand.parseAsync(
+        ['send-message', 'target-agent', 'normal', 'waiting for feedback'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow();
+
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-agent',
+      'testorg',
+      'action',
+      'comms_lint_blocked',
+      'warning',
+      expect.objectContaining({
+        matched_phrase: 'waiting',
+        rule_class: 'passive',
+        target_type: 'agent',
+      }),
+    );
+  });
+
+  it('logs a blocked Telegram-lint event with the Telegram rule class', async () => {
+    await expect(
+      busCommand.parseAsync(
+        ['send-telegram', '12345', 'The migration shipped via PR #45'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow();
+
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-agent',
+      'testorg',
+      'action',
+      'comms_lint_blocked',
+      'warning',
+      expect.objectContaining({
+        matched_phrase: 'PR #45',
+        rule_class: 'telegram',
+        target_type: 'telegram',
+      }),
+    );
+  });
+
+  it('logs --skip-lint with the phrase and class that would have matched', async () => {
+    await busCommand.parseAsync(
+      ['send-telegram', '12345', 'Standing by for next task', '--skip-lint'],
+      { from: 'user' },
+    );
+
+    expect(telegramSendSpy).toHaveBeenCalledTimes(1);
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-agent',
+      'testorg',
+      'action',
+      'comms_lint_skipped',
+      'warning',
+      expect.objectContaining({
+        matched_phrase: 'Standing by',
+        rule_class: 'banned',
+        target_type: 'telegram',
+      }),
+    );
+  });
+
+  it('logs --skip-lint with null match fields when the message would pass', async () => {
+    await busCommand.parseAsync(
+      ['send-message', 'target-agent', 'normal', 'shipping the migration now', '--skip-lint'],
+      { from: 'user' },
+    );
+
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-agent',
+      'testorg',
+      'action',
+      'comms_lint_skipped',
+      'warning',
+      expect.objectContaining({
+        matched_phrase: null,
+        rule_class: null,
+        target_type: 'agent',
+      }),
+    );
+  });
+
+  it('keeps --skip-lint send behavior unchanged when telemetry logging throws', async () => {
+    logEventSpy.mockImplementationOnce(() => {
+      throw new Error('telemetry unavailable');
+    });
+
+    await busCommand.parseAsync(
+      ['send-message', 'target-agent', 'normal', 'standing by for next task', '--skip-lint'],
+      { from: 'user' },
+    );
+
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps block behavior unchanged when telemetry logging throws', async () => {
+    logEventSpy.mockImplementationOnce(() => {
+      throw new Error('telemetry unavailable');
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      busCommand.parseAsync(
+        ['send-message', 'target-agent', 'normal', 'waiting for feedback'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow();
+
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.flat().join('\n')).toContain('blocked by comms-lint');
+    errorSpy.mockRestore();
+  });
+
   it('blocks send-telegram when banned jargon is present', async () => {
     await expect(
       busCommand.parseAsync(['send-telegram', '12345', 'Standing by for next task'], { from: 'user' })
@@ -146,6 +295,29 @@ describe('outbound comms lint', () => {
     expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('allows operational use of holding when active-work context is present', async () => {
+    await busCommand.parseAsync(
+      [
+        'send-message',
+        'target-agent',
+        'normal',
+        'The running process is holding the WebDriver pairing.',
+      ],
+      { from: 'user' },
+    );
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks a bare holding posture report with no active or next-signal context', async () => {
+    await expect(
+      busCommand.parseAsync(
+        ['send-message', 'target-agent', 'normal', 'holding here'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow();
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+  });
+
   it('blocks send-mobile-reply on banned posture phrase', async () => {
     await expect(
       busCommand.parseAsync(['send-mobile-reply', 'test-agent', 'parked here until tomorrow'], { from: 'user' })
@@ -153,6 +325,40 @@ describe('outbound comms lint', () => {
 
     const outPath = join(homedir(), '.cortextos', 'default', 'logs', 'test-agent', 'outbound-messages.jsonl');
     expect(existsSync(outPath)).toBe(false);
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-agent',
+      'testorg',
+      'action',
+      'comms_lint_blocked',
+      'warning',
+      expect.objectContaining({
+        matched_phrase: 'parked',
+        rule_class: 'banned',
+        target_type: 'mobile',
+      }),
+    );
+  });
+
+  it('attributes blocked mobile telemetry to the explicit agent rather than CTX_AGENT_NAME', async () => {
+    await expect(
+      busCommand.parseAsync(
+        ['send-mobile-reply', 'mobile-target', 'parked here until tomorrow'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow();
+
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        logDir: join(homedir(), '.cortextos', 'default', 'logs', 'mobile-target'),
+      }),
+      'mobile-target',
+      'testorg',
+      'action',
+      'comms_lint_blocked',
+      'warning',
+      expect.objectContaining({ target_type: 'mobile' }),
+    );
   });
 
   it('allows send-mobile-reply with --skip-lint and writes outbound log', async () => {
@@ -165,6 +371,25 @@ describe('outbound comms lint', () => {
     expect(existsSync(outPath)).toBe(true);
     const body = readFileSync(outPath, 'utf-8');
     expect(body).toContain('parked here until tomorrow');
+  });
+
+  it('attributes skipped mobile telemetry to the explicit agent rather than CTX_AGENT_NAME', async () => {
+    await busCommand.parseAsync(
+      ['send-mobile-reply', 'mobile-target', 'parked here until tomorrow', '--skip-lint'],
+      { from: 'user' },
+    );
+
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        logDir: join(homedir(), '.cortextos', 'default', 'logs', 'mobile-target'),
+      }),
+      'mobile-target',
+      'testorg',
+      'action',
+      'comms_lint_skipped',
+      'warning',
+      expect.objectContaining({ target_type: 'mobile' }),
+    );
   });
 
   // ─── Telegram-only plain-talk lint (C5 dispatch 2026-05-22 by Dane) ──────
@@ -212,7 +437,7 @@ describe('outbound comms lint', () => {
 
   it('allows send-telegram with --explicit-naming when agent name is intentional', async () => {
     await busCommand.parseAsync(
-      ['send-telegram', '12345', 'Codie just shipped the work', '--explicit-naming'],
+      ['send-telegram', '12345', 'Builder just shipped the work', '--explicit-naming'],
       { from: 'user' },
     );
     expect(telegramSendSpy).toHaveBeenCalledTimes(1);
@@ -220,7 +445,7 @@ describe('outbound comms lint', () => {
 
   it('does NOT apply Telegram patterns to send-message (agent-to-agent stays technical)', async () => {
     await busCommand.parseAsync(
-      ['send-message', 'target-agent', 'normal', 'Codie shipped PR #45 commit 9c9f1c65 on cortextos repo'],
+      ['send-message', 'target-agent', 'normal', 'Builder shipped PR #45 commit 9c9f1c65 on cortextos repo'],
       { from: 'user' },
     );
     expect(sendMessageSpy).toHaveBeenCalledTimes(1);

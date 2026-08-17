@@ -31,16 +31,44 @@ function seedSkill(root: string, path: string, files: Record<string, string>) {
   }
 }
 
-function seedManifest(root: string, mirrors: string[]) {
+function seedManifest(root: string, mirrors: string[], expectedTrackedPopulation = 0) {
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'scripts', 'skill-mirrors.json'), JSON.stringify([
     {
       skill: 'demo',
       canonical: 'templates/base/.claude/skills/demo',
+      expectedPopulation: mirrors.length + 1,
+      expectedTrackedPopulation,
       mirrors,
       note: 'test group',
     },
   ], null, 2));
+}
+
+function seedPopulationManifest(root: string, includeBetaOnDisk = true) {
+  mkdirSync(join(root, 'scripts'), { recursive: true });
+  writeFileSync(join(root, 'scripts/skill-mirrors.json'), JSON.stringify([{
+    skill: 'demo',
+    canonical: 'templates/alpha/.claude/skills/demo',
+    population: 'test.templates',
+    layouts: ['claude'],
+  }]));
+  writeFileSync(join(root, 'scripts/fleet-populations.json'), JSON.stringify([{
+    schemaVersion: 1,
+    population: 'test.templates',
+    expectedPopulation: 2,
+    root: 'templates',
+    discovery: { kind: 'direct-children', marker: 'AGENTS.md' },
+    layouts: { claude: { skillHome: '.claude/skills' } },
+    subjects: [
+      { id: 'alpha', layout: 'claude', tracked_root: true },
+      { id: 'beta', layout: 'claude', tracked_root: true },
+    ],
+  }]));
+  for (const id of includeBetaOnDisk ? ['alpha', 'beta'] : ['alpha']) {
+    mkdirSync(join(root, `templates/${id}`), { recursive: true });
+    writeFileSync(join(root, `templates/${id}/AGENTS.md`), `${id}\n`);
+  }
 }
 
 describe('skill-drift-check', () => {
@@ -128,8 +156,8 @@ describe('skill-drift-check', () => {
     execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
     seedManifest(root, [
       'templates/other/.claude/skills/demo',
-      'your org internal docs',
-    ]);
+      'orgs/example/agents/live/.claude/skills/demo',
+    ], 2);
     seedSkill(root, 'templates/base/.claude/skills/demo', { 'SKILL.md': 'same\n' });
     seedSkill(root, 'templates/other/.claude/skills/demo', { 'SKILL.md': 'same\n' });
     execFileSync('git', ['add', 'scripts/skill-mirrors.json', 'templates/base/.claude/skills/demo/SKILL.md', 'templates/other/.claude/skills/demo/SKILL.md'], { cwd: root });
@@ -138,9 +166,9 @@ describe('skill-drift-check', () => {
     const local = run(root, ['--tier', 'local']);
 
     expect(ci.status).toBe(0);
-    expect(ci.stdout).toContain('SKIP your org internal docs: not present in tracked tree');
+    expect(ci.stdout).toContain('SKIP orgs/example/agents/live/.claude/skills/demo: not present in tracked tree');
     expect(local.status).toBe(1);
-    expect(local.stdout).toContain('FAIL your org internal docs: missing skill directory');
+    expect(local.stdout).toContain('FAIL orgs/example/agents/live/.claude/skills/demo: missing skill directory');
   });
 
   it('--fix refuses to clobber extra mirror files as agent-customized conflicts', () => {
@@ -157,5 +185,52 @@ describe('skill-drift-check', () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('CONFLICT templates/other/.claude/skills/demo');
     expect(existsSync(join(root, 'templates/other/.claude/skills/demo/local-note.md'))).toBe(true);
+  });
+
+  it('fails preflight when a declared mirror row disappears without changing the pinned denominator', () => {
+    root = mkdtempSync(join(tmpdir(), 'skill-drift-'));
+    seedManifest(root, [
+      'templates/other/.claude/skills/demo',
+      'templates/third/.claude/skills/demo',
+    ]);
+    seedSkill(root, 'templates/base/.claude/skills/demo', { 'SKILL.md': 'canonical\n' });
+    seedSkill(root, 'templates/other/.claude/skills/demo', { 'SKILL.md': 'mirror\n' });
+    seedSkill(root, 'templates/third/.claude/skills/demo', { 'SKILL.md': 'third\n' });
+    const before = readFileSync(join(root, 'templates/other/.claude/skills/demo/SKILL.md'), 'utf8');
+    const manifestPath = join(root, 'scripts/skill-mirrors.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest[0].mirrors.pop();
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    const result = run(root, ['--fix', '--write']);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('total population mismatch: expected=3 declared=2');
+    expect(readFileSync(join(root, 'templates/other/.claude/skills/demo/SKILL.md'), 'utf8')).toBe(before);
+  });
+
+  it('uses a population receipt to resolve mirror members', () => {
+    root = mkdtempSync(join(tmpdir(), 'skill-drift-'));
+    seedPopulationManifest(root);
+    seedSkill(root, 'templates/alpha/.claude/skills/demo', { 'SKILL.md': 'same\n' });
+    seedSkill(root, 'templates/beta/.claude/skills/demo', { 'SKILL.md': 'same\n' });
+
+    const result = run(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('population=test.templates');
+    expect(result.stdout).toContain('resolved_targets=2');
+    expect(result.stdout).toContain('OK templates/beta/.claude/skills/demo');
+  });
+
+  it('completes topology preflight before --fix --write and never skips a missing member', () => {
+    root = mkdtempSync(join(tmpdir(), 'skill-drift-'));
+    seedPopulationManifest(root, false);
+    seedSkill(root, 'templates/alpha/.claude/skills/demo', { 'SKILL.md': 'canonical\n' });
+    const before = readFileSync(join(root, 'templates/alpha/.claude/skills/demo/SKILL.md'), 'utf8');
+
+    const result = run(root, ['--tier', 'ci', '--fix', '--write']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('MISSING=beta');
+    expect(result.stdout).not.toContain('SKIP templates/beta');
+    expect(readFileSync(join(root, 'templates/alpha/.claude/skills/demo/SKILL.md'), 'utf8')).toBe(before);
   });
 });

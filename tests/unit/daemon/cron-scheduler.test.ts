@@ -32,7 +32,7 @@ vi.mock('../../../src/bus/crons.js', () => ({
 // Imports AFTER mock setup
 // ---------------------------------------------------------------------------
 
-import { CronScheduler, nextFireFromCron } from '../../../src/daemon/cron-scheduler';
+import { CronScheduler, nextFireFromCron, type CronFireContext } from '../../../src/daemon/cron-scheduler';
 import type { CronDefinition } from '../../../src/types/index';
 
 // ---------------------------------------------------------------------------
@@ -324,7 +324,9 @@ describe('CronScheduler', () => {
 
   it('succeeds on second attempt (first fails, second succeeds)', async () => {
     let callCount = 0;
-    const flakyFire = vi.fn().mockImplementation(() => {
+    const contexts: CronFireContext[] = [];
+    const flakyFire = vi.fn().mockImplementation((_cron: CronDefinition, context: CronFireContext) => {
+      contexts.push(context);
       callCount++;
       if (callCount === 1) return Promise.reject(new Error('transient'));
       return Promise.resolve();
@@ -343,6 +345,8 @@ describe('CronScheduler', () => {
     await vi.advanceTimersByTimeAsync(60_000 + TICK + 1_000 + 500);
 
     expect(flakyFire).toHaveBeenCalledTimes(2);
+    expect(contexts[0].firedAt).toBe(contexts[1].firedAt);
+    expect(contexts[0].fireKind).toBe(contexts[1].fireKind);
     // 2 updateCron calls: 1 pre-fire attempted_at (iter 11) + 1 post-success
     // last_fired_at/fire_count.
     expect(mockUpdateCron).toHaveBeenCalledTimes(2);
@@ -358,6 +362,59 @@ describe('CronScheduler', () => {
     );
 
     retryScheduler.stop();
+  });
+
+  it('admits each due cron after prior retry delay while retaining one identity per fire', async () => {
+    const oldFire = new Date(Date.now() - 25 * 3_600_000).toISOString();
+    const persisted: CronDefinition[] = [
+      makeCron({ name: 'first', schedule: '24h', last_fired_at: oldFire }),
+      makeCron({ name: 'second', schedule: '24h', last_fired_at: oldFire }),
+    ];
+    mockReadCrons.mockImplementation(() => persisted.map((cron) => ({ ...cron })));
+    mockUpdateCron.mockImplementation((_agent: string, name: string, updates: Partial<CronDefinition>) => {
+      const index = persisted.findIndex((cron) => cron.name === name);
+      persisted[index] = { ...persisted[index], ...updates };
+    });
+    const identities = new Map<string, string[]>();
+    let firstAttempt = true;
+    let unrelatedActivityAt = 0;
+    const retryScheduler = new CronScheduler({
+      agentName: 'test-agent',
+      onFire: (cron, context) => {
+        const values = identities.get(cron.name) ?? [];
+        values.push(context.firedAt);
+        identities.set(cron.name, values);
+        if (cron.name === 'first' && firstAttempt) {
+          firstAttempt = false;
+          setTimeout(() => { unrelatedActivityAt = Date.now(); }, 500);
+          throw new Error('ambiguous first dispatch');
+        }
+      },
+      logger: vi.fn(),
+    });
+
+    retryScheduler.start();
+    await vi.advanceTimersByTimeAsync(TICK + 1_500);
+
+    expect(identities.get('first')).toHaveLength(2);
+    expect(identities.get('first')?.[0]).toBe(identities.get('first')?.[1]);
+    expect(identities.get('second')).toHaveLength(1);
+    const secondIdentity = identities.get('second')?.[0] ?? '';
+    expect(Date.parse(secondIdentity)).toBeGreaterThan(unrelatedActivityAt);
+    const secondPersisted = persisted.find((cron) => cron.name === 'second');
+    expect(secondPersisted?.last_fire_attempted_at).toBe(secondIdentity);
+    expect(secondPersisted?.last_fired_at).toBe(secondIdentity);
+    const liveNext = retryScheduler.getNextFireTimes();
+    retryScheduler.stop();
+
+    const restartedScheduler = new CronScheduler({
+      agentName: 'test-agent',
+      onFire: vi.fn(),
+      logger: vi.fn(),
+    });
+    restartedScheduler.start();
+    expect(restartedScheduler.getNextFireTimes()).toEqual(liveNext);
+    restartedScheduler.stop();
   });
 
   // -------------------------------------------------------------------------
@@ -825,5 +882,23 @@ describe('CronScheduler', () => {
     expect(names).toContain('a');
     expect(names).toContain('b');
     expect(names).not.toContain('c'); // disabled, not scheduled
+  });
+});
+
+describe('getCronDefinition — the fallback lookup must actually resolve', () => {
+  it('returns the live definition for a scheduled cron, not undefined', async () => {
+    // Regression guard. The side-run fallback path originally looked for a
+    // `definition` field on getNextFireTimes() output, which does not have one.
+    // It resolved to null on every call, so the fallback would have injected
+    // nothing while logging itself as handled — a skipped check wearing a pass.
+    const { CronScheduler } = await import('../../../src/daemon/cron-scheduler.js');
+    const s = new CronScheduler({ agentName: '__no_such_agent__', onFire: () => {} });
+    // No crons loaded for a nonexistent agent, so the contract under test is
+    // that a miss returns null rather than throwing or returning undefined.
+    expect(s.getCronDefinition('anything')).toBeNull();
+    // And the shape getNextFireTimes returns must NOT be mistaken for a definition.
+    for (const row of s.getNextFireTimes()) {
+      expect(row).not.toHaveProperty('definition');
+    }
   });
 });

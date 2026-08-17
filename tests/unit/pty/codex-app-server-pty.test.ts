@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { CustodiedTurn } from '../../../src/pty/codex-turn-custody.js';
 
 let spawnedPtyExitHandler: ((event: { exitCode: number; signal?: number }) => void) | null = null;
 let spawnedPtyDataHandler: ((data: string) => void) | null = null;
@@ -121,7 +122,9 @@ vi.mock('../../../src/bus/event.js', () => ({
 }));
 
 const { CodexAppServerPTY } = await import('../../../src/pty/codex-app-server-pty.js');
+const { AgentProcess } = await import('../../../src/daemon/agent-process.js');
 const { FastChecker } = await import('../../../src/daemon/fast-checker.js');
+const { MessageDedup } = await import('../../../src/pty/inject.js');
 
 const mockEnv = {
   instanceId: 'test',
@@ -132,6 +135,7 @@ const mockEnv = {
   org: 'acme',
   projectRoot: '/tmp/fw',
 };
+const mockAgentCwd = mockEnv.agentDir;
 
 beforeEach(() => {
   fsMocks.existsSync.mockReset().mockReturnValue(false);
@@ -211,12 +215,255 @@ describe('CodexAppServerPTY command mapping', () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _alive: boolean })._alive = true;
     (pty as unknown as { _threadId: string })._threadId = 'thread-1';
-    (pty as unknown as { _rpc: { request: typeof requestMock; respondError: typeof respondErrorMock } })._rpc = {
+    (pty as unknown as { _rpc: { request: typeof requestMock; respondError: typeof respondErrorMock; close: typeof closeMock } })._rpc = {
       request: requestMock,
       respondError: respondErrorMock,
+      close: closeMock,
     };
     return pty;
   }
+
+  function makeRunningAgent(pty: InstanceType<typeof CodexAppServerPTY>) {
+    const agent = Object.create(AgentProcess.prototype) as InstanceType<typeof AgentProcess>;
+    Object.assign(agent, {
+      dedup: new MessageDedup(),
+      lastInjectedAt: 0,
+      log: vi.fn(),
+      name: 'codex-app-agent',
+      pty,
+      status: 'running',
+    });
+    return agent;
+  }
+
+  it('refuses native $skill before skills/list when PREPARED custody cannot be written', () => {
+    atomicWriteSyncMock.mockImplementationOnce(() => { throw new Error('skill custody disk full'); });
+    const pty = makeReadyPty();
+
+    expect(() => pty.injectMessage('$imagegen make a logo')).toThrow('skill custody disk full');
+    expect(requestMock).not.toHaveBeenCalledWith('skills/list', expect.anything());
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it('refuses rewritten /skill before skills/list when PREPARED custody cannot be written', () => {
+    atomicWriteSyncMock.mockImplementationOnce(() => { throw new Error('slash custody disk full'); });
+    const pty = makeReadyPty();
+
+    expect(() => pty.injectMessage('/heartbeat now')).toThrow('slash custody disk full');
+    expect(requestMock).not.toHaveBeenCalledWith('skills/list', expect.anything());
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it.each([
+    ['$imagegen make a logo', 'native skill custody disk full'],
+    ['/heartbeat now', 'rewritten skill custody disk full'],
+  ])('reports ADMISSION_FAILED and releases dedup for exact skill input %s', async (input, failure) => {
+    atomicWriteSyncMock
+      .mockImplementationOnce(() => { throw new Error(failure); })
+      .mockImplementation(() => {});
+    requestMock.mockImplementation((method: string) => {
+      if (method === 'skills/list') {
+        return Promise.resolve({
+          result: {
+            data: [{ cwd: mockAgentCwd, skills: [
+              { name: 'imagegen', path: '/imagegen/SKILL.md', enabled: true },
+              { name: 'heartbeat', path: '/heartbeat/SKILL.md', enabled: true },
+            ] }],
+          },
+        });
+      }
+      if (method === 'turn/start') {
+        return Promise.resolve({ result: { turnId: 'turn-skill-redelivery' } });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const agent = makeRunningAgent(makeReadyPty());
+
+    expect(agent.injectMessageDetailed(input)).toMatchObject({
+      ok: false,
+      code: 'ADMISSION_FAILED',
+      message: expect.stringContaining(failure),
+    });
+    expect(agent.injectMessageDetailed(input)).toMatchObject({
+      ok: false,
+      code: 'ADMISSION_FAILED',
+      message: expect.stringContaining('turn custody is blocked'),
+    });
+    Object.assign(agent, { pty: makeReadyPty() });
+    expect(agent.injectMessageDetailed(input)).toEqual({ ok: true });
+    expect(agent.injectMessageDetailed(input)).toMatchObject({
+      ok: false,
+      code: 'DEDUPED',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestMock).toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it('persists unresolved skill intent before asynchronous skills/list resolution', async () => {
+    let resolveSkills!: (value: unknown) => void;
+    requestMock.mockImplementation((method: string) => {
+      if (method === 'skills/list') {
+        return new Promise((resolve) => { resolveSkills = resolve; });
+      }
+      return Promise.resolve({ result: { turnId: 'turn-skill' } });
+    });
+    const pty = makeReadyPty();
+
+    pty.injectMessage('$imagegen make a logo');
+
+    const prepared = JSON.parse(String(atomicWriteSyncMock.mock.calls[0]?.[1])) as {
+      pending: CustodiedTurn[];
+    };
+    expect(prepared.pending).toEqual([expect.objectContaining({
+      input: [],
+      deferredSkill: '$imagegen make a logo',
+      startAttempts: 0,
+    })]);
+    expect(atomicWriteSyncMock.mock.invocationCallOrder[0])
+      .toBeLessThan(requestMock.mock.invocationCallOrder[0]);
+
+    resolveSkills({
+      result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }] },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+      clientUserMessageId: prepared.pending[0].workItemId,
+    }));
+    (pty as unknown as { handleRpcMessage(message: unknown): void }).handleRpcMessage({
+      method: 'turn/completed',
+      params: { turnId: 'turn-skill' },
+    });
+  });
+
+  it('keeps unresolved skill custody when the resolved-input write fails asynchronously', async () => {
+    atomicWriteSyncMock
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => { throw new Error('resolved input disk full'); });
+    requestMock.mockResolvedValue({
+      result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }] },
+    });
+    const pty = makeReadyPty();
+
+    pty.injectMessage('$imagegen make a logo');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect((pty as unknown as { _turnCustodyBlocked: boolean })._turnCustodyBlocked).toBe(true);
+    expect((pty as unknown as { _turnCustody: { snapshot(): CustodiedTurn[] } })._turnCustody.snapshot())
+      .toEqual([expect.objectContaining({
+        deferredSkill: '$imagegen make a logo',
+        input: [],
+        startAttempts: 0,
+      })]);
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it.each([
+    ['null data entry', { result: { data: [null] } }],
+    ['missing cwd', { result: { data: [{ skills: [] }] } }],
+    ['missing skills array', { result: { data: [{ cwd: mockAgentCwd }] } }],
+    ['malformed matching skill name', {
+      result: { data: [{ cwd: mockAgentCwd, skills: [{ name: null, path: '/heartbeat/SKILL.md' }] }] },
+    }],
+    ['invalid matching skill name syntax', {
+      result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'heart beat', path: '/heartbeat/SKILL.md' }] }] },
+    }],
+    ['malformed matching skill path', {
+      result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '' }] }] },
+    }],
+    ['relative matching skill path', {
+      result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: 'heartbeat/SKILL.md' }] }] },
+    }],
+    ['malformed matching skill enabled state', {
+      result: { data: [{ cwd: mockAgentCwd, skills: [{
+        name: 'heartbeat', path: '/heartbeat/SKILL.md', enabled: 'yes',
+      }] }] },
+    }],
+  ])('blocks malformed skills/list %s with unresolved custody durable and live', async (_label, response) => {
+    requestMock.mockResolvedValue(response);
+    const pty = makeReadyPty();
+
+    pty.injectMessage('$heartbeat collect state');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect((pty as unknown as { _turnCustodyBlocked: boolean })._turnCustodyBlocked).toBe(true);
+    expect((pty as unknown as { _turnCustody: { snapshot(): CustodiedTurn[] } })._turnCustody.snapshot())
+      .toEqual([expect.objectContaining({
+        deferredSkill: '$heartbeat collect state',
+        input: [],
+        startAttempts: 0,
+      })]);
+    expect((pty as unknown as { _turnQueue: Array<{ deferredSkill?: string }> })._turnQueue)
+      .toEqual([expect.objectContaining({ deferredSkill: '$heartbeat collect state' })]);
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it.each([
+    ['missing requested workspace', { result: { data: [] } }],
+    ['foreign workspace', {
+      result: { data: [{
+        cwd: '/tmp/another-workspace',
+        skills: [{ name: 'heartbeat', path: '/foreign/heartbeat/SKILL.md', enabled: true }],
+      }] },
+    }],
+    ['requested plus foreign workspace', {
+      result: { data: [
+        { cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/local/heartbeat/SKILL.md', enabled: true }] },
+        { cwd: '/tmp/another-workspace', skills: [{ name: 'heartbeat', path: '/foreign/heartbeat/SKILL.md', enabled: true }] },
+      ] },
+    }],
+    ['duplicate requested workspace', {
+      result: { data: [
+        { cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/first/heartbeat/SKILL.md', enabled: true }] },
+        { cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/second/heartbeat/SKILL.md', enabled: true }] },
+      ] },
+    }],
+    ['duplicate enabled exact-name match', {
+      result: { data: [{ cwd: mockAgentCwd, skills: [
+        { name: 'heartbeat', path: '/first/heartbeat/SKILL.md', enabled: true },
+        { name: 'heartbeat', path: '/second/heartbeat/SKILL.md', enabled: true },
+      ] }] },
+    }],
+  ])('blocks ambiguous skills/list trust boundary %s before remote start', async (_label, response) => {
+    requestMock.mockResolvedValue(response);
+    const pty = makeReadyPty();
+
+    pty.injectMessage('$heartbeat collect state');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect((pty as unknown as { _turnCustodyBlocked: boolean })._turnCustodyBlocked).toBe(true);
+    expect((pty as unknown as { _turnCustody: { snapshot(): CustodiedTurn[] } })._turnCustody.snapshot())
+      .toEqual([expect.objectContaining({
+        deferredSkill: '$heartbeat collect state',
+        input: [],
+        startAttempts: 0,
+      })]);
+    expect((pty as unknown as { _turnQueue: Array<{ deferredSkill?: string }> })._turnQueue)
+      .toEqual([expect.objectContaining({ deferredSkill: '$heartbeat collect state' })]);
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it('selects the sole enabled exact match when a disabled duplicate is present', async () => {
+    requestMock
+      .mockResolvedValueOnce({
+        result: { data: [{ cwd: mockAgentCwd, skills: [
+          { name: 'heartbeat', path: '/disabled/heartbeat/SKILL.md', enabled: false },
+          { name: 'heartbeat', path: '/enabled/heartbeat/SKILL.md', enabled: true },
+        ] }] },
+      })
+      .mockResolvedValueOnce({ result: { turnId: 'turn-enabled-heartbeat' } });
+    const pty = makeReadyPty();
+
+    pty.injectMessage('$heartbeat collect state');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(requestMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+      input: [
+        { type: 'skill', name: 'heartbeat', path: '/enabled/heartbeat/SKILL.md' },
+        { type: 'text', text: 'collect state', text_elements: [] },
+      ],
+    }));
+  });
 
   it('maps /goal to thread/goal/get', async () => {
     requestMock.mockResolvedValue({ result: { goal: null } });
@@ -319,7 +566,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 
   it('mirrors unknown $skill error to Telegram when handle is bound', async () => {
-    requestMock.mockResolvedValue({ result: { data: [{ cwd: '/tmp', skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }] } });
+    requestMock.mockResolvedValue({ result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }] } });
     const pty = makeReadyPty();
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     pty.setTelegramHandle({ sendMessage } as unknown as Parameters<typeof pty.setTelegramHandle>[0], '7940429114');
@@ -336,7 +583,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 
   it('does not fall back to text for unknown skills', async () => {
-    requestMock.mockResolvedValue({ result: { data: [{ cwd: '/tmp', skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }] } });
+    requestMock.mockResolvedValue({ result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }] } });
     const pty = makeReadyPty();
     pty.write('$imag');
     pty.write('\r');
@@ -349,7 +596,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     requestMock
       .mockResolvedValueOnce({
         result: {
-          data: [{ cwd: '/tmp', skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }],
+          data: [{ cwd: mockAgentCwd, skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }],
         },
       })
       .mockResolvedValueOnce({ result: {} });
@@ -371,6 +618,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
     expect(requestMock).toHaveBeenNthCalledWith(2, 'turn/start', {
       threadId: 'thread-1',
+      clientUserMessageId: expect.any(String),
       model: 'gpt-5.5',
       input: [
         { type: 'skill', name: 'imagegen', path: '/skill.md' },
@@ -385,7 +633,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     requestMock
       .mockResolvedValueOnce({
         result: {
-          data: [{ cwd: '/tmp', skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }],
+          data: [{ cwd: mockAgentCwd, skills: [{ name: 'imagegen', path: '/skill.md', enabled: true }] }],
         },
       })
       .mockResolvedValueOnce({ result: {} });
@@ -402,6 +650,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
     expect(requestMock).toHaveBeenNthCalledWith(2, 'turn/start', {
       threadId: 'thread-1',
+      clientUserMessageId: expect.any(String),
       model: 'gpt-5.5',
       input: [
         { type: 'skill', name: 'imagegen', path: '/skill.md' },
@@ -421,7 +670,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     requestMock
       .mockResolvedValueOnce({
         result: {
-          data: [{ cwd: '/tmp', skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }],
+          data: [{ cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }],
         },
       })
       .mockResolvedValueOnce({ result: {} });
@@ -438,6 +687,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
     expect(requestMock).toHaveBeenNthCalledWith(2, 'turn/start', {
       threadId: 'thread-1',
+      clientUserMessageId: expect.any(String),
       model: 'gpt-5.5',
       input: [{ type: 'skill', name: 'heartbeat', path: '/h.md' }],
       approvalPolicy: 'never',
@@ -457,7 +707,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 
   it('replies with [skill] unknown for an unknown slash command', async () => {
     requestMock.mockResolvedValue({
-      result: { data: [{ cwd: '/tmp', skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }] },
+      result: { data: [{ cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }] },
     });
     const pty = makeReadyPty();
     const sendMessage = vi.fn().mockResolvedValue(undefined);
@@ -479,7 +729,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     requestMock
       .mockResolvedValueOnce({
         result: {
-          data: [{ cwd: '/tmp', skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }],
+          data: [{ cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }],
         },
       })
       .mockResolvedValueOnce({ result: {} });
@@ -492,6 +742,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 
     expect(requestMock).toHaveBeenNthCalledWith(2, 'turn/start', {
       threadId: 'thread-1',
+      clientUserMessageId: expect.any(String),
       model: 'gpt-5.5',
       input: [
         { type: 'skill', name: 'heartbeat', path: '/h.md' },
@@ -529,7 +780,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     requestMock
       .mockResolvedValueOnce({
         result: {
-          data: [{ cwd: '/tmp', skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }],
+          data: [{ cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/h.md', enabled: true }] }],
         },
       })
       .mockResolvedValueOnce({ result: {} });
@@ -545,6 +796,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 
     expect(requestMock).toHaveBeenNthCalledWith(2, 'turn/start', {
       threadId: 'thread-1',
+      clientUserMessageId: expect.any(String),
       model: 'gpt-5.5',
       input: [{ type: 'skill', name: 'heartbeat', path: '/h.md' }],
       approvalPolicy: 'never',
@@ -564,6 +816,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     expect(requestMock).toHaveBeenCalledTimes(1);
     expect(requestMock).toHaveBeenLastCalledWith('turn/start', {
       threadId: 'thread-1',
+      clientUserMessageId: expect.any(String),
       model: 'gpt-5.5',
       input: [{ type: 'text', text: 'first', text_elements: [] }],
       approvalPolicy: 'never',
@@ -582,6 +835,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     expect(requestMock).toHaveBeenCalledTimes(2);
     expect(requestMock).toHaveBeenLastCalledWith('turn/start', {
       threadId: 'thread-1',
+      clientUserMessageId: expect.any(String),
       model: 'gpt-5.5',
       input: [{ type: 'text', text: 'second', text_elements: [] }],
       approvalPolicy: 'never',
@@ -592,7 +846,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 });
 
-describe('CodexAppServerPTY mid-turn steer', () => {
+describe('CodexAppServerPTY mid-turn durable queueing', () => {
   function makeReadyPty() {
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _alive: boolean })._alive = true;
@@ -624,13 +878,11 @@ describe('CodexAppServerPTY mid-turn steer', () => {
     return requestMock.mock.calls.filter(([m]) => m === method);
   }
 
-  // Drain the full microtask queue (steer rejection -> catch -> enqueue -> drain
-  // chains span more ticks than a fixed number of Promise.resolve() awaits).
   function flush() {
     return new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  it('steers the active turn instead of queueing when executing', async () => {
+  it('durably queues active-turn input instead of dispatching an unidentifiable steer', async () => {
     requestMock.mockResolvedValue({ result: {} });
     const pty = makeReadyPty();
     await startExecutingTurn(pty);
@@ -640,57 +892,25 @@ describe('CodexAppServerPTY mid-turn steer', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(callsTo('turn/steer')).toHaveLength(1);
-    expect(requestMock).toHaveBeenLastCalledWith('turn/steer', {
-      threadId: 'thread-1',
-      expectedTurnId: 'turn-abc',
-      input: [{ type: 'text', text: 'mid-turn message', text_elements: [] }],
-    });
-
-    // Steered input must NOT also be queued: completing the turn fires no new turn/start.
-    rpc(pty).handleRpcMessage({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-abc' } } });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(callsTo('turn/start')).toHaveLength(1);
-  });
-
-  it('falls back to the queue when steer is rejected (non-steerable turn)', async () => {
-    requestMock.mockImplementation((method: string) => {
-      if (method === 'turn/steer') {
-        return Promise.reject(new Error('ActiveTurnNotSteerable'));
-      }
-      return Promise.resolve({ result: {} });
-    });
-    const pty = makeReadyPty();
-    await startExecutingTurn(pty);
-
-    pty.write('steer me');
-    pty.write('\r');
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(callsTo('turn/steer')).toHaveLength(1);
-    expect(callsTo('turn/start')).toHaveLength(1); // not submitted yet
+    expect(callsTo('turn/steer')).toHaveLength(0);
+    const durableState = JSON.parse(String(atomicWriteSyncMock.mock.calls.at(-1)?.[1])) as {
+      pending: Array<{ input: Array<{ text?: string }> }>;
+    };
+    expect(durableState.pending.map((turn) => turn.input[0]?.text))
+      .toEqual(['long task', 'mid-turn message']);
 
     rpc(pty).handleRpcMessage({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-abc' } } });
     await Promise.resolve();
     await Promise.resolve();
-
     expect(callsTo('turn/start')).toHaveLength(2);
     expect(callsTo('turn/start')[1][1]).toMatchObject({
-      input: [{ type: 'text', text: 'steer me', text_elements: [] }],
+      input: [{ type: 'text', text: 'mid-turn message', text_elements: [] }],
     });
     rpc(pty).handleRpcMessage({ method: 'turn/completed', params: {} });
   });
 
-  it('preserves ordering across multiple rejected steers', async () => {
-    requestMock.mockImplementation((method: string) => {
-      if (method === 'turn/steer') {
-        return Promise.reject(new Error('ExpectedTurnMismatch'));
-      }
-      return Promise.resolve({ result: {} });
-    });
+  it('preserves FIFO ordering across multiple mid-turn admissions', async () => {
+    requestMock.mockResolvedValue({ result: {} });
     const pty = makeReadyPty();
     await startExecutingTurn(pty);
 
@@ -699,7 +919,7 @@ describe('CodexAppServerPTY mid-turn steer', () => {
       pty.write('\r');
       await flush();
     }
-    expect(callsTo('turn/steer')).toHaveLength(2);
+    expect(callsTo('turn/steer')).toHaveLength(0);
 
     rpc(pty).handleRpcMessage({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-abc' } } });
     await flush();
@@ -715,7 +935,7 @@ describe('CodexAppServerPTY mid-turn steer', () => {
     rpc(pty).handleRpcMessage({ method: 'turn/completed', params: {} });
   });
 
-  it('queues without steering while executing but before turn/started arrives', async () => {
+  it('queues while executing but before turn/started arrives', async () => {
     requestMock.mockResolvedValue({ result: {} });
     const pty = makeReadyPty();
     pty.write('long task');
@@ -737,29 +957,6 @@ describe('CodexAppServerPTY mid-turn steer', () => {
     rpc(pty).handleRpcMessage({ method: 'turn/completed', params: {} });
   });
 
-  it('honors the CODEX_STEER_DISABLED kill-switch', async () => {
-    process.env.CODEX_STEER_DISABLED = '1';
-    try {
-      requestMock.mockResolvedValue({ result: {} });
-      const pty = makeReadyPty();
-      await startExecutingTurn(pty);
-
-      pty.write('mid-turn message');
-      pty.write('\r');
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(callsTo('turn/steer')).toHaveLength(0);
-      rpc(pty).handleRpcMessage({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-abc' } } });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(callsTo('turn/start')).toHaveLength(2);
-      rpc(pty).handleRpcMessage({ method: 'turn/completed', params: {} });
-    } finally {
-      delete process.env.CODEX_STEER_DISABLED;
-    }
-  });
-
   it('clears the active turn id on turn/completed and on error notifications', async () => {
     requestMock.mockResolvedValue({ result: {} });
     const pty = makeReadyPty();
@@ -772,8 +969,496 @@ describe('CodexAppServerPTY mid-turn steer', () => {
 
     await startExecutingTurn(pty, 'turn-def');
     expect(internals._activeTurnId).toBe('turn-def');
-    rpc(pty).handleRpcMessage({ method: 'error', params: { message: 'boom' } });
+    rpc(pty).handleRpcMessage({ method: 'error', params: { turnId: 'turn-def', message: 'boom' } });
     expect(internals._activeTurnId).toBeNull();
+  });
+});
+
+describe('CodexAppServerPTY trusted cron model routing', () => {
+  // Wire-shape authority was re-derived with `codex app-server generate-ts`:
+  // TurnStartedNotification/TurnCompletedNotification carry nested `turn.id`
+  // (SHA-256 95135229129526d7d9e1db077962210ca5b564adc5fe414ff07e9a65ba43adcf /
+  // 1f56d73cb06876533fb224cd285634d3e090b21b647009be0e7c622937e40d3e),
+  // while ErrorNotification and ThreadTokenUsageUpdatedNotification carry
+  // top-level `turnId`
+  // (f30701035a45042495c0cbf41d4002f9e1a2c2b8c41bd4762ed6588338c6d5e1 /
+  // 53ce4421d686b8a7f9a86c5ad54de2a7dceecfb95df74fa5f441947e136f063d).
+  // The repository e2e app-server fixture also emits top-level
+  // turn/completed, so the adapter keeps that compatibility shape under the
+  // same identity boundary.
+  function makeReadyPty() {
+    const pty = new CodexAppServerPTY(mockEnv, { model: 'gpt-5.6-sol' });
+    (pty as unknown as { _alive: boolean })._alive = true;
+    (pty as unknown as { _threadId: string })._threadId = 'thread-routing';
+    (pty as unknown as { _rpc: { request: typeof requestMock; respondError: typeof respondErrorMock } })._rpc = {
+      request: requestMock,
+      respondError: respondErrorMock,
+    };
+    return pty;
+  }
+
+  function rpc(pty: InstanceType<typeof CodexAppServerPTY>, message: unknown) {
+    (pty as unknown as { handleRpcMessage(message: unknown): void }).handleRpcMessage(message);
+  }
+
+  function callsTo(method: string) {
+    return requestMock.mock.calls.filter(([candidate]) => candidate === method);
+  }
+
+  async function flush() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function heartbeatRouting() {
+    return {
+      source: 'daemon-cron' as const,
+      cronName: 'heartbeat',
+      model: 'gpt-5.6-terra',
+      reason: 'reviewed_mechanical_preflight',
+      skillName: 'heartbeat-preflight',
+      requestedModel: 'gpt-5.6-terra',
+      effort: 'low',
+    };
+  }
+
+  it('queues the reviewed Terra preflight then the configured-Sol continuation in order', async () => {
+    requestMock.mockResolvedValue({ result: {} });
+    const pty = makeReadyPty();
+
+    pty.injectMessage('judgment work');
+    await flush();
+    expect(callsTo('turn/start')[0][1]).toMatchObject({ model: 'gpt-5.6-sol' });
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-sol', status: 'inProgress', items: [] } },
+    });
+
+    pty.injectCronSequence(
+      '[CRON PREFLIGHT] heartbeat\ncollect raw state only',
+      heartbeatRouting(),
+      '[CRON CONTINUATION] heartbeat\nperform judgment on Sol',
+      '[CRON FALLBACK] heartbeat\nperform the full heartbeat on Sol',
+    );
+    await flush();
+
+    expect(callsTo('turn/steer')).toHaveLength(0);
+    expect(callsTo('turn/start')).toHaveLength(1);
+
+    rpc(pty, { method: 'turn/completed', params: { turn: { id: 'turn-sol' } } });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(2);
+    expect(callsTo('turn/start')[1][1]).toMatchObject({
+      model: 'gpt-5.6-terra',
+      input: [{ type: 'text', text: '[CRON PREFLIGHT] heartbeat\ncollect raw state only', text_elements: [] }],
+    });
+
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-terra', status: 'inProgress', items: [] } },
+    });
+    rpc(pty, {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-routing',
+        turnId: 'turn-terra',
+        tokenUsage: {
+          last: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 0, totalTokens: 15 },
+          total: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 0, totalTokens: 15 },
+          modelContextWindow: 200000,
+        },
+      },
+    });
+
+    const [, line] = fsMocks.appendFileSync.mock.calls.at(-1) as [string, string];
+    expect(JSON.parse(line)).toMatchObject({
+      model: 'gpt-5.6-terra',
+      turn_id: 'turn-terra',
+      routing_source: 'daemon-cron',
+      cron_name: 'heartbeat',
+      routing_reason: 'reviewed_mechanical_preflight',
+      skill_name: 'heartbeat-preflight',
+      requested_model: 'gpt-5.6-terra',
+      requested_effort: 'low',
+    });
+
+    rpc(pty, { method: 'turn/completed', params: { turn: { id: 'turn-terra' } } });
+    await flush();
+    expect(logEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'codex-app-agent',
+      'acme',
+      'action',
+      'cron_model_preflight_completed',
+      'info',
+      expect.objectContaining({ cron: 'heartbeat', effective_model: 'gpt-5.6-terra' }),
+    );
+    expect(callsTo('turn/start')).toHaveLength(3);
+    expect(callsTo('turn/start')[2][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [{ type: 'text', text: '[CRON CONTINUATION] heartbeat\nperform judgment on Sol', text_elements: [] }],
+    });
+    rpc(pty, { method: 'turn/completed', params: {} });
+  });
+
+  it('never steers ordinary judgment into an active routed turn', async () => {
+    requestMock.mockResolvedValue({ result: {} });
+    const pty = makeReadyPty();
+
+    pty.injectCronSequence(
+      'mechanical preflight',
+      heartbeatRouting(),
+      'Sol continuation',
+      'full Sol fallback',
+    );
+    await flush();
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-terra', status: 'inProgress', items: [] } },
+    });
+
+    pty.injectMessage('review this production incident and choose a remediation');
+    await flush();
+    expect(callsTo('turn/steer')).toHaveLength(0);
+    expect(callsTo('turn/start')).toHaveLength(1);
+
+    rpc(pty, { method: 'turn/completed', params: { turn: { id: 'turn-terra' } } });
+    await flush();
+    expect(callsTo('turn/start')[1][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [{ type: 'text', text: 'Sol continuation', text_elements: [] }],
+    });
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-continuation', status: 'inProgress', items: [] } },
+    });
+    rpc(pty, { method: 'turn/completed', params: { turn: { id: 'turn-continuation' } } });
+    await flush();
+    expect(callsTo('turn/start')[2][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [{
+        type: 'text',
+        text: 'review this production incident and choose a remediation',
+        text_elements: [],
+      }],
+    });
+    rpc(pty, { method: 'turn/completed', params: {} });
+  });
+
+  it('runs the full Sol fallback before later FIFO work when Terra start is rejected', async () => {
+    requestMock.mockImplementation((method: string, params: { model?: string }) => {
+      if (method === 'turn/start' && params.model === 'gpt-5.6-terra') {
+        return Promise.reject(new Error('Terra unavailable'));
+      }
+      if (method === 'thread/turns/list') {
+        return Promise.resolve({ result: { data: [], nextCursor: null } });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const pty = makeReadyPty();
+    (pty as unknown as { _turnReconcileDelayMs: number; _turnReconcilePolls: number })._turnReconcileDelayMs = 0;
+    (pty as unknown as { _turnReconcilePolls: number })._turnReconcilePolls = 1;
+
+    pty.injectCronSequence('mechanical preflight', heartbeatRouting(), 'Sol continuation', 'full Sol fallback');
+    pty.injectMessage('ordinary work queued later');
+    await flush();
+    await flush();
+
+    expect(callsTo('turn/start')).toHaveLength(3);
+    expect(callsTo('turn/start')[0][1]).toMatchObject({ model: 'gpt-5.6-terra' });
+    expect(callsTo('turn/start')[1][1]).toMatchObject({ model: 'gpt-5.6-terra' });
+    expect(callsTo('turn/start')[2][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [expect.objectContaining({
+        text: expect.stringContaining('Failure stage: start_rejected.'),
+      })],
+    });
+    expect(logEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'codex-app-agent',
+      'acme',
+      'action',
+      'cron_model_preflight_fallback',
+      'info',
+      expect.objectContaining({
+        cron: 'heartbeat',
+        failure_stage: 'start_rejected',
+        effective_model: 'gpt-5.6-sol',
+      }),
+    );
+
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-fallback', status: 'inProgress', items: [] } },
+    });
+    rpc(pty, {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-routing',
+        turnId: 'turn-fallback',
+        tokenUsage: {
+          last: { inputTokens: 8, outputTokens: 3, cachedInputTokens: 0, totalTokens: 11 },
+          total: { inputTokens: 8, outputTokens: 3, cachedInputTokens: 0, totalTokens: 11 },
+          modelContextWindow: 200000,
+        },
+      },
+    });
+    const [, line] = fsMocks.appendFileSync.mock.calls.at(-1) as [string, string];
+    expect(JSON.parse(line)).toMatchObject({
+      model: 'gpt-5.6-sol',
+      routing_reason: 'preflight_failed_sol_fallback:start_rejected',
+      cron_name: 'heartbeat',
+    });
+
+    rpc(pty, { method: 'turn/completed', params: { turn: { id: 'turn-fallback' } } });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(4);
+    expect(callsTo('turn/start')[3][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [expect.objectContaining({ text: 'ordinary work queued later' })],
+    });
+    rpc(pty, { method: 'turn/completed', params: {} });
+  });
+
+  it('runs one Sol fallback on active-turn error and ignores late preflight completion', async () => {
+    requestMock.mockResolvedValue({ result: {} });
+    const pty = makeReadyPty();
+
+    pty.injectCronSequence('mechanical preflight', heartbeatRouting(), 'Sol continuation', 'full Sol fallback');
+    await flush();
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-terra-error', status: 'inProgress', items: [] } },
+    });
+    pty.injectMessage('ordinary work after the sequence');
+    rpc(pty, { method: 'error', params: { turnId: 'turn-terra-error', message: 'preflight failed' } });
+    await flush();
+
+    expect(callsTo('turn/start')).toHaveLength(2);
+    expect(callsTo('turn/start')[1][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [expect.objectContaining({
+        text: expect.stringContaining('Failure stage: active_turn_error.'),
+      })],
+    });
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-fallback', status: 'inProgress', items: [] } },
+    });
+
+    rpc(pty, { method: 'turn/completed', params: { turnId: 'turn-terra-error' } });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(2);
+
+    rpc(pty, { method: 'error', params: { turnId: 'turn-terra-error', message: 'late preflight error' } });
+    rpc(pty, {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-routing',
+        turnId: 'turn-terra-error',
+        tokenUsage: {
+          last: { inputTokens: 99, outputTokens: 99, cachedInputTokens: 0, totalTokens: 198 },
+          total: { inputTokens: 99, outputTokens: 99, cachedInputTokens: 0, totalTokens: 198 },
+          modelContextWindow: 200000,
+        },
+      },
+    });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(2);
+    expect((pty as unknown as { _activeTurnId: string | null })._activeTurnId).toBe('turn-fallback');
+    expect(fsMocks.appendFileSync).not.toHaveBeenCalledWith(
+      expect.stringContaining('codex-tokens.jsonl'),
+      expect.stringContaining('turn-terra-error'),
+    );
+
+    rpc(pty, { method: 'turn/completed', params: { turnId: 'turn-fallback' } });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(3);
+    expect(callsTo('turn/start')[2][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [expect.objectContaining({ text: 'ordinary work after the sequence' })],
+    });
+    rpc(pty, { method: 'turn/completed', params: {} });
+  });
+
+  it('keeps the current Terra turn on retryable errors and falls back only on a terminal error', async () => {
+    requestMock.mockResolvedValue({ result: {} });
+    const pty = makeReadyPty();
+
+    pty.injectCronSequence('mechanical preflight', heartbeatRouting(), 'Sol continuation', 'full Sol fallback');
+    pty.injectMessage('ordinary work after retry sequence');
+    await flush();
+    rpc(pty, {
+      method: 'turn/started',
+      params: { threadId: 'thread-routing', turn: { id: 'turn-terra-retry' } },
+    });
+    rpc(pty, {
+      method: 'error',
+      params: {
+        threadId: 'thread-routing',
+        turnId: 'turn-terra-retry',
+        willRetry: true,
+        error: { message: 'reconnecting' },
+      },
+    });
+    await flush();
+
+    expect(callsTo('turn/start')).toHaveLength(1);
+    expect((pty as unknown as { _activeTurnId: string | null })._activeTurnId).toBe('turn-terra-retry');
+
+    rpc(pty, {
+      method: 'error',
+      params: {
+        threadId: 'thread-routing',
+        turnId: 'turn-terra-retry',
+        willRetry: false,
+        error: { message: 'retry exhausted' },
+      },
+    });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(2);
+    expect(callsTo('turn/start')[1][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [expect.objectContaining({ text: expect.stringContaining('Failure stage: active_turn_error.') })],
+    });
+    rpc(pty, {
+      method: 'turn/started',
+      params: { threadId: 'thread-routing', turnId: 'turn-fallback' },
+    });
+    rpc(pty, { method: 'turn/completed', params: { turnId: 'turn-fallback' } });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(3);
+    rpc(pty, { method: 'turn/completed', params: {} });
+  });
+
+  it('binds a current fallback error by top-level turnId and continues later FIFO work', async () => {
+    requestMock.mockResolvedValue({ result: {} });
+    const pty = makeReadyPty();
+
+    pty.injectCronSequence('mechanical preflight', heartbeatRouting(), 'Sol continuation', 'full Sol fallback');
+    pty.injectMessage('ordinary work after failed fallback');
+    await flush();
+    rpc(pty, {
+      method: 'turn/started',
+      params: { threadId: 'thread-routing', turnId: 'turn-terra-error' },
+    });
+    rpc(pty, {
+      method: 'error',
+      params: { threadId: 'thread-routing', turnId: 'turn-terra-error', message: 'preflight failed' },
+    });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(2);
+
+    rpc(pty, {
+      method: 'turn/started',
+      params: { threadId: 'thread-routing', turnId: 'turn-fallback-error' },
+    });
+    rpc(pty, {
+      method: 'error',
+      params: { threadId: 'thread-routing', turnId: 'turn-fallback-error', message: 'fallback failed' },
+    });
+    await flush();
+
+    expect(callsTo('turn/start')).toHaveLength(3);
+    expect(callsTo('turn/start')[2][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [expect.objectContaining({ text: 'ordinary work after failed fallback' })],
+    });
+    rpc(pty, {
+      method: 'turn/started',
+      params: { threadId: 'thread-routing', turnId: 'turn-ordinary' },
+    });
+    rpc(pty, { method: 'turn/completed', params: { turnId: 'turn-ordinary' } });
+  });
+
+  it('interrupts a timed-out Terra preflight and runs the full Sol fallback', async () => {
+    let workItemId = '';
+    let historyReads = 0;
+    requestMock.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === 'turn/start' && !workItemId) {
+        workItemId = String(params.clientUserMessageId);
+      }
+      if (method === 'thread/turns/list') {
+        historyReads += 1;
+        return Promise.resolve({
+          result: {
+            data: [{
+              id: 'turn-terra-timeout',
+              status: historyReads === 1 ? 'inProgress' : 'interrupted',
+              items: [{ type: 'userMessage', clientId: workItemId }],
+            }],
+            nextCursor: null,
+          },
+        });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const pty = makeReadyPty();
+    (pty as unknown as { _turnCompletionTimeoutMs: number })._turnCompletionTimeoutMs = 20;
+    (pty as unknown as { _turnReconcileDelayMs: number; _turnReconcilePolls: number })._turnReconcileDelayMs = 0;
+    (pty as unknown as { _turnReconcilePolls: number })._turnReconcilePolls = 1;
+
+    pty.injectCronSequence('mechanical preflight', heartbeatRouting(), 'Sol continuation', 'full Sol fallback');
+    pty.injectMessage('ordinary work after timeout fallback');
+    await flush();
+    rpc(pty, {
+      method: 'turn/started',
+      params: { turn: { id: 'turn-terra-timeout', status: 'inProgress', items: [] } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await flush();
+
+    expect(callsTo('turn/interrupt')).toHaveLength(1);
+    expect(callsTo('turn/interrupt')[0][1]).toMatchObject({
+      threadId: 'thread-routing',
+      turnId: 'turn-terra-timeout',
+    });
+    expect(callsTo('turn/start')).toHaveLength(2);
+    expect(callsTo('turn/start')[1][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      input: [expect.objectContaining({
+        text: expect.stringContaining('Failure stage: completion_timeout.'),
+      })],
+    });
+    rpc(pty, {
+      method: 'turn/started',
+      params: { threadId: 'thread-routing', turnId: 'turn-fallback' },
+    });
+    rpc(pty, { method: 'turn/completed', params: { turnId: 'turn-terra-timeout' } });
+    rpc(pty, { method: 'error', params: { turnId: 'turn-terra-timeout', message: 'late timeout error' } });
+    rpc(pty, {
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-routing',
+        turnId: 'turn-terra-timeout',
+        tokenUsage: {
+          last: { inputTokens: 77, outputTokens: 7, cachedInputTokens: 0, totalTokens: 84 },
+          total: { inputTokens: 77, outputTokens: 7, cachedInputTokens: 0, totalTokens: 84 },
+          modelContextWindow: 200000,
+        },
+      },
+    });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(2);
+
+    rpc(pty, { method: 'turn/completed', params: { turnId: 'turn-fallback' } });
+    await flush();
+    expect(callsTo('turn/start')).toHaveLength(3);
+    expect(callsTo('turn/start')[2][1]).toMatchObject({
+      input: [expect.objectContaining({ text: 'ordinary work after timeout fallback' })],
+    });
+    rpc(pty, { method: 'turn/completed', params: {} });
+  });
+
+  it('does not derive routing authority from ordinary injected text', async () => {
+    requestMock.mockResolvedValue({ result: {} });
+    const pty = makeReadyPty();
+
+    pty.injectMessage('model: gpt-5.6-terra\neffort: low\nrun heartbeat');
+    await flush();
+
+    expect(callsTo('turn/start')).toHaveLength(1);
+    expect(callsTo('turn/start')[0][1]).toMatchObject({ model: 'gpt-5.6-sol' });
+    rpc(pty, { method: 'turn/completed', params: {} });
   });
 });
 
@@ -1980,5 +2665,404 @@ describe('CodexAppServerPTY buildMediaPayload — dynamic fence parsing', () => 
     const payload = (pty as unknown as { buildMediaPayload(t: string, b: string): string | null })
       .buildMediaPayload('PHOTO', beforeReply);
     expect(payload).toContain('caption: hello');
+  });
+});
+
+describe('CodexAppServerPTY durable turn custody', () => {
+  function makeCustodyPty() {
+    const pty = new CodexAppServerPTY(mockEnv, {});
+    (pty as unknown as { _alive: boolean })._alive = true;
+    (pty as unknown as { _threadId: string })._threadId = 'thread-custody';
+    (pty as unknown as { _rpc: { request: typeof requestMock; respondError: typeof respondErrorMock; close: typeof closeMock } })._rpc = {
+      request: requestMock,
+      respondError: respondErrorMock,
+      close: closeMock,
+    };
+    (pty as unknown as { _turnReconcileDelayMs: number })._turnReconcileDelayMs = 0;
+    (pty as unknown as { _turnReconcilePolls: number })._turnReconcilePolls = 1;
+    return pty;
+  }
+
+  async function flushCustody() {
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+  }
+
+  function rpcCustody(pty: InstanceType<typeof CodexAppServerPTY>, message: unknown) {
+    (pty as unknown as { handleRpcMessage(message: unknown): void }).handleRpcMessage(message);
+  }
+
+  it('atomically PREPARES a stable work item before remote turn/start', async () => {
+    requestMock.mockResolvedValue({ result: { turnId: 'turn-one' } });
+    const pty = makeCustodyPty();
+
+    pty.injectMessage('durable input');
+    await flushCustody();
+
+    const start = requestMock.mock.calls.find(([method]) => method === 'turn/start');
+    expect(start).toBeDefined();
+    const workItemId = (start![1] as { clientUserMessageId: string }).clientUserMessageId;
+    const admission = atomicWriteSyncMock.mock.calls
+      .map(([, data]) => JSON.parse(String(data)) as { pending?: Array<{ workItemId: string }> })
+      .find((state) => state.pending?.some((turn) => turn.workItemId === workItemId));
+    expect(admission).toBeDefined();
+    expect((admission!.pending![0] as { threadId?: string }).threadId).toBe('thread-custody');
+    expect(atomicWriteSyncMock.mock.invocationCallOrder[0]).toBeLessThan(requestMock.mock.invocationCallOrder[0]);
+  });
+
+  it('resumes the exact custodied thread even when the restart requested fresh mode', async () => {
+    requestMock.mockResolvedValue({ result: { thread: { id: 'thread-before-restart' } } });
+    const pty = makeCustodyPty();
+    (pty as unknown as { _threadId: string | null })._threadId = null;
+
+    await (pty as unknown as {
+      startOrResumeThread(mode: 'fresh' | 'continue', custodyThreadId: string | null): Promise<void>;
+    }).startOrResumeThread('fresh', 'thread-before-restart');
+
+    expect(requestMock).toHaveBeenCalledWith('thread/resume', expect.objectContaining({
+      threadId: 'thread-before-restart',
+    }));
+    expect(requestMock).not.toHaveBeenCalledWith('thread/start', expect.anything());
+    expect((pty as unknown as { _threadId: string | null })._threadId).toBe('thread-before-restart');
+  });
+
+  it('blocks restart instead of making an unbounded third start attempt', async () => {
+    requestMock.mockResolvedValue({ result: { data: [], nextCursor: null } });
+    const pty = makeCustodyPty();
+    const exhausted: CustodiedTurn = {
+      workItemId: 'work-exhausted',
+      threadId: 'thread-custody',
+      input: [{ type: 'text', text: 'do not run a third time', text_elements: [] }],
+      admittedAt: '2026-08-13T00:00:00.000Z',
+      startAttempts: 2,
+    };
+
+    await expect((pty as unknown as {
+      restoreTurnCustody(pending: CustodiedTurn[]): Promise<number>;
+    }).restoreTurnCustody([exhausted])).rejects.toThrow('exhausted its two start attempts');
+    expect((pty as unknown as { _turnCustodyBlocked: boolean })._turnCustodyBlocked).toBe(true);
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it('blocks custody when the first restart reconciliation read fails', async () => {
+    requestMock.mockRejectedValue(new Error('history unavailable'));
+    const pty = makeCustodyPty();
+    const pending: CustodiedTurn = {
+      workItemId: 'work-read-failure',
+      threadId: 'thread-custody',
+      input: [{ type: 'text', text: 'hold until history is readable', text_elements: [] }],
+      admittedAt: '2026-08-13T00:00:00.000Z',
+      startAttempts: 1,
+    };
+
+    await expect((pty as unknown as {
+      restoreTurnCustody(pending: CustodiedTurn[]): Promise<number>;
+    }).restoreTurnCustody([pending])).rejects.toThrow(
+      'initial restart reconciliation read failed for work-read-failure',
+    );
+    expect((pty as unknown as { _turnCustodyBlocked: boolean })._turnCustodyBlocked).toBe(true);
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it('refuses injection synchronously when PREPARED custody cannot be written', () => {
+    atomicWriteSyncMock.mockImplementationOnce(() => { throw new Error('disk full'); });
+    const pty = makeCustodyPty();
+
+    expect(() => pty.injectMessage('must not be acknowledged')).toThrow('disk full');
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+  });
+
+  it('reuses one client identity for the single verified-empty start retry', async () => {
+    requestMock.mockImplementation((method: string) => {
+      if (method === 'turn/start') return Promise.reject(new Error('response lost'));
+      if (method === 'thread/turns/list') {
+        return Promise.resolve({ result: { data: [], nextCursor: null } });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const pty = makeCustodyPty();
+
+    pty.injectMessage('retry exactly once');
+    await flushCustody();
+    await flushCustody();
+
+    const starts = requestMock.mock.calls.filter(([method]) => method === 'turn/start');
+    expect(starts).toHaveLength(2);
+    const ids = starts.map(([, params]) => (params as { clientUserMessageId: string }).clientUserMessageId);
+    expect(new Set(ids).size).toBe(1);
+    expect((pty as unknown as { _turnCustodyBlocked: boolean })._turnCustodyBlocked).toBe(true);
+  });
+
+  it('terminalizes a timed-out turn before starting its successor and ignores late events', async () => {
+    const startIds: string[] = [];
+    let historyReads = 0;
+    requestMock.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === 'turn/start') {
+        startIds.push(String(params.clientUserMessageId));
+        return Promise.resolve({ result: { turnId: startIds.length === 1 ? 'turn-old' : 'turn-new' } });
+      }
+      if (method === 'thread/turns/list') {
+        historyReads += 1;
+        return Promise.resolve({
+          result: {
+            data: [{
+              id: 'turn-old',
+              status: historyReads === 1 ? 'inProgress' : 'interrupted',
+              items: [{ type: 'userMessage', clientId: startIds[0] }],
+            }],
+            nextCursor: null,
+          },
+        });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const pty = makeCustodyPty();
+    (pty as unknown as { _turnCompletionTimeoutMs: number })._turnCompletionTimeoutMs = 50;
+
+    pty.injectMessage('old timed-out work');
+    await flushCustody();
+    (pty as unknown as { queueTurn(input: unknown[], routing?: unknown, forceQueue?: boolean): void }).queueTurn(
+      [{ type: 'text', text: 'successor work', text_elements: [] }],
+      undefined,
+      true,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flushCustody();
+
+    expect(requestMock.mock.calls.filter(([method]) => method === 'turn/interrupt')).toHaveLength(1);
+    expect(startIds).toHaveLength(2);
+    expect(startIds[0]).not.toBe(startIds[1]);
+    expect((pty as unknown as { _activeTurnId: string | null })._activeTurnId).toBe('turn-new');
+
+    rpcCustody(pty, {
+      method: 'item/agentMessage/delta',
+      params: { turnId: 'turn-new', delta: 'SUCCESSOR-ONLY-RESPONSE' },
+    });
+
+    rpcCustody(pty, {
+      method: 'item/agentMessage/delta',
+      params: { turnId: 'turn-old', delta: 'STALE-RETIRED-OUTPUT' },
+    });
+    expect(pty.getOutputBuffer().getRecent()).not.toContain('STALE-RETIRED-OUTPUT');
+    rpcCustody(pty, { method: 'turn/completed', params: { turnId: 'turn-old' } });
+    expect((pty as unknown as { _activeTurnId: string | null })._activeTurnId).toBe('turn-new');
+    rpcCustody(pty, { method: 'turn/completed', params: { turnId: 'turn-new' } });
+    await flushCustody();
+
+    rpcCustody(pty, {
+      method: 'item/agentMessage/delta',
+      params: { turnId: 'turn-old', delta: 'STALE-AFTER-SUCCESSOR' },
+    });
+
+    expect(startIds).toHaveLength(2);
+    const output = pty.getOutputBuffer().getRecent();
+    expect(output).not.toContain('STALE-AFTER-SUCCESSOR');
+    expect(output.match(/SUCCESSOR-ONLY-RESPONSE/g)).toHaveLength(1);
+    expect((pty as unknown as { _turnCustody: { snapshot(): unknown[] } })._turnCustody.snapshot()).toEqual([]);
+  });
+
+  it('holds the successor when a crash occurs during terminal settlement', async () => {
+    let secondWorkItemId = '';
+    let sawTwoPending = false;
+    atomicWriteSyncMock.mockImplementation((_path: string, data: string) => {
+      const state = JSON.parse(data) as { pending?: Array<{ workItemId: string }> };
+      if (state.pending?.length === 2) {
+        secondWorkItemId = state.pending[1].workItemId;
+        sawTwoPending = true;
+      }
+      if (sawTwoPending && secondWorkItemId && state.pending?.length === 1 && state.pending[0].workItemId === secondWorkItemId) {
+        throw new Error('crash during settlement');
+      }
+    });
+    requestMock.mockResolvedValue({ result: { turnId: 'turn-first' } });
+    const pty = makeCustodyPty();
+
+    pty.injectMessage('first');
+    await flushCustody();
+    (pty as unknown as { queueTurn(input: unknown[], routing?: unknown, forceQueue?: boolean): void }).queueTurn(
+      [{ type: 'text', text: 'second', text_elements: [] }],
+      undefined,
+      true,
+    );
+    rpcCustody(pty, { method: 'turn/completed', params: { turnId: 'turn-first' } });
+    await flushCustody();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(requestMock.mock.calls.filter(([method]) => method === 'turn/start')).toHaveLength(1);
+    expect((pty as unknown as { _turnCustodyBlocked: boolean })._turnCustodyBlocked).toBe(true);
+    expect((pty as unknown as { _turnCustody: { snapshot(): unknown[] } })._turnCustody.snapshot()).toHaveLength(2);
+  });
+
+  it('retires a normally completed turn before its successor and ignores late output', async () => {
+    let starts = 0;
+    requestMock.mockImplementation((method: string) => {
+      if (method === 'turn/start') {
+        starts += 1;
+        return Promise.resolve({ result: { turnId: starts === 1 ? 'turn-first' : 'turn-second' } });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const pty = makeCustodyPty();
+
+    pty.injectMessage('first terminal turn');
+    await flushCustody();
+    (pty as unknown as { queueTurn(input: unknown[], routing?: unknown, forceQueue?: boolean): void }).queueTurn(
+      [{ type: 'text', text: 'second turn', text_elements: [] }],
+      undefined,
+      true,
+    );
+    rpcCustody(pty, { method: 'turn/completed', params: { turnId: 'turn-first' } });
+    await flushCustody();
+    expect((pty as unknown as { _activeTurnId: string | null })._activeTurnId).toBe('turn-second');
+
+    rpcCustody(pty, { method: 'turn/completed', params: { turnId: 'turn-second' } });
+    await flushCustody();
+    rpcCustody(pty, {
+      method: 'item/agentMessage/delta',
+      params: { turnId: 'turn-first', delta: 'LATE-COMPLETED-OUTPUT' },
+    });
+
+    expect(pty.getOutputBuffer().getRecent()).not.toContain('LATE-COMPLETED-OUTPUT');
+    expect((pty as unknown as { _turnCustody: { snapshot(): unknown[] } })._turnCustody.snapshot()).toEqual([]);
+  });
+
+  it('suppresses restart resubmission when history already contains the completed work item', async () => {
+    requestMock.mockResolvedValue({ result: { turnId: 'turn-before-crash' } });
+    const beforeCrash = makeCustodyPty();
+    beforeCrash.injectMessage('already completed remotely');
+    await flushCustody();
+    const start = requestMock.mock.calls.find(([method]) => method === 'turn/start')!;
+    const workItemId = (start[1] as { clientUserMessageId: string }).clientUserMessageId;
+    const persisted = [...atomicWriteSyncMock.mock.calls]
+      .reverse()
+      .find(([path]) => String(path).endsWith('codex-turn-custody.json'))?.[1];
+    expect(persisted).toBeDefined();
+    beforeCrash.kill();
+
+    fsMocks.existsSync.mockImplementation((path: string) => String(path).endsWith('codex-turn-custody.json'));
+    fsMocks.readFileSync.mockImplementation((path: string) => {
+      if (String(path).endsWith('codex-turn-custody.json')) return String(persisted);
+      throw new Error(`unexpected read ${path}`);
+    });
+    requestMock.mockReset().mockImplementation((method: string) => {
+      if (method === 'thread/turns/list') {
+        return Promise.resolve({
+          result: {
+            data: [{
+              id: 'turn-before-crash',
+              status: 'completed',
+              items: [{ type: 'userMessage', clientId: workItemId }],
+            }],
+            nextCursor: null,
+          },
+        });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const restarted = makeCustodyPty();
+    const restored = await (restarted as unknown as { restoreTurnCustody(): Promise<number> }).restoreTurnCustody();
+
+    expect(restored).toBe(0);
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+    const tombstone = JSON.parse(String(atomicWriteSyncMock.mock.calls.at(-1)?.[1]));
+    expect(tombstone).toEqual({ version: 1, pending: [] });
+  });
+
+  it('resumes an accepted in-progress turn after a crash without resubmitting it', async () => {
+    const pending: CustodiedTurn = {
+      workItemId: 'work-accepted-before-crash',
+      threadId: 'thread-custody',
+      input: [{ type: 'text', text: 'continue the accepted turn', text_elements: [] }],
+      admittedAt: '2026-08-13T00:00:00.000Z',
+      startAttempts: 1,
+    };
+    requestMock.mockImplementation((method: string) => {
+      if (method === 'thread/turns/list') {
+        return Promise.resolve({
+          result: {
+            data: [{
+              id: 'turn-accepted-before-crash',
+              status: 'inProgress',
+              items: [{ type: 'userMessage', clientId: pending.workItemId }],
+            }],
+            nextCursor: null,
+          },
+        });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const restarted = makeCustodyPty();
+    (restarted as unknown as { _turnCustody: { admit(turn: CustodiedTurn): void } })
+      ._turnCustody.admit(pending);
+    const restored = await (restarted as unknown as {
+      restoreTurnCustody(pending: CustodiedTurn[]): Promise<number>;
+    }).restoreTurnCustody([pending]);
+
+    expect(restored).toBe(1);
+    const drain = (restarted as unknown as { drainQueue(): Promise<void> }).drainQueue();
+    await flushCustody();
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+
+    rpcCustody(restarted, {
+      method: 'turn/completed',
+      params: { turnId: 'turn-accepted-before-crash' },
+    });
+    await drain;
+
+    expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
+    expect((restarted as unknown as { _turnCustody: { snapshot(): unknown[] } })._turnCustody.snapshot())
+      .toEqual([]);
+  });
+
+  it('restores unresolved skill intent and resolves it before the first remote start', async () => {
+    const pending: CustodiedTurn = {
+      workItemId: 'work-skill-before-crash',
+      threadId: 'thread-custody',
+      input: [],
+      deferredSkill: '$heartbeat collect state',
+      admittedAt: '2026-08-13T00:00:00.000Z',
+      startAttempts: 0,
+    };
+    requestMock.mockImplementation((method: string) => {
+      if (method === 'thread/turns/list') {
+        return Promise.resolve({ result: { data: [], nextCursor: null } });
+      }
+      if (method === 'skills/list') {
+        return Promise.resolve({
+          result: {
+            data: [{ cwd: mockAgentCwd, skills: [{ name: 'heartbeat', path: '/heartbeat/SKILL.md', enabled: true }] }],
+          },
+        });
+      }
+      if (method === 'turn/start') {
+        return Promise.resolve({ result: { turnId: 'turn-skill-after-crash' } });
+      }
+      return Promise.resolve({ result: {} });
+    });
+    const restarted = makeCustodyPty();
+    (restarted as unknown as { _turnCustody: { admit(turn: CustodiedTurn): void } })
+      ._turnCustody.admit(pending);
+
+    const restored = await (restarted as unknown as {
+      restoreTurnCustody(pending: CustodiedTurn[]): Promise<number>;
+    }).restoreTurnCustody([pending]);
+    expect(restored).toBe(1);
+    const drain = (restarted as unknown as { drainQueue(): Promise<void> }).drainQueue();
+    await flushCustody();
+
+    expect(requestMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+      clientUserMessageId: pending.workItemId,
+      input: [
+        { type: 'skill', name: 'heartbeat', path: '/heartbeat/SKILL.md' },
+        { type: 'text', text: 'collect state', text_elements: [] },
+      ],
+    }));
+    rpcCustody(restarted, {
+      method: 'turn/completed',
+      params: { turnId: 'turn-skill-after-crash' },
+    });
+    await drain;
+    expect((restarted as unknown as { _turnCustody: { snapshot(): unknown[] } })._turnCustody.snapshot())
+      .toEqual([]);
   });
 });

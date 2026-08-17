@@ -40,6 +40,21 @@ function makeRepo(branch = 'feature/test', marker = false): { root: string; scri
   return { root, script: join(root, 'scripts', 'prebuild-guard.mjs') };
 }
 
+function commit(root: string, message: string, file = 'tracked.txt'): void {
+  writeFileSync(join(root, file), `${message}\n`);
+  git(root, ['add', file]);
+  git(root, ['-c', 'user.name=Guard Test', '-c', 'user.email=guard@localhost', 'commit', '-m', message]);
+}
+
+/**
+ * Point a local `origin/main` ref at the current HEAD, so the fixture can model
+ * "main contains origin/main" and then diverge from it deliberately. The guard
+ * reads the local ref and never fetches, so this is exactly what it sees.
+ */
+function setOriginMainToHead(root: string): void {
+  git(root, ['update-ref', 'refs/remotes/origin/main', git(root, ['rev-parse', 'HEAD'])]);
+}
+
 function strippedEnv(extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   const env = { ...process.env, ...extra };
   if (!Object.prototype.hasOwnProperty.call(extra, 'CI')) delete env.CI;
@@ -88,12 +103,68 @@ describe('prebuild live-tree guard', () => {
     expect(output(result)).toContain('feature/override');
   });
 
-  it('allows a marked live main branch', () => {
-    const { script } = makeRepo('main', true);
+  // The blanket "live + main = allowed" exemption was removed on 2026-08-07.
+  // It was correct when written (main was what shipped) and became false when the
+  // live checkout's main diverged from origin/main while dist/ still ran the
+  // missing code. The guard detected the live tree and printed "Build allowed"
+  // for a build that would have silently un-shipped a live feature. Main is now
+  // allowed only when it actually contains origin/main.
+  it('allows a marked live main branch that contains origin/main', () => {
+    const { root, script } = makeRepo('main', true);
+    commit(root, 'base');
+    setOriginMainToHead(root);
     const result = runGuard(script, strippedEnv());
 
     expect(result.status).toBe(0);
     expect(output(result)).toContain('live main');
+    expect(output(result)).toContain('behind 0');
+  });
+
+  it('BLOCKS a marked live main branch that is missing commits from origin/main', () => {
+    const { root, script } = makeRepo('main', true);
+    commit(root, 'base');
+    commit(root, 'upstream-only');
+    setOriginMainToHead(root);
+    // Local main rewinds one commit: origin/main now has work this checkout lacks,
+    // which is the exact 2026-08-07 shape that would have deployed a daemon
+    // missing resolveCodexCronRouting.
+    git(root, ['reset', '--hard', 'HEAD~1']);
+    const result = runGuard(script, strippedEnv());
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('live-main-diverged');
+    expect(result.stderr).toContain('missing 1 commit');
+    expect(result.stderr).toContain('no error and no failing test');
+    expect(result.stderr).toContain('ALLOW_FEATURE_BUILD=1');
+  });
+
+  it('allows a diverged live main only with the explicit danger override', () => {
+    const { root, script } = makeRepo('main', true);
+    commit(root, 'base');
+    commit(root, 'upstream-only');
+    setOriginMainToHead(root);
+    git(root, ['reset', '--hard', 'HEAD~1']);
+    const result = runGuard(script, strippedEnv({ ALLOW_FEATURE_BUILD: '1' }));
+
+    // The override the blocked message advertises must be the override the code
+    // honours. A gate that offers an escape hatch it does not implement is a
+    // documentation bug that reads as a working control.
+    expect(result.status).toBe(0);
+    expect(output(result)).toContain('WARNING');
+    expect(output(result)).toContain('live-main-diverged-override');
+  });
+
+  it('FAILS CLOSED on a marked live main branch when origin/main is absent', () => {
+    const { root, script } = makeRepo('main', true);
+    commit(root, 'base');
+    // No origin/main ref at all. Undeterminable ancestry must not read as safe:
+    // "I could not check" and "there is nothing to find" are different answers.
+    const result = runGuard(script, strippedEnv());
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('live-main-undeterminable');
+    expect(result.stderr).toContain('not present locally');
+    expect(result.stderr).toContain('an unknown answer is not a safe answer');
   });
 
   it('allows CI on a marked live feature branch', () => {
@@ -219,5 +290,50 @@ describe('prebuild live-tree guard', () => {
     expect(result.status).toBe(0);
     expect(output(result)).toContain('detector errors');
     expect(output(result)).toContain('isolated checkout');
+  });
+});
+
+describe('outDir keying — the guard applies to the DESTINATION, not the caller', () => {
+  it('REQUIRES the guard for a build into the live dist', async () => {
+    // The direction that actually protects anything. A test that only checked
+    // the exemption would pass against a function hardwired to return false,
+    // which is the decorative-guard end state reached by a different road.
+    const { guardRequiredForOutDir } = await import(pathToFileURL(GUARD_SOURCE).href);
+    expect(guardRequiredForOutDir(join(SOURCE_ROOT, 'dist'), SOURCE_ROOT)).toBe(true);
+    expect(guardRequiredForOutDir('dist', SOURCE_ROOT)).toBe(true);
+    // Same place reached by a messier path.
+    expect(guardRequiredForOutDir(join(SOURCE_ROOT, 'scripts', '..', 'dist'), SOURCE_ROOT)).toBe(true);
+  });
+
+  it('EXEMPTS a build into a scratch directory', async () => {
+    const { guardRequiredForOutDir } = await import(pathToFileURL(GUARD_SOURCE).href);
+    expect(guardRequiredForOutDir(mkdtempSync(join(tmpdir(), 'outdir-')), SOURCE_ROOT)).toBe(false);
+    expect(guardRequiredForOutDir(join(SOURCE_ROOT, 'dist-scratch'), SOURCE_ROOT)).toBe(false);
+  });
+
+  it('fails CLOSED when the destination is unknown', async () => {
+    // No out dir means the caller did not say, and "did not say" must never be
+    // read as "somewhere harmless".
+    const { guardRequiredForOutDir } = await import(pathToFileURL(GUARD_SOURCE).href);
+    for (const bad of [undefined, null, '', 42, {}]) {
+      expect(guardRequiredForOutDir(bad as never, SOURCE_ROOT), String(bad)).toBe(true);
+    }
+  });
+
+  it('parses --out-dir and reports absence honestly', async () => {
+    const { parseOutDir } = await import(pathToFileURL(GUARD_SOURCE).href);
+    expect(parseOutDir(['--silent', '--out-dir', '/tmp/x'])).toBe('/tmp/x');
+    expect(parseOutDir(['--silent'])).toBeUndefined();
+  });
+
+  it('main() exits 0 on a scratch out dir and SAYS it exempted', async () => {
+    // End to end through the real entry point, because the pure function being
+    // right proves nothing about whether main() consults it.
+    const scratch = mkdtempSync(join(tmpdir(), 'outdir-'));
+    const result = spawnSync('node', [GUARD_SOURCE, '--out-dir', scratch], {
+      cwd: SOURCE_ROOT, encoding: 'utf-8',
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('EXEMPT_NON_LIVE_OUTDIR');
   });
 });

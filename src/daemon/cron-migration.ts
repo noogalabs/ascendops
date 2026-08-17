@@ -171,13 +171,36 @@ function convertEntry(
   entry: CronEntry,
   agentName: string,
 ): { cron: CronDefinition } | { skip: string } {
-  const { name, type, interval, cron: cronExpr, fire_at, prompt, wake_on_fire } = entry;
+  const {
+    name, type, interval, cron: cronExpr, fire_at, prompt, wake_on_fire,
+    enabled, description, disabled_reason,
+  } = entry;
 
   // Treat absent `type` as "recurring" (spec requirement)
   const effectiveType = type ?? 'recurring';
 
+  // OPERATOR INTENT CAN BE EXPRESSED TWO WAYS, AND BOTH MUST BE HONOURED.
+  //
+  // `type: "disabled"` was the only signal this function used to read. But an
+  // operator disabling a cron reaches for the obvious field — `enabled: false` —
+  // and leaves `type` as "recurring", because the cron IS recurring; it is just
+  // switched off. Those two fields do not contradict each other from a writer's
+  // point of view, and the reader honoured only one of them.
+  //
+  // 2026-08-12: an agent hardened cash's config with `enabled: false` on five
+  // proactive crons precisely so a fleet restart could not re-arm them. This
+  // function discarded the field and wrote `enabled: true`, and since #125
+  // reconciles config.json -> crons.json on EVERY AGENT BOOT, all five came back
+  // armed. Zero prohibited fires only because cash noticed and re-disabled them
+  // ~25 minutes before the 12:00Z window. The hardening was correct and
+  // unreachable — defeated by the mechanism that reads it.
+  //
+  // An explicit `enabled: false` is a disable instruction whatever `type` says.
+  // Absent means "not specified", which still defaults to enabled.
+  const explicitlyDisabled = enabled === false;
+
   // Disabled crons: migrate as disabled (preserve operator intent)
-  if (effectiveType === 'disabled') {
+  if (effectiveType === 'disabled' || explicitlyDisabled) {
     // Disabled entries still need a schedule — use interval or cron expression if present
     const schedule = cronExpr ?? interval;
     if (!schedule) {
@@ -189,7 +212,10 @@ function convertEntry(
       schedule,
       enabled: false,
       created_at: new Date().toISOString(),
-      description: `Migrated from config.json (was disabled)`,
+      // The operator's own description wins. The generic string is a FALLBACK,
+      // not an override — it used to clobber whatever the config said.
+      description: description ?? `Migrated from config.json (was disabled)`,
+      ...(disabled_reason ? { disabled_reason } : {}),
       metadata: { migrated_from_config: true, original_type: effectiveType },
       ...(wake_on_fire ? { wake_on_fire: true } : {}),
     };
@@ -243,6 +269,12 @@ function convertEntry(
     schedule,
     enabled: true,
     created_at: new Date().toISOString(),
+    // Carry the operator's own fields through. Declaring them on CronEntry was
+    // not enough — until 2026-08-13 they were read off the entry and dropped
+    // here, so a description or a disabled_reason written in config.json
+    // vanished on every boot reconcile.
+    ...(description ? { description } : {}),
+    ...(disabled_reason ? { disabled_reason } : {}),
     metadata: { migrated_from_config: true, original_type: effectiveType },
     ...(wake_on_fire ? { wake_on_fire: true } : {}),
   };
@@ -405,6 +437,12 @@ function runMigrationCore(
           (merged as unknown as Record<string, unknown>)[field] = newDef[field];
         }
         if (newDef.description !== undefined) merged.description = newDef.description;
+        // disabled_reason gets description's CONDITIONAL semantics, not blanket
+        // inclusion in CONFIG_AUTHORITATIVE_FIELDS: config wins when it supplies
+        // one, state is preserved when it does not. Added 2026-08-13 — conversion
+        // began populating the field but both merge paths dropped it, so a reason
+        // added or changed in config never reached disk for an existing cron.
+        if (newDef.disabled_reason !== undefined) merged.disabled_reason = newDef.disabled_reason;
         mergedByName.set(newDef.name, merged);
       } else {
         mergedByName.set(newDef.name, newDef);
@@ -684,6 +722,13 @@ export function reloadCronsForAgent(
         if (newDef.description !== undefined) {
           merged.description = newDef.description;
         }
+        // Same conditional treatment for disabled_reason (see the migration merge
+        // above). This is the BOOT path — the one that runs on every agent start —
+        // so dropping it here is what made an operator's stated reason vanish in
+        // practice rather than only in theory.
+        if (newDef.disabled_reason !== undefined) {
+          merged.disabled_reason = newDef.disabled_reason;
+        }
 
         mergedByName.set(newDef.name, merged);
 
@@ -694,7 +739,15 @@ export function reloadCronsForAgent(
           existing.schedule !== newDef.schedule ||
           existing.enabled !== newDef.enabled ||
           (existing.wake_on_fire ?? false) !== (newDef.wake_on_fire ?? false) ||
-          (newDef.description !== undefined && existing.description !== newDef.description);
+          (newDef.description !== undefined && existing.description !== newDef.description) ||
+          // disabled_reason compared on the same CONDITIONAL terms as description.
+          // Without this the merge writes a changed reason to disk while
+          // reloadCronsForAgent reports it unchanged — the bytes are right and the
+          // REPORT is wrong, which is worse for CLI/JSON callers that use
+          // ReloadResult to decide whether anything moved. Found by an agent's
+          // from-zero review of e74192aa, 2026-08-13.
+          (newDef.disabled_reason !== undefined &&
+            existing.disabled_reason !== newDef.disabled_reason);
         if (definitionChanged) {
           result.updated.push(newDef.name);
         } else {

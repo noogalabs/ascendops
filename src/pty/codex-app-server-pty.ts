@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { createServer, createConnection } from 'net';
 import type { AgentConfig, CtxEnv } from '../types/index.js';
 import { OutputBuffer } from './output-buffer.js';
@@ -10,6 +10,9 @@ import { ensureDir, atomicWriteSync } from '../utils/atomic.js';
 import { resolvePaths } from '../utils/paths.js';
 import { logEvent } from '../bus/event.js';
 import { WsUnixJsonRpcClient, type JsonRpcResponse } from '../utils/ws-unix-client.js';
+import { sanitizeForInjection } from './inject.js';
+import { parseEnvFile } from '../utils/env.js';
+import { CodexTurnCustodyStore, type CustodiedTurn } from './codex-turn-custody.js';
 
 interface IPty {
   pid: number;
@@ -78,6 +81,93 @@ interface GoalResponse {
   } | null;
 }
 
+export interface CodexTurnRouting {
+  model: string;
+  source: 'daemon-cron';
+  cronName: string;
+  reason: string;
+  skillName?: string;
+  requestedModel?: string;
+  effort?: string;
+}
+
+interface QueuedTurnPayload {
+  input: unknown[];
+  deferredSkill?: string;
+  routing?: CodexTurnRouting;
+  cronSequence?: CronSequenceTransition;
+}
+
+interface QueuedTurn extends QueuedTurnPayload {
+  workItemId: string;
+  recoveredTurnId?: string;
+}
+
+type CronSequenceFailureStage = 'start_rejected' | 'active_turn_error' | 'completion_timeout';
+
+interface CronSequenceTransition {
+  id: string;
+  continuation: QueuedTurnPayload;
+  fallbackPrompt: string;
+  fallbackRouting: CodexTurnRouting;
+}
+
+type RemoteTurnStatus = 'completed' | 'interrupted' | 'failed' | 'inProgress';
+
+interface RemoteTurn {
+  id: string;
+  status: RemoteTurnStatus;
+  items: unknown[];
+}
+
+type RemoteTurnLookup =
+  | { kind: 'found'; turn: RemoteTurn }
+  | { kind: 'absent' };
+
+type ReconciledTurn =
+  | { kind: 'terminal'; status: Exclude<RemoteTurnStatus, 'inProgress'> }
+  | { kind: 'inProgress'; turnId: string }
+  | { kind: 'absent' };
+
+class TurnCustodyBlockedError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(cause === undefined
+      ? message
+      : `${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TurnCustodyBlockedError';
+  }
+}
+
+class TurnRunError extends Error {
+  constructor(
+    readonly stage: CronSequenceFailureStage,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'TurnRunError';
+  }
+}
+
+interface EffectiveTurnRouting {
+  model: string;
+  routing?: CodexTurnRouting;
+}
+
+interface TurnEventIdentity {
+  turnId: string | null;
+  valid: boolean;
+}
+
+function readTurnEventIdentity(params: Record<string, unknown>): TurnEventIdentity {
+  const topLevel = typeof params.turnId === 'string' ? params.turnId : null;
+  const nestedTurn = isRecord(params.turn) ? params.turn : null;
+  const nested = nestedTurn && typeof nestedTurn.id === 'string' ? nestedTurn.id : null;
+  if (topLevel && nested && topLevel !== nested) {
+    return { turnId: null, valid: false };
+  }
+  return { turnId: topLevel ?? nested, valid: true };
+}
+
 const THREAD_PERMISSION_OVERRIDES = {
   approvalPolicy: 'never',
   sandbox: 'danger-full-access',
@@ -98,16 +188,18 @@ const TURN_PERMISSION_OVERRIDES = {
 // allowlisted model on every thread/turn request (never null). Mirrors the
 // hermes codex adapter's SAFE_MODELS gate for the app-server path.
 //
-// ENTITLEMENT NOTE (2026-06-04, proven by billed live turns): this ChatGPT
-// account is NOT entitled to the codex-specialized models — BOTH gpt-5.3-codex
-// AND gpt-5-codex return 400 "not supported when using Codex with a ChatGPT
-// account". gpt-5.5 (general) is the only entitled/working executor model here,
-// so it is the DEFAULT. gpt-5-codex is kept in SAFE_MODELS deliberately as the
-// one-config-edit switch-back: if the Codex plan is upgraded to entitle it, set
-// an agent's config.model=gpt-5-codex (the better executor) and resolveSafeModel
-// will pass it through. The DEFAULT must always be an entitled model — an earlier
-// gpt-5-codex default was an unproven assumption that 400'd; gpt-5.5 is proven.
-const SAFE_MODELS: readonly string[] = ['gpt-5.5', 'gpt-5-codex'];
+// ENTITLEMENT NOTE (2026-07-15, proven by isolated codex-cli 0.145.0-alpha.15
+// smoke): gpt-5.6-sol is entitled on this account after upgrading the Codex CLI.
+// Keep gpt-5.5 as the DEFAULT because it is the known-safe fallback. Sol should
+// be selected explicitly per agent only after the upgraded app-server binary is
+// installed and the agent is restarted and verified from startup logs.
+const SAFE_MODELS: readonly string[] = [
+  'gpt-5.5',
+  'gpt-5-codex',
+  'gpt-5.6-sol',
+  'gpt-5.6-lun',
+  'gpt-5.6-terra',
+];
 const DEFAULT_SAFE_MODEL = 'gpt-5.5';
 
 /**
@@ -144,13 +236,24 @@ export class CodexAppServerPTY {
   private _alive = false;
   private _executing = false;
   private _activeTurnId: string | null = null;
+  private _activeWorkItemId: string | null = null;
   private _writeBuffer = '';
-  private _turnQueue: unknown[][] = [];
+  private _turnQueue: QueuedTurn[] = [];
+  private _turnCustodyBlocked = false;
+  private _restoringTurnCustody = false;
+  private _startingTurnRouting: EffectiveTurnRouting | null = null;
+  private _turnRoutingById = new Map<string, EffectiveTurnRouting>();
   private _turnCompletion: {
-    resolve: () => void;
+    resolve: (status: RemoteTurnStatus) => void;
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
+    turnId: string | null;
+    workItemId: string;
   } | null = null;
+  private _turnCompletionTimeoutMs = 30 * 60 * 1000;
+  private _turnReconcileDelayMs = 1000;
+  private _turnReconcilePolls = 3;
+  private _retiredTurnIds = new Set<string>();
   private _spawnFn: SpawnFn | null = null;
   private _appServerPty: IPty | null = null;
   private _rpc: WsUnixJsonRpcClient | null = null;
@@ -171,6 +274,8 @@ export class CodexAppServerPTY {
   private _threadStatePath: string;
   private _modelGateAlertPath: string;
   private _socketPointerPath: string;
+  private _turnCustodyPath: string;
+  private _turnCustody: CodexTurnCustodyStore;
   private _threadId: string | null = null;
   private _telegramApi: TelegramAPI | null = null;
   private _chatId: string | null = null;
@@ -184,6 +289,8 @@ export class CodexAppServerPTY {
     this._threadStatePath = join(this._stateDir, 'codex-app-server-thread.json');
     this._modelGateAlertPath = join(this._stateDir, 'codex-model-gate-alert.json');
     this._socketPointerPath = join(this._stateDir, 'codex-app-server-socket.json');
+    this._turnCustodyPath = join(this._stateDir, 'codex-turn-custody.json');
+    this._turnCustody = new CodexTurnCustodyStore(this._turnCustodyPath);
     const socket = this.resolveSocketPath();
     this._socketPath = socket.path;
     this._socketListenArg = socket.listenArg;
@@ -352,13 +459,24 @@ export class CodexAppServerPTY {
       await this.startAppServerWithRetry();
       await this.connectRpc();
       await this.initializeRpc();
-      await this.startOrResumeThread(mode);
+      const pendingCustody = this.loadTurnCustody();
+      const custodyThreadId = this.resolveCustodyThreadId(pendingCustody);
+      await this.startOrResumeThread(mode, custodyThreadId);
       this._outputBuffer.push(`${BOOTSTRAP_PATTERN} thread=${this._threadId}\n`);
       this.reconcileModelGateAlert();
+      this._restoringTurnCustody = true;
+      const restoredTurns = await this.restoreTurnCustody(pendingCustody);
       if (prompt.trim()) {
         this.queueTurn([{ type: 'text', text: prompt, text_elements: [] }]);
       }
+      this._restoringTurnCustody = false;
+      if ((restoredTurns > 0 || this._turnQueue.length > 0) && !this._executing && !this._turnCustodyBlocked) {
+        this.drainQueue().catch((err) => {
+          this._outputBuffer.push(`[codex-app-server] recovered turn queue failed: ${err}\n`);
+        });
+      }
     } catch (err) {
+      this._restoringTurnCustody = false;
       this._alive = false;
       this._outputBuffer.push(`[codex-app-server] degraded: ${err}\n`);
       this.kill();
@@ -385,10 +503,67 @@ export class CodexAppServerPTY {
     }
   }
 
+  /**
+   * Trusted structured injection path. The daemon may attach turn routing to a
+   * cron fire without encoding authority in prompt text. Ordinary callers omit
+   * routing and retain the configured agent model.
+   */
+  injectMessage(content: string, routing?: CodexTurnRouting): void {
+    if (!this._alive) return;
+    const safeContent = sanitizeForInjection(content).trim();
+    if (!safeContent) return;
+    this.handleInput(safeContent, routing).catch((err) => {
+      this._outputBuffer.push(`[codex-app-server] injected input failed: ${err}\n`);
+    });
+  }
+
+  /** Queue a reviewed mechanical cron preflight and its Sol continuation atomically. */
+  injectCronSequence(
+    preflightContent: string,
+    preflightRouting: CodexTurnRouting,
+    continuationContent: string,
+    fallbackContent: string,
+  ): void {
+    if (!this._alive) return;
+    const preflight = sanitizeForInjection(preflightContent).trim();
+    const continuation = sanitizeForInjection(continuationContent).trim();
+    const fallback = sanitizeForInjection(fallbackContent).trim();
+    if (!preflight || !continuation || !fallback) return;
+
+    const continuationRouting = {
+      ...preflightRouting,
+      model: resolveSafeModel(this._config.model),
+      reason: 'configured_sol_continuation',
+    };
+    this.enqueueQueuedTurn({
+      input: [{ type: 'text', text: preflight, text_elements: [] }],
+      routing: preflightRouting,
+      cronSequence: {
+        id: randomBytes(8).toString('hex'),
+        continuation: {
+          input: [{ type: 'text', text: continuation, text_elements: [] }],
+          routing: continuationRouting,
+        },
+        fallbackPrompt: fallback,
+        fallbackRouting: {
+          ...preflightRouting,
+          model: resolveSafeModel(this._config.model),
+          reason: 'preflight_failed_sol_fallback',
+        },
+      },
+    });
+  }
+
   kill(): void {
     this._alive = false;
     this._activeTurnId = null;
+    this._activeWorkItemId = null;
     this._turnQueue = [];
+    this._turnCustodyBlocked = false;
+    this._restoringTurnCustody = false;
+    this._startingTurnRouting = null;
+    this._turnRoutingById.clear();
+    this._retiredTurnIds.clear();
     this.rejectTurnCompletion(new Error('Codex app-server stopped'));
     if (this._rpc) {
       this._rpc.close();
@@ -439,8 +614,14 @@ export class CodexAppServerPTY {
     // hold can never be resolved by a next chunk (see OutputBuffer.close).
     this._outputBuffer.close();
     this._executing = false;
+    this._activeTurnId = null;
+    this._activeWorkItemId = null;
     this._writeBuffer = '';
     this._turnQueue = [];
+    this._turnCustodyBlocked = false;
+    this._restoringTurnCustody = false;
+    this._startingTurnRouting = null;
+    this._turnRoutingById.clear();
     this.rejectTurnCompletion(new Error(reason ? `Codex app-server stopped: ${reason}` : 'Codex app-server stopped'));
     this.stopPidPoll();
     this._rpcMessageUnsubscribe?.();
@@ -482,38 +663,36 @@ export class CodexAppServerPTY {
     this._pidPollTimer = null;
   }
 
-  private async handleInput(content: string): Promise<void> {
+  private handleInput(content: string, routing?: CodexTurnRouting): Promise<void> {
     const extracted = this.extractTelegramPayload(content);
     const input = extracted?.payload ?? content;
     const goalCommand = this.parseGoalCommand(input);
     if (goalCommand?.type === 'get') {
-      await this.getGoal();
-      return;
+      return this.getGoal();
     }
     if (goalCommand?.type === 'clear') {
-      await this.clearGoal();
-      return;
+      return this.clearGoal();
     }
     if (goalCommand?.type === 'set') {
-      await this.setGoal(goalCommand.objective);
-      return;
+      return this.setGoal(goalCommand.objective);
     }
     if (input.startsWith('$')) {
-      await this.handleSkillInput(input);
-      return;
+      this.queueSkillInput(input, routing);
+      return Promise.resolve();
     }
     const slashMatch = input.match(SLASH_REWRITE_RE);
     if (slashMatch && !LOCAL_SLASH_COMMANDS.has(slashMatch[1].toLowerCase())) {
       const [, name, trailing] = slashMatch;
       const trimmed = trailing?.trim();
       const rewritten = trimmed ? `$${name} ${trimmed}` : `$${name}`;
-      await this.handleSkillInput(rewritten);
-      return;
+      this.queueSkillInput(rewritten, routing);
+      return Promise.resolve();
     }
     const turnText = extracted?.replyDirective
       ? `${input}\n\n${extracted.replyDirective}`
       : input;
-    this.queueTurn([{ type: 'text', text: turnText, text_elements: [] }]);
+    this.queueTurn([{ type: 'text', text: turnText, text_elements: [] }], routing);
+    return Promise.resolve();
   }
 
   private extractTelegramPayload(
@@ -782,7 +961,35 @@ export class CodexAppServerPTY {
     this._rpc?.notify('initialized');
   }
 
-  private async startOrResumeThread(mode: 'fresh' | 'continue'): Promise<void> {
+  private async startOrResumeThread(
+    mode: 'fresh' | 'continue',
+    custodyThreadId: string | null = null,
+  ): Promise<void> {
+    if (custodyThreadId) {
+      const resumed = await this.request<ThreadResponse>('thread/resume', {
+        threadId: custodyThreadId,
+        cwd: this._cwd,
+        model: resolveSafeModel(this._config.model),
+        ...THREAD_PERMISSION_OVERRIDES,
+        config: { features: { goals: true } },
+        excludeTurns: true,
+        persistExtendedHistory: true,
+      });
+      if (resumed.error) {
+        throw this.blockTurnCustody(
+          `failed to resume custodied thread ${custodyThreadId}`,
+          resumed.error.message,
+        );
+      }
+      const resumedThreadId = resumed.result?.thread.id;
+      if (resumedThreadId !== custodyThreadId) {
+        throw this.blockTurnCustody(
+          `custodied thread identity changed from ${custodyThreadId} to ${resumedThreadId ?? 'missing'}`,
+        );
+      }
+      this.setThreadId(custodyThreadId);
+      return;
+    }
     if (mode === 'continue') {
       const persisted = this.readThreadState();
       if (persisted) {
@@ -843,47 +1050,42 @@ export class CodexAppServerPTY {
   }
 
   /**
-   * Mid-turn parity with the Claude PTY-injection path: while a turn is
-   * executing, try `turn/steer` so the message lands in the active turn at the
-   * next model step instead of waiting for turn/completed. Any steer rejection
-   * (ExpectedTurnMismatch = turn just ended, ActiveTurnNotSteerable =
-   * review/compact, NoActiveTurn, transport error) falls back to the queue, so
-   * no message is ever lost. CODEX_STEER_DISABLED=1 reverts to pure queueing.
+   * Every inbound command becomes its own durably admitted turn. App-server
+   * `turn/steer` has no caller-supplied idempotency identity, so an accepted
+   * request followed by a lost response cannot be distinguished from a
+   * rejected request after a crash. Queueing preserves FIFO while keeping the
+   * stable work-item identity available for restart reconciliation.
    */
-  private queueTurn(input: unknown[]): void {
-    if (this._executing && this._activeTurnId && process.env.CODEX_STEER_DISABLED !== '1') {
-      this.steerActiveTurn(input).catch((err) => {
-        this._outputBuffer.push(`[codex-app-server] steer path failed: ${err}\n`);
-      });
-      return;
-    }
-    this.enqueueTurn(input);
+  private queueTurn(input: unknown[], routing?: CodexTurnRouting, _forceQueue = false): void {
+    this.enqueueTurn(input, routing);
   }
 
-  private async steerActiveTurn(input: unknown[]): Promise<void> {
-    const expectedTurnId = this._activeTurnId;
-    if (!this._threadId || !expectedTurnId) {
-      this.enqueueTurn(input);
-      return;
+  private enqueueTurn(input: unknown[], routing?: CodexTurnRouting): void {
+    this.enqueueQueuedTurn({ input, routing });
+  }
+
+  private enqueueQueuedTurn(payload: QueuedTurnPayload, position: 'front' | 'back' = 'back'): void {
+    if (this._turnCustodyBlocked) {
+      throw new TurnCustodyBlockedError('turn custody is blocked; restart reconciliation is required');
     }
+    if (!this._threadId) {
+      throw this.blockTurnCustody('cannot admit a turn without an active thread');
+    }
+    const queued: QueuedTurn = {
+      ...payload,
+      workItemId: randomUUID(),
+    };
     try {
-      await this.request('turn/steer', {
-        threadId: this._threadId,
-        expectedTurnId,
-        input,
-      });
-      this._outputBuffer.push(`[codex-app-server] steered active turn ${expectedTurnId}\n`);
+      this._turnCustody.admit(this.toCustodiedTurn(queued), position);
     } catch (err) {
-      // Do not retry steer here: the rejection may be a non-steerable turn
-      // (review/compact). Queueing guarantees delivery right after it ends.
-      this._outputBuffer.push(`[codex-app-server] steer rejected, queueing: ${err}\n`);
-      this.enqueueTurn(input);
+      throw this.blockTurnCustody(`failed to admit work item ${queued.workItemId}`, err);
     }
-  }
-
-  private enqueueTurn(input: unknown[]): void {
-    this._turnQueue.push(input);
-    if (!this._executing) {
+    if (position === 'front') {
+      this._turnQueue.unshift(queued);
+    } else {
+      this._turnQueue.push(queued);
+    }
+    if (!this._executing && !this._turnCustodyBlocked && !this._restoringTurnCustody) {
       this.drainQueue().catch((err) => {
         this._outputBuffer.push(`[codex-app-server] turn queue failed: ${err}\n`);
       });
@@ -891,22 +1093,606 @@ export class CodexAppServerPTY {
   }
 
   private async drainQueue(): Promise<void> {
-    while (this._alive && this._turnQueue.length > 0) {
-      const input = this._turnQueue.shift()!;
+    while (this._alive && !this._turnCustodyBlocked && this._turnQueue.length > 0) {
+      const queued = this._turnQueue.shift()!;
       this._executing = true;
       try {
-        await this.startTurn(input);
+        const status = await this.startTurn(queued);
+        if (queued.cronSequence && status === 'completed') {
+          this.transitionQueuedTurn(
+            queued.workItemId,
+            queued.cronSequence.continuation,
+            'front',
+          );
+          this.emitCronSequenceOutcome('cron_model_preflight_completed', queued.cronSequence, {
+            effective_model: queued.routing?.model ?? resolveSafeModel(this._config.model),
+          });
+        } else if (queued.cronSequence) {
+          this.prepareCronSequenceFallback(
+            queued.workItemId,
+            queued.cronSequence,
+            new TurnRunError('active_turn_error', `preflight ended ${status}`),
+          );
+        } else {
+          try {
+            this._turnCustody.settle(queued.workItemId);
+          } catch (settleErr) {
+            throw this.blockTurnCustody(
+              `failed to settle completed work item ${queued.workItemId}`,
+              settleErr,
+            );
+          }
+        }
+      } catch (err) {
+        if (err instanceof TurnCustodyBlockedError || this._turnCustodyBlocked) {
+          this._turnQueue.unshift(queued);
+          throw err;
+        }
+        if (!this._alive) throw err;
+        if (err instanceof TurnRunError && !queued.cronSequence) {
+          try {
+            this._turnCustody.settle(queued.workItemId);
+          } catch (settleErr) {
+            this._turnQueue.unshift(queued);
+            throw this.blockTurnCustody(
+              `failed to settle terminal work item ${queued.workItemId}`,
+              settleErr,
+            );
+          }
+        }
+        if (!queued.cronSequence) {
+          this._outputBuffer.push(`[codex-app-server] turn failed, continuing queue: ${err}\n`);
+          continue;
+        }
+        if (!(err instanceof TurnRunError)) {
+          this._turnQueue.unshift(queued);
+          throw this.blockTurnCustody(
+            `unexpected cron turn failure for ${queued.workItemId}`,
+            err,
+          );
+        }
+        this.prepareCronSequenceFallback(queued.workItemId, queued.cronSequence, err);
       } finally {
         this._executing = false;
       }
     }
   }
 
-  private async startTurn(input: unknown[]): Promise<void> {
+  private async startTurn(queued: QueuedTurn): Promise<RemoteTurnStatus> {
     if (!this._threadId) throw new Error('No Codex app-server thread is active');
-    const completion = this.createTurnCompletion();
-    await this.request('turn/start', { threadId: this._threadId, input, model: resolveSafeModel(this._config.model), ...TURN_PERMISSION_OVERRIDES });
-    await completion;
+    if (queued.deferredSkill) {
+      if (queued.recoveredTurnId) {
+        throw this.blockTurnCustody(
+          `remote turn ${queued.recoveredTurnId} exists for unresolved skill ${queued.workItemId}`,
+        );
+      }
+      if (!await this.resolveDeferredSkill(queued)) return 'completed';
+    }
+    const effective = {
+      model: resolveSafeModel(queued.routing?.model ?? this._config.model),
+      routing: queued.routing,
+    };
+    if (queued.recoveredTurnId) {
+      return this.awaitExistingTurn(queued, queued.recoveredTurnId, effective);
+    }
+
+    while (true) {
+      let attempt: number;
+      try {
+        attempt = this._turnCustody.noteStartAttempt(queued.workItemId);
+      } catch (err) {
+        throw this.blockTurnCustody(
+          `failed to persist start attempt for ${queued.workItemId}`,
+          err,
+        );
+      }
+      const completion = this.createTurnCompletion(queued.workItemId);
+      this._activeWorkItemId = queued.workItemId;
+      this._startingTurnRouting = effective;
+      let knownTurnId: string | null = null;
+      try {
+        const started = await this.request<{ turnId?: string; turn?: { id?: string } }>('turn/start', {
+          threadId: this._threadId,
+          clientUserMessageId: queued.workItemId,
+          input: queued.input,
+          model: effective.model,
+          ...TURN_PERMISSION_OVERRIDES,
+        });
+        if (started.error) {
+          throw new Error(`turn/start rejected (${started.error.code}): ${started.error.message}`);
+        }
+        if (isRecord(started.result)) {
+          const startedIdentity = readTurnEventIdentity(started.result);
+          if (!startedIdentity.valid) {
+            throw new Error('turn/start returned conflicting turn identities');
+          }
+          knownTurnId = startedIdentity.turnId;
+          if (knownTurnId && !this.bindStartedTurn(knownTurnId)) {
+            throw new Error(`turn/start identity ${knownTurnId} could not be bound`);
+          }
+        }
+      } catch (err) {
+        this.abandonTurnCompletion();
+        this._startingTurnRouting = null;
+        const reconciled = await this.reconcileRemoteTurn(queued, knownTurnId, 'start_rejected');
+        if (reconciled.kind === 'terminal') {
+          if (reconciled.status === 'completed') return reconciled.status;
+          throw new TurnRunError('start_rejected', `remote turn ended ${reconciled.status}`);
+        }
+        if (reconciled.kind === 'inProgress') {
+          return this.awaitExistingTurn(queued, reconciled.turnId, effective);
+        }
+        if (await this.verifyRemoteAbsence(queued.workItemId)) {
+          if (attempt < 2) {
+            this._outputBuffer.push(
+              `[codex-app-server] verified empty remote start for ${queued.workItemId}; retrying once\n`,
+            );
+            continue;
+          }
+          if (queued.cronSequence) {
+            throw new TurnRunError('start_rejected', err);
+          }
+        }
+        throw this.blockTurnCustody(
+          `cannot prove start disposition for ${queued.workItemId}`,
+          err,
+        );
+      }
+
+      let completionStatus: RemoteTurnStatus;
+      try {
+        completionStatus = await completion;
+      } catch (err) {
+        const stage = err instanceof Error && err.message === 'Timed out waiting for turn/completed'
+          ? 'completion_timeout'
+          : 'active_turn_error';
+        const reconciled = await this.reconcileRemoteTurn(queued, knownTurnId, stage);
+        if (reconciled.kind === 'terminal') {
+          if (reconciled.status === 'completed') return reconciled.status;
+          throw new TurnRunError(stage, `remote turn ended ${reconciled.status}`);
+        }
+        if (reconciled.kind === 'inProgress') {
+          const terminal = await this.interruptAndAwaitTerminal(queued, reconciled.turnId);
+          if (terminal === 'completed') return terminal;
+          if (terminal) throw new TurnRunError(stage, `remote turn ended ${terminal}`);
+        }
+        throw this.blockTurnCustody(
+          `remote turn for ${queued.workItemId} remained ambiguous after ${stage}`,
+          err,
+        );
+      }
+      if (completionStatus === 'completed') return completionStatus;
+      throw new TurnRunError('active_turn_error', `remote turn ended ${completionStatus}`);
+    }
+  }
+
+  private prepareCronSequenceFallback(
+    parentWorkItemId: string,
+    sequence: CronSequenceTransition,
+    failure: TurnRunError,
+  ): void {
+    const routing = {
+      ...sequence.fallbackRouting,
+      reason: `preflight_failed_sol_fallback:${failure.stage}`,
+    };
+    const prompt = `${sequence.fallbackPrompt}\nFailure stage: ${failure.stage}.`;
+    this.transitionQueuedTurn(parentWorkItemId, {
+      input: [{ type: 'text', text: prompt, text_elements: [] }],
+      routing,
+    }, 'front');
+    this.emitCronSequenceOutcome('cron_model_preflight_fallback', sequence, {
+      failure_stage: failure.stage,
+      effective_model: routing.model,
+    });
+  }
+
+  private toCustodiedTurn(queued: QueuedTurn): CustodiedTurn {
+    return {
+      workItemId: queued.workItemId,
+      threadId: this._threadId!,
+      input: queued.input,
+      ...(queued.deferredSkill === undefined ? {} : { deferredSkill: queued.deferredSkill }),
+      ...(queued.routing === undefined ? {} : { routing: queued.routing }),
+      ...(queued.cronSequence === undefined ? {} : { cronSequence: queued.cronSequence }),
+      admittedAt: new Date().toISOString(),
+      startAttempts: 0,
+    };
+  }
+
+  private transitionQueuedTurn(
+    parentWorkItemId: string,
+    payload: QueuedTurnPayload,
+    position: 'front' | 'back' = 'front',
+  ): void {
+    if (this._turnCustodyBlocked) {
+      throw new TurnCustodyBlockedError('turn custody is blocked; restart reconciliation is required');
+    }
+    if (!this._threadId) {
+      throw this.blockTurnCustody('cannot transition a turn without an active thread');
+    }
+    const successor: QueuedTurn = {
+      ...payload,
+      workItemId: randomUUID(),
+    };
+    try {
+      this._turnCustody.replace(
+        parentWorkItemId,
+        this.toCustodiedTurn(successor),
+        position,
+      );
+    } catch (err) {
+      throw this.blockTurnCustody(
+        `failed to transition work item ${parentWorkItemId} to ${successor.workItemId}`,
+        err,
+      );
+    }
+    if (position === 'front') {
+      this._turnQueue.unshift(successor);
+    } else {
+      this._turnQueue.push(successor);
+    }
+  }
+
+  private fromCustodiedTurn(turn: CustodiedTurn): QueuedTurn {
+    return {
+      workItemId: turn.workItemId,
+      input: turn.input,
+      ...(turn.deferredSkill === undefined ? {} : { deferredSkill: turn.deferredSkill }),
+      ...(turn.routing === undefined ? {} : { routing: turn.routing as CodexTurnRouting }),
+      ...(turn.cronSequence === undefined
+        ? {}
+        : { cronSequence: turn.cronSequence as CronSequenceTransition }),
+    };
+  }
+
+  private loadTurnCustody(): CustodiedTurn[] {
+    let pending: CustodiedTurn[];
+    try {
+      pending = this._turnCustody.load();
+    } catch (err) {
+      throw this.blockTurnCustody('failed to load durable turn custody', err);
+    }
+    return pending;
+  }
+
+  private resolveCustodyThreadId(pending: CustodiedTurn[]): string | null {
+    const threadIds = new Set(pending.map((record) => record.threadId));
+    if (threadIds.size > 1) {
+      throw this.blockTurnCustody(
+        `durable custody spans multiple threads: ${[...threadIds].join(', ')}`,
+      );
+    }
+    return threadIds.values().next().value ?? null;
+  }
+
+  private async restoreTurnCustody(pending: CustodiedTurn[] = this.loadTurnCustody()): Promise<number> {
+    if (pending.some((record) => record.threadId !== this._threadId)) {
+      throw this.blockTurnCustody('active thread does not match durable turn custody');
+    }
+    let restored = 0;
+    for (const record of pending) {
+      const queued = this.fromCustodiedTurn(record);
+      const remote = await this.lookupRestoredRemoteTurn(record.workItemId, 'initial');
+      if (remote.kind === 'found') {
+        if (remote.turn.status === 'inProgress') {
+          queued.recoveredTurnId = remote.turn.id;
+          this._turnQueue.push(queued);
+          restored += 1;
+          continue;
+        }
+        this.finalizeRestoredTurn(queued, remote.turn.status);
+        this._outputBuffer.push(
+          `[codex-app-server] reconciled terminal ${remote.turn.status} work item ${record.workItemId}\n`,
+        );
+        continue;
+      }
+
+      if (!await this.verifyRemoteAbsence(record.workItemId)) {
+        const raced = await this.lookupRestoredRemoteTurn(record.workItemId, 'raced');
+        if (raced.kind === 'found') {
+          if (raced.turn.status === 'inProgress') {
+            queued.recoveredTurnId = raced.turn.id;
+            this._turnQueue.push(queued);
+            restored += 1;
+            continue;
+          }
+          this.finalizeRestoredTurn(queued, raced.turn.status);
+          continue;
+        }
+        throw this.blockTurnCustody(
+          `remote absence for restored work item ${record.workItemId} was not stable`,
+        );
+      }
+      if (record.startAttempts >= 2) {
+        throw this.blockTurnCustody(
+          `restored work item ${record.workItemId} exhausted its two start attempts`,
+        );
+      }
+      this._turnQueue.push(queued);
+      restored += 1;
+    }
+    if (restored > 0) {
+      this._outputBuffer.push(`[codex-app-server] restored ${restored} custodied turn(s)\n`);
+    }
+    return restored;
+  }
+
+  private finalizeRestoredTurn(queued: QueuedTurn, status: Exclude<RemoteTurnStatus, 'inProgress'>): void {
+    if (queued.cronSequence && status === 'completed') {
+      this.transitionQueuedTurn(queued.workItemId, queued.cronSequence.continuation, 'front');
+      this.emitCronSequenceOutcome('cron_model_preflight_completed', queued.cronSequence, {
+        effective_model: queued.routing?.model ?? resolveSafeModel(this._config.model),
+      });
+      return;
+    }
+    if (queued.cronSequence) {
+      this.prepareCronSequenceFallback(
+        queued.workItemId,
+        queued.cronSequence,
+        new TurnRunError('active_turn_error', `recovered preflight ended ${status}`),
+      );
+      return;
+    }
+    try {
+      this._turnCustody.settle(queued.workItemId);
+    } catch (err) {
+      throw this.blockTurnCustody(
+        `failed to settle restored terminal work item ${queued.workItemId}`,
+        err,
+      );
+    }
+  }
+
+  private async awaitExistingTurn(
+    queued: QueuedTurn,
+    turnId: string,
+    effective: EffectiveTurnRouting,
+  ): Promise<RemoteTurnStatus> {
+    this._activeWorkItemId = queued.workItemId;
+    this._startingTurnRouting = effective;
+    const completion = this.createTurnCompletion(queued.workItemId, turnId);
+    if (!this.bindStartedTurn(turnId)) {
+      this.abandonTurnCompletion();
+      throw this.blockTurnCustody(
+        `recovered turn ${turnId} conflicts with local authority for ${queued.workItemId}`,
+      );
+    }
+    try {
+      const status = await completion;
+      if (status === 'completed') return status;
+      throw new TurnRunError('active_turn_error', `remote turn ended ${status}`);
+    } catch (err) {
+      if (err instanceof TurnRunError) throw err;
+      const stage = err instanceof Error && err.message === 'Timed out waiting for turn/completed'
+        ? 'completion_timeout'
+        : 'active_turn_error';
+      const reconciled = await this.reconcileRemoteTurn(queued, turnId, stage);
+      if (reconciled.kind === 'terminal') {
+        if (reconciled.status === 'completed') return reconciled.status;
+        throw new TurnRunError(stage, `remote turn ended ${reconciled.status}`);
+      }
+      if (reconciled.kind === 'inProgress') {
+        const terminal = await this.interruptAndAwaitTerminal(queued, reconciled.turnId);
+        if (terminal === 'completed') return terminal;
+        if (terminal) throw new TurnRunError(stage, `remote turn ended ${terminal}`);
+      }
+      throw this.blockTurnCustody(
+        `recovered turn ${turnId} remained ambiguous for ${queued.workItemId}`,
+        err,
+      );
+    }
+  }
+
+  private async reconcileRemoteTurn(
+    queued: QueuedTurn,
+    knownTurnId: string | null,
+    stage: CronSequenceFailureStage,
+  ): Promise<ReconciledTurn> {
+    let lookup: RemoteTurnLookup;
+    try {
+      lookup = await this.lookupRemoteTurn(queued.workItemId);
+    } catch (err) {
+      throw this.blockTurnCustody(
+        `remote reconciliation read failed for ${queued.workItemId} after ${stage}`,
+        err,
+      );
+    }
+    if (lookup.kind === 'absent') {
+      if (knownTurnId) {
+        throw this.blockTurnCustody(
+          `known remote turn ${knownTurnId} is absent from custody history for ${queued.workItemId}`,
+        );
+      }
+      return { kind: 'absent' };
+    }
+    if (knownTurnId && lookup.turn.id !== knownTurnId) {
+      throw this.blockTurnCustody(
+        `remote turn identity changed from ${knownTurnId} to ${lookup.turn.id} for ${queued.workItemId}`,
+      );
+    }
+    if (lookup.turn.status === 'inProgress') {
+      return { kind: 'inProgress', turnId: lookup.turn.id };
+    }
+    this.clearTurnAuthority(lookup.turn.id, lookup.turn.status);
+    return { kind: 'terminal', status: lookup.turn.status };
+  }
+
+  private async interruptAndAwaitTerminal(
+    queued: QueuedTurn,
+    turnId: string,
+  ): Promise<Exclude<RemoteTurnStatus, 'inProgress'> | null> {
+    if (!this._threadId) return null;
+    try {
+      const interrupted = await this.request('turn/interrupt', {
+        threadId: this._threadId,
+        turnId,
+      });
+      if (interrupted.error) {
+        throw new Error(`turn/interrupt rejected (${interrupted.error.code}): ${interrupted.error.message}`);
+      }
+    } catch (err) {
+      this._outputBuffer.push(`[codex-app-server] timed-out turn interrupt failed: ${err}\n`);
+      return null;
+    }
+
+    for (let attempt = 0; attempt < this._turnReconcilePolls; attempt += 1) {
+      await sleep(this._turnReconcileDelayMs);
+      let lookup: RemoteTurnLookup;
+      try {
+        lookup = await this.lookupRemoteTurn(queued.workItemId);
+      } catch (err) {
+        throw this.blockTurnCustody(
+          `post-interrupt reconciliation failed for ${queued.workItemId}`,
+          err,
+        );
+      }
+      if (lookup.kind === 'absent') return null;
+      if (lookup.turn.id !== turnId) {
+        throw this.blockTurnCustody(
+          `post-interrupt turn identity changed from ${turnId} to ${lookup.turn.id}`,
+        );
+      }
+      if (lookup.turn.status !== 'inProgress') {
+        this.clearTurnAuthority(turnId, lookup.turn.status);
+        return lookup.turn.status;
+      }
+    }
+    return null;
+  }
+
+  private async verifyRemoteAbsence(workItemId: string): Promise<boolean> {
+    for (let attempt = 0; attempt < this._turnReconcilePolls; attempt += 1) {
+      if (attempt > 0) await sleep(this._turnReconcileDelayMs);
+      let lookup: RemoteTurnLookup;
+      try {
+        lookup = await this.lookupRemoteTurn(workItemId);
+      } catch (err) {
+        throw this.blockTurnCustody(
+          `verified-empty read failed for ${workItemId}`,
+          err,
+        );
+      }
+      if (lookup.kind !== 'absent') return false;
+    }
+    return true;
+  }
+
+  private async lookupRestoredRemoteTurn(
+    workItemId: string,
+    stage: 'initial' | 'raced',
+  ): Promise<RemoteTurnLookup> {
+    try {
+      return await this.lookupRemoteTurn(workItemId);
+    } catch (err) {
+      throw this.blockTurnCustody(
+        `${stage} restart reconciliation read failed for ${workItemId}`,
+        err,
+      );
+    }
+  }
+
+  private async lookupRemoteTurn(workItemId: string): Promise<RemoteTurnLookup> {
+    if (!this._threadId) throw new Error('No Codex app-server thread is active');
+    let cursor: string | null = null;
+    const seenCursors = new Set<string>();
+    let match: RemoteTurn | null = null;
+
+    for (let page = 0; page < 100; page += 1) {
+      const response: JsonRpcResponse<{ data: unknown[]; nextCursor: string | null }> =
+        await this.request<{ data: unknown[]; nextCursor: string | null }>('thread/turns/list', {
+        threadId: this._threadId,
+        cursor,
+        limit: 100,
+        sortDirection: 'desc',
+        itemsView: 'full',
+        });
+      if (response.error) {
+        throw new Error(`thread/turns/list failed (${response.error.code}): ${response.error.message}`);
+      }
+      if (!isRecord(response.result) || !Array.isArray(response.result.data)) {
+        throw new Error('thread/turns/list returned malformed data');
+      }
+      for (const candidate of response.result.data) {
+        const turn = this.parseRemoteTurn(candidate);
+        const ownsWorkItem = turn.items.some((item) =>
+          isRecord(item) && item.type === 'userMessage' && item.clientId === workItemId,
+        );
+        if (!ownsWorkItem) continue;
+        if (match) {
+          throw new Error(`multiple remote turns claim work item ${workItemId}`);
+        }
+        match = turn;
+      }
+      const nextCursor: string | null = response.result.nextCursor;
+      if (nextCursor === null || nextCursor === undefined) {
+        return match ? { kind: 'found', turn: match } : { kind: 'absent' };
+      }
+      if (typeof nextCursor !== 'string' || nextCursor.length === 0 || seenCursors.has(nextCursor)) {
+        throw new Error('thread/turns/list returned an invalid pagination cursor');
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    throw new Error('thread/turns/list exceeded the 100-page reconciliation bound');
+  }
+
+  private parseRemoteTurn(candidate: unknown): RemoteTurn {
+    if (!isRecord(candidate) ||
+        typeof candidate.id !== 'string' ||
+        !Array.isArray(candidate.items) ||
+        !isRemoteTurnStatus(candidate.status)) {
+      throw new Error('thread/turns/list returned a malformed turn');
+    }
+    return {
+      id: candidate.id,
+      status: candidate.status,
+      items: candidate.items,
+    };
+  }
+
+  private clearTurnAuthority(turnId: string, _status: RemoteTurnStatus): void {
+    this.retireTurn(turnId);
+    if (this._activeTurnId === turnId) this._activeTurnId = null;
+    this._activeWorkItemId = null;
+    this._startingTurnRouting = null;
+    this.abandonTurnCompletion();
+  }
+
+  private blockTurnCustody(message: string, cause?: unknown): TurnCustodyBlockedError {
+    this._turnCustodyBlocked = true;
+    this._activeTurnId = null;
+    this._activeWorkItemId = null;
+    this._startingTurnRouting = null;
+    this.abandonTurnCompletion();
+    this._outputBuffer.push(`[codex-app-server] TURN CUSTODY BLOCKED: ${message}\n`);
+    try {
+      const paths = resolvePaths(this._env.agentName, this._env.instanceId, this._env.org);
+      logEvent(paths, this._env.agentName, this._env.org, 'error', 'codex_turn_custody_blocked', 'error', {
+        message,
+        cause: cause instanceof Error ? cause.message : cause === undefined ? null : String(cause),
+        pending_work_items: this._turnCustody.snapshot().map((turn) => turn.workItemId),
+      });
+    } catch {
+      // The durable custody file remains the recovery authority.
+    }
+    return new TurnCustodyBlockedError(message, cause);
+  }
+
+  private emitCronSequenceOutcome(
+    event: 'cron_model_preflight_completed' | 'cron_model_preflight_fallback',
+    sequence: CronSequenceTransition,
+    meta: Record<string, unknown>,
+  ): void {
+    try {
+      const paths = resolvePaths(this._env.agentName, this._env.instanceId, this._env.org);
+      logEvent(paths, this._env.agentName, this._env.org, 'action', event, 'info', {
+        sequence_id: sequence.id,
+        cron: sequence.fallbackRouting.cronName,
+        ...meta,
+      });
+    } catch {
+      // Token telemetry remains the authoritative effective-model record.
+    }
   }
 
   /**
@@ -945,20 +1731,110 @@ export class CodexAppServerPTY {
     this.replyLocal('[goal] cleared');
   }
 
-  private async handleSkillInput(content: string): Promise<void> {
+  private queueSkillInput(content: string, routing?: CodexTurnRouting): void {
     const match = content.match(/^\$([A-Za-z0-9:_-]+)(?:\s+([\s\S]*))?$/);
     if (!match) {
       this.replyLocal('[skill] expected $skill_name [text]');
       return;
     }
 
-    const [, skillName, trailingText] = match;
-    const skills = await this.request<SkillsListResponse>('skills/list', {
-      cwds: [this._cwd],
-      forceReload: false,
+    this.enqueueQueuedTurn({
+      input: [],
+      deferredSkill: content,
+      routing,
     });
-    const allSkills = (skills.result?.data || []).flatMap((entry) => entry.skills || []);
-    const exact = allSkills.find((skill) => skill.enabled !== false && skill.name === skillName);
+  }
+
+  private async resolveDeferredSkill(queued: QueuedTurn): Promise<boolean> {
+    const content = queued.deferredSkill;
+    const match = content?.match(/^\$([A-Za-z0-9:_-]+)(?:\s+([\s\S]*))?$/);
+    if (!content || !match) {
+      throw this.blockTurnCustody(`invalid deferred skill intent for ${queued.workItemId}`);
+    }
+
+    const [, skillName, trailingText] = match;
+    let skills: JsonRpcResponse<SkillsListResponse>;
+    try {
+      skills = await this.request<SkillsListResponse>('skills/list', {
+        cwds: [this._cwd],
+        forceReload: false,
+      });
+    } catch (err) {
+      throw this.blockTurnCustody(
+        `skills/list transport failed while resolving ${queued.workItemId}`,
+        err,
+      );
+    }
+    if (skills.error || !isRecord(skills.result) || !Array.isArray(skills.result.data)) {
+      throw this.blockTurnCustody(
+        `skills/list failed while resolving ${queued.workItemId}`,
+        skills.error?.message,
+      );
+    }
+    const entries = skills.result.data;
+    if (entries.length === 0) {
+      throw this.blockTurnCustody(
+        `skills/list returned no workspace data while resolving ${queued.workItemId}`,
+      );
+    }
+
+    let workspaceSkills: unknown[] | null = null;
+    for (const entry of entries) {
+      if (!isRecord(entry) ||
+          typeof entry.cwd !== 'string' || entry.cwd.length === 0 ||
+          !Array.isArray(entry.skills)) {
+        throw this.blockTurnCustody(
+          `skills/list returned a malformed data entry while resolving ${queued.workItemId}`,
+        );
+      }
+      if (entry.cwd !== this._cwd) {
+        throw this.blockTurnCustody(
+          `skills/list returned foreign workspace ${entry.cwd} while resolving ${queued.workItemId}`,
+        );
+      }
+      if (workspaceSkills !== null) {
+        throw this.blockTurnCustody(
+          `skills/list returned duplicate workspace data while resolving ${queued.workItemId}`,
+        );
+      }
+      workspaceSkills = entry.skills;
+    }
+    if (workspaceSkills === null) {
+      throw this.blockTurnCustody(
+        `skills/list omitted requested workspace while resolving ${queued.workItemId}`,
+      );
+    }
+
+    const allSkills: Array<{
+      name: string;
+      path: string;
+      enabled?: boolean;
+    }> = [];
+    for (const skill of workspaceSkills) {
+      if (!isRecord(skill) ||
+          typeof skill.name !== 'string' ||
+          !/^[A-Za-z0-9:_-]+$/.test(skill.name) ||
+          typeof skill.path !== 'string' ||
+          !isAbsolute(skill.path) ||
+          (skill.enabled !== undefined && typeof skill.enabled !== 'boolean')) {
+        throw this.blockTurnCustody(
+          `skills/list returned a malformed skill while resolving ${queued.workItemId}`,
+        );
+      }
+      allSkills.push({
+        name: skill.name,
+        path: skill.path,
+        ...(skill.enabled === undefined ? {} : { enabled: skill.enabled }),
+      });
+    }
+    const exactMatches = allSkills
+      .filter((skill) => skill.enabled !== false && skill.name === skillName);
+    if (exactMatches.length > 1) {
+      throw this.blockTurnCustody(
+        `skills/list returned duplicate enabled matches for ${skillName} while resolving ${queued.workItemId}`,
+      );
+    }
+    const exact = exactMatches[0];
     if (!exact) {
       const matches = allSkills
         .filter((skill) => skill.enabled !== false && skill.name.includes(skillName))
@@ -967,14 +1843,24 @@ export class CodexAppServerPTY {
       this.replyLocal(matches.length > 0
         ? `[skill] unknown "${skillName}". Did you mean: ${matches.join(', ')}?`
         : `[skill] unknown "${skillName}". No enabled matches found.`);
-      return;
+      return false;
     }
 
     const input: unknown[] = [{ type: 'skill', name: exact.name, path: exact.path }];
     if (trailingText?.trim()) {
       input.push({ type: 'text', text: trailingText.trim(), text_elements: [] });
     }
-    this.queueTurn(input);
+    try {
+      this._turnCustody.resolveDeferredSkill(queued.workItemId, input);
+    } catch (err) {
+      throw this.blockTurnCustody(
+        `failed to persist resolved skill ${queued.workItemId}`,
+        err,
+      );
+    }
+    queued.input = input;
+    delete queued.deferredSkill;
+    return true;
   }
 
   private handleRpcMessage(message: unknown): void {
@@ -992,6 +1878,7 @@ export class CodexAppServerPTY {
     if (!('method' in message)) return;
     const method = String(message.method);
     const params = isRecord(message.params) ? message.params : {};
+    const turnIdentity = readTurnEventIdentity(params);
 
     switch (method) {
       case 'thread/started':
@@ -1006,31 +1893,55 @@ export class CodexAppServerPTY {
         }
         break;
       case 'turn/started':
-        if (isRecord(params.turn) && typeof params.turn.id === 'string') {
-          this._activeTurnId = params.turn.id;
+        if (!turnIdentity.valid) {
+          this._outputBuffer.push('[codex-app-server] ignored turn/started with conflicting identities\n');
+          break;
+        }
+        if (turnIdentity.turnId && !this.bindStartedTurn(turnIdentity.turnId)) {
+          break;
         }
         this.maybeFireTyping();
         this._outputBuffer.push('[codex-app-server] turn started\n');
         break;
       case 'turn/completed':
+        if (!turnIdentity.valid) {
+          this._outputBuffer.push('[codex-app-server] ignored turn/completed with conflicting identities\n');
+          break;
+        }
+        if (this.shouldIgnoreTurnEvent('completion', turnIdentity.turnId)) {
+          break;
+        }
+        const completedStatus = readCompletedTurnStatus(params);
+        const completedTurnId = turnIdentity.turnId ?? this._activeTurnId;
+        if (completedTurnId) this.retireTurn(completedTurnId);
         this._activeTurnId = null;
+        this._activeWorkItemId = null;
         this.writeIdleFlag();
         this._outputBuffer.push('[codex-app-server] turn completed\n');
-        this.resolveTurnCompletion();
+        this.resolveTurnCompletion(completedStatus);
         break;
       case 'item/agentMessage/delta':
+        if (!turnIdentity.valid || this.shouldIgnoreTurnEvent('agent message delta', turnIdentity.turnId)) {
+          break;
+        }
         if (typeof params.delta === 'string') {
           this._outputBuffer.push(params.delta);
         }
         this.maybeFireTyping();
         break;
       case 'item/completed':
+        if (!turnIdentity.valid || this.shouldIgnoreTurnEvent('item completion', turnIdentity.turnId)) {
+          break;
+        }
         if (isRecord(params.item) && params.item.type === 'agentMessage' && typeof params.item.text === 'string') {
           this._outputBuffer.push('\n');
         }
         break;
       case 'turn/plan/updated':
       case 'item/plan/delta':
+        if (!turnIdentity.valid || this.shouldIgnoreTurnEvent('plan update', turnIdentity.turnId)) {
+          break;
+        }
         this._outputBuffer.push(`[plan] ${JSON.stringify(params)}\n`);
         this.maybeFireTyping();
         break;
@@ -1043,11 +1954,27 @@ export class CodexAppServerPTY {
         this._outputBuffer.push('[goal] cleared\n');
         break;
       case 'error':
+        if (!turnIdentity.valid) {
+          this._outputBuffer.push('[codex-app-server] ignored error with conflicting turn identities\n');
+          break;
+        }
+        if (this.shouldIgnoreTurnEvent('error', turnIdentity.turnId)) {
+          break;
+        }
+        if (params.willRetry === true) {
+          this._outputBuffer.push(`[codex-app-server] retryable turn error: ${JSON.stringify(params)}\n`);
+          break;
+        }
+        if (this._activeTurnId) this.retireTurn(this._activeTurnId);
         this._activeTurnId = null;
+        this._activeWorkItemId = null;
         this._outputBuffer.push(`[codex-app-server] error: ${JSON.stringify(params)}\n`);
-        this.rejectTurnCompletion(new Error(JSON.stringify(params)));
+        this.resolveTurnCompletion('failed');
         break;
       case 'thread/tokenUsage/updated':
+        if (!turnIdentity.valid || this.shouldIgnoreTurnEvent('token usage', turnIdentity.turnId)) {
+          break;
+        }
         this.writeContextStatus(params);
         this.appendCodexTokenLog(params);
         this._outputBuffer.push(`[codex-app-server:event] ${method}\n`);
@@ -1056,7 +1983,12 @@ export class CodexAppServerPTY {
       case 'mcpServer/startupStatus/updated':
       case 'account/rateLimits/updated':
       case 'skills/changed':
+        this._outputBuffer.push(`[codex-app-server:event] ${method}\n`);
+        break;
       case 'item/started':
+        if (!turnIdentity.valid || this.shouldIgnoreTurnEvent('item start', turnIdentity.turnId)) {
+          break;
+        }
         this._outputBuffer.push(`[codex-app-server:event] ${method}\n`);
         break;
       default:
@@ -1069,25 +2001,79 @@ export class CodexAppServerPTY {
     return this._rpc.request<T>(method, params);
   }
 
-  private createTurnCompletion(timeoutMs = 30 * 60 * 1000): Promise<void> {
+  private bindStartedTurn(turnId: string): boolean {
+    if (this._retiredTurnIds.has(turnId)) {
+      this._outputBuffer.push(`[codex-app-server] ignored late start for retired turn ${turnId}\n`);
+      return false;
+    }
+    const expected = this._activeTurnId ?? this._turnCompletion?.turnId ?? null;
+    if (expected && expected !== turnId) {
+      this._outputBuffer.push(`[codex-app-server] ignored turn/start identity ${turnId}; current turn is ${expected}\n`);
+      return false;
+    }
+    this._activeTurnId = turnId;
+    if (this._turnCompletion) this._turnCompletion.turnId = turnId;
+    if (this._startingTurnRouting) {
+      this._turnRoutingById.set(turnId, this._startingTurnRouting);
+      this._startingTurnRouting = null;
+      while (this._turnRoutingById.size > 100) {
+        const oldest = this._turnRoutingById.keys().next().value;
+        if (typeof oldest !== 'string') break;
+        this._turnRoutingById.delete(oldest);
+      }
+    }
+    return true;
+  }
+
+  private shouldIgnoreTurnEvent(kind: string, turnId: string | null): boolean {
+    if (turnId && this._retiredTurnIds.has(turnId)) {
+      this._outputBuffer.push(`[codex-app-server] ignored late ${kind} for retired turn ${turnId}\n`);
+      return true;
+    }
+    const expected = this._activeTurnId ?? this._turnCompletion?.turnId ?? null;
+    if (expected && turnId !== expected) {
+      this._outputBuffer.push(
+        `[codex-app-server] ignored ${kind} for ${turnId ?? 'an unbound turn'}; current turn is ${expected}\n`,
+      );
+      return true;
+    }
+    if (!expected && turnId && this._turnCompletion) {
+      this._turnCompletion.turnId = turnId;
+      this._activeTurnId = turnId;
+    }
+    return false;
+  }
+
+  private retireTurn(turnId: string): void {
+    this._retiredTurnIds.add(turnId);
+    this._turnRoutingById.delete(turnId);
+    while (this._retiredTurnIds.size > 100) {
+      const oldest = this._retiredTurnIds.values().next().value;
+      if (typeof oldest !== 'string') break;
+      this._retiredTurnIds.delete(oldest);
+    }
+  }
+
+  private createTurnCompletion(workItemId: string, turnId: string | null = null): Promise<RemoteTurnStatus> {
     if (this._turnCompletion) {
       this.rejectTurnCompletion(new Error('Superseded by a new turn'));
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        if (this._turnCompletion?.workItemId !== workItemId) return;
         this._turnCompletion = null;
         reject(new Error('Timed out waiting for turn/completed'));
-      }, timeoutMs);
-      this._turnCompletion = { resolve, reject, timer };
+      }, this._turnCompletionTimeoutMs);
+      this._turnCompletion = { resolve, reject, timer, turnId, workItemId };
     });
   }
 
-  private resolveTurnCompletion(): void {
+  private resolveTurnCompletion(status: RemoteTurnStatus = 'completed'): void {
     if (!this._turnCompletion) return;
     const pending = this._turnCompletion;
     this._turnCompletion = null;
     clearTimeout(pending.timer);
-    pending.resolve();
+    pending.resolve(status);
   }
 
   private rejectTurnCompletion(err: Error): void {
@@ -1096,6 +2082,12 @@ export class CodexAppServerPTY {
     this._turnCompletion = null;
     clearTimeout(pending.timer);
     pending.reject(err);
+  }
+
+  private abandonTurnCompletion(): void {
+    if (!this._turnCompletion) return;
+    clearTimeout(this._turnCompletion.timer);
+    this._turnCompletion = null;
   }
 
   private emitUnsupportedRequestEvent(method: string): void {
@@ -1203,18 +2195,28 @@ export class CodexAppServerPTY {
     const turnId = typeof params.turnId === 'string' ? params.turnId : null;
     if (!turnId || !this._threadId) return;
 
+    const effective = this._turnRoutingById.get(turnId);
+
     const entry = {
       timestamp: new Date().toISOString(),
       // Log the model we actually SEND on the turn (resolveSafeModel), not the
       // raw config — keeps the token-log label honest with the request so it
       // can never mask an unsafe-model default again.
-      model: resolveSafeModel(this._config.model),
+      model: effective?.model ?? resolveSafeModel(this._config.model),
       input_tokens: typeof total.inputTokens === 'number' ? total.inputTokens : 0,
       output_tokens: typeof total.outputTokens === 'number' ? total.outputTokens : 0,
       cache_read_tokens: typeof total.cachedInputTokens === 'number' ? total.cachedInputTokens : 0,
       cache_write_tokens: 0,
       session_id: this._threadId,
       turn_id: turnId,
+      ...(effective?.routing ? {
+        routing_source: effective.routing.source,
+        cron_name: effective.routing.cronName,
+        routing_reason: effective.routing.reason,
+        skill_name: effective.routing.skillName ?? null,
+        requested_model: effective.routing.requestedModel ?? null,
+        requested_effort: effective.routing.effort ?? null,
+      } : {}),
     };
 
     try {
@@ -1336,20 +2338,25 @@ export class CodexAppServerPTY {
     return env;
   }
 
+  /**
+   * Load a KEY=VALUE env file into `env`.
+   *
+   * Delegates to parseEnvFile (utils/env.ts), the canonical reader, which strips
+   * surrounding quotes and tolerates BOM/CRLF. This method previously parsed the
+   * file itself and did NOT strip quotes, so a quoted value reached the codex
+   * session with its quote characters attached — the same defect fixed in
+   * agent-pty.ts. Keeping the two in step matters because a value has to survive
+   * BOTH paths identically; a fix applied to one is a silent divergence.
+   *
+   * Deliberately the TOLERANT reader, unlike AgentPTY which uses the strict one.
+   * This method already swallowed read errors before the change (its own
+   * try/catch returned silently), so `parseEnvFile` preserves the existing
+   * contract exactly. The two call sites differ in failure semantics on purpose;
+   * making them uniform would be a behaviour change smuggled in as cleanup.
+   */
   private loadEnvFile(path: string, env: Record<string, string>): void {
     if (!existsSync(path)) return;
-    try {
-      for (const line of readFileSync(path, 'utf-8').split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx > 0) {
-          env[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
-        }
-      }
-    } catch {
-      // Ignore env file read errors.
-    }
+    Object.assign(env, parseEnvFile(path, { stripInlineComments: false }));
   }
 
   private getPackageVersion(): string {
@@ -1364,6 +2371,16 @@ export class CodexAppServerPTY {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isRemoteTurnStatus(value: unknown): value is RemoteTurnStatus {
+  return value === 'completed' || value === 'interrupted' || value === 'failed' || value === 'inProgress';
+}
+
+function readCompletedTurnStatus(params: Record<string, unknown>): RemoteTurnStatus {
+  const nested = isRecord(params.turn) ? params.turn.status : undefined;
+  const status = nested ?? params.status;
+  return isRemoteTurnStatus(status) ? status : 'completed';
 }
 
 function sleep(ms: number): Promise<void> {

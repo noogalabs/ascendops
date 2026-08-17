@@ -55,6 +55,7 @@ function makeRow(
     },
     lastFire: overrides.lastFire ?? null,
     lastStatus: overrides.lastStatus ?? null,
+    lastFireKind: overrides.lastFireKind ?? null,
     nextFire: overrides.nextFire ?? new Date(NOW_MS + 21_600_000).toISOString(),
   };
 }
@@ -267,6 +268,19 @@ describe('computeHealth — healthy', () => {
     const row = makeRow({ lastFire, lastStatus: 'retried', schedule: '6h' });
     const result = computeHealth(row, [], NOW_MS);
     expect(result.state).toBe('healthy');
+  });
+
+  it('preserves the durable kind of the most recent fire', () => {
+    const lastFire = new Date(NOW_MS - 1000).toISOString();
+    const row = makeRow({
+      lastFire,
+      lastStatus: 'fired',
+      lastFireKind: 'catch_up',
+      schedule: '6h',
+    });
+
+    expect(computeHealth(row, [makeEntry('fired', NOW_MS - 1000)], NOW_MS).lastFireKind)
+      .toBe('catch_up');
   });
 
   it('returns healthy just inside 2x boundary (gap < 2 * interval)', () => {

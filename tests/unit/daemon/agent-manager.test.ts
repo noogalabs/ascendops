@@ -277,6 +277,43 @@ describe('AgentManager.discoverAndStart - BUG-043 fix (multi-org support)', () =
   });
 });
 
+describe('AgentManager dead mapped-agent replacement (#858)', () => {
+  it('tears down a halted entry and installs exactly one fresh running registry entry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cortextos-am-dead-replace-'));
+    const ctxRoot = join(root, 'instance');
+    const frameworkRoot = join(root, 'framework');
+    const agentDir = join(frameworkRoot, 'orgs', 'acme', 'agents', 'alice');
+    mkdirSync(join(ctxRoot, 'config'), { recursive: true });
+    mkdirSync(agentDir, { recursive: true });
+
+    try {
+      const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
+      const staleStop = vi.fn().mockResolvedValue(undefined);
+      const staleCheckerStop = vi.fn();
+      const stale = {
+        process: {
+          getStatus: () => ({ name: 'alice', status: 'halted' }),
+          stop: staleStop,
+        },
+        checker: { stop: staleCheckerStop },
+      };
+      const agents = (am as unknown as { agents: Map<string, unknown> }).agents;
+      agents.set('alice', stale);
+
+      await am.startAgent('alice', agentDir, { telegram_polling: false }, 'acme');
+
+      expect(staleStop).toHaveBeenCalledTimes(1);
+      expect(staleCheckerStop).toHaveBeenCalledTimes(1);
+      expect(agents.size).toBe(1);
+      const replacement = agents.get('alice') as { process: { getStatus(): { status: string } } };
+      expect(replacement).not.toBe(stale);
+      expect(replacement.process.getStatus().status).toBe('running');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('AgentManager.restartAgent - BUG-007 fix (rebuild Telegram poller)', () => {
   let testDir: string;
   let ctxRoot: string;

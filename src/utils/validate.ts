@@ -40,6 +40,35 @@ export function validateOrgName(org: string): void {
   }
 }
 
+/**
+ * Reject an empty or whitespace-only message body.
+ *
+ * Added 2026-08-03. Before this, `sendMessage` validated the sender, the recipient and the
+ * priority but never the text, so an empty body was accepted, HMAC-signed, written to the
+ * inbox, delivered and ACK'd with EVERY layer reporting success: the send returned a msg_id,
+ * the receive succeeded, the ACK succeeded. A review verdict, an approval, or a blocker
+ * could vanish with no error raised anywhere.
+ *
+ * Measured before the fix: 19 empty bodies across 43,457 stored messages, from 5 distinct
+ * senders, spread from 2026-04-24 through 2026-08-03 — a live low-rate silent loss, not a
+ * closed historical bug. Immediate trigger was a PR review verdict that arrived empty.
+ *
+ * Root cause: the `send-message` CLI declares `<text>` as a REQUIRED positional, but
+ * commander treats an empty string as satisfying it.
+ *
+ * A caller sweep of all 11 bus `sendMessage` call sites found ZERO legitimate metadata-only
+ * empty-text patterns, so rejecting empty breaks no existing traffic.
+ */
+export function validateMessageText(text: string): void {
+  if (typeof text !== 'string' || text.trim() === '') {
+    throw new Error(
+      'Empty message body: refusing to send a message with no text. ' +
+      'An empty body is delivered and ACKed silently, so the content is lost with no error. ' +
+      'If this came from the CLI, check for an empty quoted argument.'
+    );
+  }
+}
+
 export function validatePriority(priority: string): asserts priority is Priority {
   if (!VALID_PRIORITIES.includes(priority as Priority)) {
     throw new Error(

@@ -57,11 +57,13 @@ const originalCtxRoot = process.env.CTX_ROOT;
 let migrateCronsForAgent: typeof import('../../src/daemon/cron-migration.js').migrateCronsForAgent;
 let migrateAllAgents: typeof import('../../src/daemon/cron-migration.js').migrateAllAgents;
 let isMigrated: typeof import('../../src/daemon/cron-migration.js').isMigrated;
+let reloadCronsForAgent: typeof import('../../src/daemon/cron-migration.js').reloadCronsForAgent;
 let readCrons: typeof import('../../src/bus/crons.js').readCrons;
 
 async function reloadModules() {
   vi.resetModules();
   const migModule = await import('../../src/daemon/cron-migration.js');
+  reloadCronsForAgent = migModule.reloadCronsForAgent;
   migrateCronsForAgent = migModule.migrateCronsForAgent;
   migrateAllAgents = migModule.migrateAllAgents;
   isMigrated = migModule.isMigrated;
@@ -548,6 +550,195 @@ describe('disabled cron handling', () => {
     expect(crons).toHaveLength(1);
     expect(crons[0].enabled).toBe(false);
     expect(crons[0].name).toBe('paused');
+  });
+
+  // -------------------------------------------------------------------------
+  // RESTART SURVIVAL — regression guard for 2026-08-12.
+  //
+  // The test above covers `type: "disabled"`, which was the ONLY disable signal
+  // the reader honoured. Operators reach for `enabled: false` and leave `type`
+  // as "recurring" — the cron IS recurring, it is just switched off — and that
+  // shape was untested and silently discarded.
+  //
+  // What it cost: coordinator hardened operator's config with `enabled: false` on five
+  // proactive crons so a fleet restart could not re-arm them. The restart
+  // re-armed all five, because config.json is reconciled into crons.json on
+  // EVERY AGENT BOOT (#125). Zero prohibited fires only because operator noticed and
+  // re-disabled them ~25 minutes before the next window — an agent-shaped catch,
+  // not a system-enforced one.
+  //
+  // These assert the SHAPE THAT BROKE, not the shape that already worked.
+  // -------------------------------------------------------------------------
+  it('honours enabled:false even when type is "recurring" (the shape that broke)', () => {
+    const agentDir = join(tmpFrameworkRoot, 'orgs', 'testorg', 'agents', 'lambda2');
+    writeConfigJson(agentDir, [
+      // Exactly operator's shape: switched off via `enabled`, type left as recurring.
+      { name: 'ar-digest', type: 'recurring', cron: '0 8 * * 1-5', prompt: 'Run digest.', enabled: false },
+      // Control: an entry with no `enabled` field must still arm, or the fix
+      // would disable everything and pass this file for the wrong reason.
+      { name: 'heartbeat', type: 'recurring', interval: '2h', prompt: 'Heartbeat.' },
+    ]);
+
+    const result = migrateCronsForAgent('lambda2', join(agentDir, 'config.json'), tmpCtxRoot);
+    expect(result.status).toBe('migrated');
+
+    const crons = readCrons('lambda2');
+    const digest = crons.find((c) => c.name === 'ar-digest');
+    const hb = crons.find((c) => c.name === 'heartbeat');
+    expect(digest?.enabled).toBe(false); // would have been true before the fix
+    expect(hb?.enabled).toBe(true); // absent !== false
+  });
+
+  // -------------------------------------------------------------------------
+  // ROUND-TRIP PRESERVATION — coordinator's assertion, 2026-08-13.
+  //
+  // The first version of this fix DECLARED `description` and `disabled_reason`
+  // on CronEntry and claimed in the PR that all three fields were preserved.
+  // They were not: convertEntry never read them, so recurring descriptions
+  // vanished, disabled descriptions were overwritten by generic migration text,
+  // and disabled_reason had no counterpart on CronDefinition at all. The Codex
+  // review caught it with live evidence — reviewer's config supplies a reason for
+  // usage-rate-guard and every boot discarded it.
+  //
+  // Declaring a field and preserving it are different things. This test makes
+  // the difference provable instead of claimed.
+  // -------------------------------------------------------------------------
+  it('an entry carrying all three operator fields round-trips through a boot reconcile', () => {
+    const agentDir = join(tmpFrameworkRoot, 'orgs', 'testorg', 'agents', 'lambda4');
+    writeConfigJson(agentDir, [
+      {
+        name: 'usage-rate-guard',
+        type: 'recurring',
+        cron: '0 9 * * *',
+        prompt: 'Guard the rate.',
+        enabled: false,
+        description: 'Operator description that must survive',
+        disabled_reason: 'paused pending budget decision',
+      },
+    ]);
+    const configPath = join(agentDir, 'config.json');
+
+    migrateCronsForAgent('lambda4', configPath, tmpCtxRoot);
+    const first = readCrons('lambda4')[0];
+    expect(first.enabled).toBe(false);
+    expect(first.description).toBe('Operator description that must survive');
+    expect(first.disabled_reason).toBe('paused pending budget decision');
+
+    // The generic migration string must NOT have clobbered the operator's text.
+    expect(first.description).not.toContain('Migrated from config.json');
+
+    // And it all survives the next boot's reconcile, unchanged.
+    migrateCronsForAgent('lambda4', configPath, tmpCtxRoot, { force: true });
+    const second = readCrons('lambda4')[0];
+    expect(second.enabled).toBe(false);
+    expect(second.description).toBe(first.description);
+    expect(second.disabled_reason).toBe(first.disabled_reason);
+  });
+
+  // -------------------------------------------------------------------------
+  // MATCHED-ENTRY MERGE — the path my first round-trip test did NOT exercise.
+  //
+  // Codex review, second pass: conversion had started populating disabled_reason,
+  // but BOTH merge paths still dropped it. When a cron already exists in
+  // crons.json, the merge starts from the prior definition and copies only
+  // CONFIG_AUTHORITATIVE_FIELDS plus a special-cased `description` — so a reason
+  // added or changed in config never reached disk for any existing cron.
+  //
+  // My earlier test passed because migrateCronsForAgent({force:true}) re-migrates
+  // rather than merging, so it never touched this code. A test that passes by
+  // avoiding the real path is the shape this suite exists to prevent, and it is
+  // the second time on this PR that the shipped-path and the tested-path differed.
+  // -------------------------------------------------------------------------
+  // Path 1 casualty — the INITIAL MIGRATION merge (cron-migration.ts ~433-445).
+  // reviewer's ask: both matched-entry paths need their own casualty, because I
+  // fixed two and had proved one. A fix verified on one of two paths is half a
+  // fix with full confidence attached.
+  it('carries a CHANGED disabled_reason through the initial migration merge', () => {
+    const agentDir = join(tmpFrameworkRoot, 'orgs', 'testorg', 'agents', 'lambda6');
+    writeConfigJson(agentDir, [
+      {
+        name: 'ar-digest', type: 'recurring', cron: '0 8 * * 1-5',
+        prompt: 'Digest.', enabled: false, disabled_reason: 'first reason',
+      },
+    ]);
+    const configPath = join(agentDir, 'config.json');
+
+    migrateCronsForAgent('lambda6', configPath, tmpCtxRoot);
+    expect(readCrons('lambda6')[0].disabled_reason).toBe('first reason');
+
+    // Same-named entry now exists in crons.json, so a forced re-migration takes
+    // the matched-entry branch (`const prior = existingByName.get(...)`) rather
+    // than converting fresh.
+    writeConfigJson(agentDir, [
+      {
+        name: 'ar-digest', type: 'recurring', cron: '0 8 * * 1-5',
+        prompt: 'Digest.', enabled: false, disabled_reason: 'second reason after review',
+      },
+    ]);
+    migrateCronsForAgent('lambda6', configPath, tmpCtxRoot, { force: true });
+
+    const after = readCrons('lambda6')[0];
+    expect(after.disabled_reason).toBe('second reason after review');
+    expect(after.enabled).toBe(false);
+  });
+
+  it('carries a CHANGED disabled_reason through the boot-time reload merge', () => {
+    const agentDir = join(tmpFrameworkRoot, 'orgs', 'testorg', 'agents', 'lambda5');
+    writeConfigJson(agentDir, [
+      {
+        name: 'bank-rec-am', type: 'recurring', cron: '0 8 * * 1-5',
+        prompt: 'Reconcile.', enabled: false,
+        disabled_reason: 'original reason',
+      },
+    ]);
+    const configPath = join(agentDir, 'config.json');
+
+    migrateCronsForAgent('lambda5', configPath, tmpCtxRoot);
+    expect(readCrons('lambda5')[0].disabled_reason).toBe('original reason');
+
+    // Operator edits the reason in config. The cron already exists in crons.json,
+    // so the next boot takes the MATCHED-ENTRY MERGE path, not a fresh convert.
+    writeConfigJson(agentDir, [
+      {
+        name: 'bank-rec-am', type: 'recurring', cron: '0 8 * * 1-5',
+        prompt: 'Reconcile.', enabled: false,
+        disabled_reason: 'updated reason after budget review',
+      },
+    ]);
+    const reload = reloadCronsForAgent('lambda5', configPath);
+
+    // ASSERT THE SUBJECT: this test is only meaningful if the reload took the
+    // MATCHED-ENTRY MERGE path. If the cron is reported as ADDED, the reload
+    // converted it fresh and never touched the merge code — which is exactly how
+    // the first version of this test passed against a mutant.
+    // THREE-WAY disposition, not a permissive OR. The earlier version accepted
+    // `updated OR unchanged`, which cannot fail on a WRONG disposition — and it
+    // did not: the merge wrote the new reason to disk while definitionChanged
+    // omitted disabled_reason, so the reload reported `unchanged` and the test
+    // passed anyway. An assertion that admits both answers is not an assertion.
+    expect(reload.updated).toContain('bank-rec-am');
+    expect(reload.unchanged ?? []).not.toContain('bank-rec-am');
+    expect(reload.added).not.toContain('bank-rec-am');
+
+    const after = readCrons('lambda5')[0];
+    expect(after.disabled_reason).toBe('updated reason after budget review');
+    expect(after.enabled).toBe(false); // and the disable itself still survives
+  });
+
+  it('a disabled cron STAYS disabled across a re-reconciliation (boot survival)', () => {
+    const agentDir = join(tmpFrameworkRoot, 'orgs', 'testorg', 'agents', 'lambda3');
+    writeConfigJson(agentDir, [
+      { name: 'bank-rec-am', type: 'recurring', cron: '0 8 * * 1-5', prompt: 'Reconcile.', enabled: false },
+    ]);
+    const configPath = join(agentDir, 'config.json');
+
+    migrateCronsForAgent('lambda3', configPath, tmpCtxRoot);
+    expect(readCrons('lambda3')[0].enabled).toBe(false);
+
+    // Simulate the next agent boot re-running the config -> crons.json
+    // reconciliation. THIS is the step that re-armed operator's five crons.
+    migrateCronsForAgent('lambda3', configPath, tmpCtxRoot, { force: true });
+    expect(readCrons('lambda3')[0].enabled).toBe(false);
   });
 });
 

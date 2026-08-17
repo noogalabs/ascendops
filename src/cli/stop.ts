@@ -10,11 +10,25 @@ import { IPCClient } from '../daemon/ipc-server.js';
  * the stop was intentional and does not fire a false 🚨 CRASH alarm.
  * Pattern matches src/cli/bus.ts:1285-1289.
  *
- * Marker hygiene note: `cortextos start <agent>` currently does not clear a
- * stale `.user-stop` marker. If the operator expects auto-respawn semantics
- * after a manual stop/start cycle, remove the stale marker before relying on
- * daemon-driven recovery. Keep this marker intentionally separate from
- * context-restart `.force-fresh` handling.
+ * Marker hygiene note: `cortextos start <agent>` does not clear a stale
+ * `.user-stop` marker, but the marker is NOT orphaned. Cleanup has two owners,
+ * neither of them this file.
+ *
+ * `clearEndMarkers()` (src/bus/heartbeat.ts) is PRIMARY. It runs on a
+ * post-restart heartbeat once the marker is at or older than the 120s grace
+ * floor — NOT necessarily the successor's first heartbeat, which may fall
+ * inside grace and skip it. That protects markers YOUNGER than the floor; it
+ * does not eliminate the in-flight race. heartbeat.ts:36-42 calls that race
+ * "negligible, not mathematically zero" and accepts a firing#2 delayed past
+ * 120s as a bounded residual.
+ *
+ * `classifyFromMarkers()` (src/hooks/hook-crash-alert.ts:286) is the
+ * failed-start backstop, lazy-unlinking a marker past MARKER_TTL_MS.
+ *
+ * Do NOT add an eager clear on a restart path: the SessionEnd hook fires TWICE
+ * per restart and classifies without consuming the marker, so an early unlink
+ * reintroduces the `type=crash reason=none` false positives. Keep this marker
+ * intentionally separate from context-restart `.force-fresh` handling.
  */
 export function writeStopMarker(instanceId: string, agent: string, reason: string): void {
   try {

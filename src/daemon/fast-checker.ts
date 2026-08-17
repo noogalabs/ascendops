@@ -839,8 +839,9 @@ export class FastChecker {
 
     // Process queued Telegram messages. Drain into a local buffer rather than
     // discarding outright — if injection fails because the agent is not running
-    // (mid-restart / NOT_RUNNING) we must re-queue, since the in-memory queue is
-    // the ONLY backing store for Telegram (no inbox-style ACK/redelivery).
+    // (mid-restart / NOT_RUNNING) or the PTY cannot durably admit the message
+    // (ADMISSION_FAILED), we must re-queue. The in-memory queue is the ONLY
+    // backing store for Telegram (no inbox-style ACK/redelivery).
     // Mirrors the inbox ACK-after-inject recovery model below. DEDUPED failures
     // are dropped instead (see below) — retrying identical content can never
     // succeed and would loop forever.
@@ -853,7 +854,15 @@ export class FastChecker {
     const hasTelegramMessage = drainedTelegram.length > 0;
 
     // Check agent inbox
-    const inboxMessages = checkInbox(this.paths);
+    let inboxMessages: InboxMessage[] = [];
+    try {
+      inboxMessages = checkInbox(this.paths);
+    } catch (err) {
+      // Keep independent Telegram delivery moving, but make the inbox failure
+      // explicit in the daemon log. The next poll retries instead of claiming
+      // a successful empty inbox.
+      this.log(`Inbox check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     for (const msg of inboxMessages) {
       messageBlock += this.formatInboxMessage(msg);
       ackIds.push(msg.id);
@@ -877,8 +886,8 @@ export class FastChecker {
         // Cooldown after injection
         await sleep(5000);
       } else if (drainedTelegram.length > 0) {
-        if (injectResult.code === 'NOT_RUNNING') {
-          // Agent not running (mid-restart). Re-queue the drained Telegram
+        if (injectResult.code === 'NOT_RUNNING' || injectResult.code === 'ADMISSION_FAILED') {
+          // The agent cannot currently take custody. Re-queue the drained Telegram
           // messages at the FRONT so they are retried next cycle and preserve
           // original order. Inbox messages need no action — they were never
           // ACK'd, so checkInbox redelivers them. Without this, mid-restart

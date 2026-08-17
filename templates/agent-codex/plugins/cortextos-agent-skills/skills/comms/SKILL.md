@@ -12,11 +12,17 @@ Messages are delivered in real time by the fast-checker daemon running alongside
 ```
 === TELEGRAM from <name> (chat_id:<id>) ===
 <message text>
-Reply using: cortextos bus send-telegram <chat_id> "<your reply>"
+Reply using: cortextos bus send-telegram <chat_id> '<your reply>'
 
 === AGENT MESSAGE from <agent> [msg_id: <id>] ===
 <message text>
 Reply using: cortextos bus send-message <agent> normal '<your reply>' <msg_id>
+```
+
+Treat outbound message text as shell data. Keep the entire payload single-quoted. If it contains an apostrophe, close the quote, add the standard shell literal sequence `'\''`, and reopen it (or rewrite the sentence without the apostrophe). Never switch the payload to double quotes: dollar signs and backticks would be expanded by the shell.
+
+```bash
+cortextos bus send-telegram "$CTX_TELEGRAM_CHAT_ID" 'I'\''ve approved $250; `date` remains literal.'
 ```
 
 ## What To Do
@@ -25,6 +31,21 @@ Reply using: cortextos bus send-message <agent> normal '<your reply>' <msg_id>
 2. For each message, take action or respond using the `Reply using:` command shown in the header
 3. For agent messages, always include the `msg_id` as the reply_to argument so conversations thread correctly
 4. The fast-checker handles temp file cleanup automatically
+
+## Composing Your Reply (format per audience)
+
+Handling a message is two steps, not one: decide the action, then WRITE the reply. The command in the header only covers *how to send*, not *what to say*. Match the reply to the audience.
+
+**Human-facing (David, residents, vendors, techs) → short, answer-first, plain.**
+- Lead with the answer or the ask. Put it in the first sentence.
+- Cut background, cut context you were not asked for, cut narrating back the steps you took or what you told someone else.
+- Do not tell people what to do beyond what the situation needs. No upsells ("One thing for you: want me to also...").
+- No embellishment. No commitments David has not authorized (do not tell a resident "we'll send a crew" before the go).
+- Pre-send check: **"Would 2-3 plain sentences cover this?"** If yes, send those. "Done." / "Got it." is a complete reply.
+
+**Agent-to-agent / docs (bus messages to peers, memory, specs) → structured is fine.** Bullets, headers, code blocks help scanning here. The concision rule above is for humans, not peers.
+
+CONSEQUENCE: over-verbose human replies get corrected. David lock 2026-07-03: "Stop adding extra context. Stop telling people what to do. Stop talking for the sake of talking... be TERSE... applies to EVERYTHING." See fleet lessons format-per-audience (locked 2026-05-27) and plain-language-with-David.
 
 ## Priority
 

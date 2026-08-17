@@ -19,7 +19,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { scanForSecurityIssues, validateFrontmatter } from '../hooks/hook-skill-autopr.js';
@@ -256,6 +256,12 @@ export function buildAuditPrBody(
   skillName: string,
   stagedPaths: string[],
   conflicts: string[],
+  receipt?: {
+    population: string;
+    expectedPopulation: number;
+    registryEnumeratedPopulation: number;
+    observedPopulation: number;
+  },
 ): string {
   const staged = stagedPaths.map((p) => `- \`${p}\``).join('\n');
   const conflictBlock = conflicts.length > 0
@@ -264,6 +270,13 @@ export function buildAuditPrBody(
   return `## Skill-Audit Apply Loop: \`${skillName}\`
 
 Applies an ACCEPTED skill-optimizer audit diff to the canonical skill home and cascades it to every mirror/deployed copy (template-first + cascade, per orchestration-upgrade-plan-2026-07-01 Tip 1 P1).
+
+## Population receipt
+
+- Population: \`${receipt?.population ?? 'UNSPECIFIED'}\`
+- Expected: ${receipt?.expectedPopulation ?? 'UNSPECIFIED'}
+- Registry-enumerated: ${receipt?.registryEnumeratedPopulation ?? 'UNSPECIFIED'}
+- Observed: ${receipt?.observedPopulation ?? 'UNSPECIFIED'}
 
 ## Files updated
 
@@ -279,6 +292,151 @@ ${conflictBlock}
 ---
 
 Auto-staged by \`cortextos bus create-skill-audit-pr\` (weekly-review Phase 1C)`;
+}
+
+type AuditReceipt = {
+  population: string;
+  expectedPopulation: number;
+  registryEnumeratedPopulation: number;
+  observedPopulation: number;
+};
+
+export function selectAuditTargets(
+  targets: Array<{ layout: string; relativePath: string }>,
+  layouts?: string[],
+): string[] {
+  const selected = layouts ? new Set(layouts) : null;
+  return targets
+    .filter((target) => !selected || selected.has(target.layout))
+    .map((target) => target.relativePath);
+}
+
+/**
+ * Reconcile changed files against registry-returned target directories. The
+ * changed set is observational evidence only; it never defines completeness.
+ */
+export function reconcileAuditTargets(
+  changedPaths: string[],
+  expectedTargetDirs: string[],
+  receipt: AuditReceipt,
+): string[] {
+  if (
+    receipt.expectedPopulation !== receipt.registryEnumeratedPopulation ||
+    receipt.expectedPopulation !== receipt.observedPopulation
+  ) {
+    throw new Error(
+      `Population receipt mismatch for ${receipt.population}: expected=${receipt.expectedPopulation} registry=${receipt.registryEnumeratedPopulation} observed=${receipt.observedPopulation}`,
+    );
+  }
+  const normalizedTargets = [...new Set(expectedTargetDirs.map((path) => path.replace(/\/$/, '')))].sort();
+  const coverage = new Set<string>();
+  const extra: string[] = [];
+  for (const changed of changedPaths) {
+    const target = normalizedTargets.find((candidate) => changed === candidate || changed.startsWith(`${candidate}/`));
+    if (target) coverage.add(target);
+    else extra.push(changed);
+  }
+  const missing = normalizedTargets.filter((target) => !coverage.has(target));
+  if (missing.length || extra.length) {
+    throw new Error(
+      `Skill-audit population incomplete; missing=${missing.join(',') || '(none)'} extra=${extra.join(',') || '(none)'}`,
+    );
+  }
+  return [...changedPaths].sort();
+}
+
+type MirrorGroup = {
+  skill?: unknown;
+  canonical?: unknown;
+  mirrors?: unknown;
+  population?: unknown;
+  layouts?: unknown;
+  expectedPopulation?: unknown;
+  expectedTrackedPopulation?: unknown;
+};
+
+export function selectMirrorAuditTargets(group: MirrorGroup): string[] {
+  if (typeof group.canonical !== 'string' || !Array.isArray(group.mirrors) ||
+      group.mirrors.some((path) => typeof path !== 'string')) {
+    throw new Error(`Mirror group ${String(group.skill)} has invalid canonical/mirrors topology`);
+  }
+  const targets = [group.canonical, ...(group.mirrors as string[])];
+  for (const target of targets) {
+    if (target.startsWith('/') || target.split('/').includes('..')) {
+      throw new Error(`Mirror group ${String(group.skill)} has unsafe target: ${target}`);
+    }
+  }
+  if (new Set(targets).size !== targets.length) {
+    throw new Error(`Mirror group ${String(group.skill)} has duplicate targets`);
+  }
+  if (!Number.isSafeInteger(group.expectedPopulation) || group.expectedPopulation !== targets.length) {
+    throw new Error(
+      `Mirror group ${String(group.skill)} total population mismatch: expected=${String(group.expectedPopulation)} declared=${targets.length}`,
+    );
+  }
+  if (!Number.isSafeInteger(group.expectedTrackedPopulation) || Number(group.expectedTrackedPopulation) < 0) {
+    throw new Error(`Mirror group ${String(group.skill)} has invalid expectedTrackedPopulation`);
+  }
+  return targets.sort();
+}
+
+export function loadAuditPopulation(frameworkRoot: string, skillName: string): {
+  receipt: AuditReceipt;
+  targets: string[];
+} {
+  const manifest = JSON.parse(readFileSync(join(frameworkRoot, 'scripts/skill-mirrors.json'), 'utf8')) as MirrorGroup[];
+  const group = manifest.find((entry) => entry.skill === skillName);
+  if (!group) {
+    throw new Error(`Skill-audit "${skillName}" has no named population or explicit mirror group`);
+  }
+  if (typeof group.population !== 'string') {
+    // Audit PRs can stage only the framework repository's tracked members.
+    // Local-tier runtime mirrors remain declared and checked by skill-drift,
+    // but cannot be smuggled into a clean-checkout PR receipt.
+    const targets = selectMirrorAuditTargets(group).filter((target) => {
+      const tracked = spawnSync('git', ['-C', frameworkRoot, 'ls-files', '--', target], {
+        encoding: 'utf8',
+      });
+      if (tracked.status !== 0) {
+        throw new Error(`Cannot determine tracked mirror status for ${target}: ${tracked.stderr || tracked.stdout}`);
+      }
+      return Boolean((tracked.stdout || '').trim());
+    });
+    if (targets.length !== group.expectedTrackedPopulation) {
+      throw new Error(
+        `Mirror group ${skillName} tracked population mismatch: expected=${String(group.expectedTrackedPopulation)} observed=${targets.length}`,
+      );
+    }
+    const observed = targets.filter((target) => existsSync(join(frameworkRoot, target, 'SKILL.md'))).length;
+    return {
+      receipt: {
+        population: `skill-mirrors:${skillName}`,
+        expectedPopulation: targets.length,
+        registryEnumeratedPopulation: targets.length,
+        observedPopulation: observed,
+      },
+      targets,
+    };
+  }
+  const result = spawnSync(process.execPath, [
+    join(frameworkRoot, 'scripts/fleet-population.mjs'), 'paths',
+    '--registry', join(frameworkRoot, 'scripts/fleet-populations.json'),
+    '--root', frameworkRoot,
+    '--population', group.population,
+    '--skill', skillName,
+    '--format', 'json',
+  ], { cwd: frameworkRoot, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`Population preflight failed for ${skillName}:\n${result.stdout || result.stderr}`);
+  }
+  const payload = JSON.parse((result.stdout || '').trim().split('\n').at(-1) || '{}');
+  return {
+    receipt: payload.receipt,
+    targets: selectAuditTargets(
+      payload.targets,
+      Array.isArray(group.layouts) ? group.layouts as string[] : undefined,
+    ),
+  };
 }
 
 /**
@@ -299,7 +457,11 @@ export async function createSkillAuditPr(skillName: string): Promise<void> {
   }
 
   const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT || process.cwd();
-  const repoSlug = parseOriginSlug(run('git remote get-url origin', frameworkRoot));
+
+  // Resolve the registry topology before interpreting the dirty tree. The
+  // changed set remains evidence, never the source of completeness.
+  const auditPopulation = loadAuditPopulation(frameworkRoot, skillName);
+  const topologySkillNames = new Set(auditPopulation.targets.map((target) => basename(target)));
 
   // Collect every modified tracked copy of this skill in the working tree.
   const porcelain = run('git status --porcelain', frameworkRoot);
@@ -309,8 +471,8 @@ export async function createSkillAuditPr(skillName: string): Promise<void> {
     .map((l) => l.slice(3).trim())
     .filter(
       (p) =>
-        p.includes(`/skills/${skillName}/`) ||
-        p.includes(`/shared-skills/${skillName}/`),
+        [...topologySkillNames].some((name) =>
+          p.includes(`/skills/${name}/`) || p.includes(`/shared-skills/${name}/`)),
     )
     .filter(
       (p) =>
@@ -324,6 +486,11 @@ export async function createSkillAuditPr(skillName: string): Promise<void> {
       `No modified copies of skill "${skillName}" found in the working tree — apply the accepted diff first, then re-run`,
     );
   }
+
+  // Population proof happens before remote lookup, branch creation, staging,
+  // history mutation, or any other side effect.
+  reconcileAuditTargets(changed, auditPopulation.targets, auditPopulation.receipt);
+  const repoSlug = parseOriginSlug(run('git remote get-url origin', frameworkRoot));
 
   // Duplicate-PR guard on the skill-audit/<name>- branch prefix.
   let existing: string | null = null;
@@ -377,7 +544,7 @@ export async function createSkillAuditPr(skillName: string): Promise<void> {
     );
     run(`git push origin ${branch}`, frameworkRoot);
 
-    const body = buildAuditPrBody(skillName, changed, []);
+    const body = buildAuditPrBody(skillName, changed, [], auditPopulation.receipt);
     bodyFile = join(tmpdir(), `skill-audit-pr-body-${ts}.txt`);
     writeFileSync(bodyFile, body, 'utf-8');
 

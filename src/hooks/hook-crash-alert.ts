@@ -299,6 +299,19 @@ export function classifyFromMarkers(
 }
 
 async function main(): Promise<void> {
+  // A cron side-run is a short-lived headless `claude -p` that exits as soon as
+  // it has delivered its verdict. That exit is a COMPLETED RUN, not an agent
+  // crash, and must never enter agent crash accounting: it would inflate the
+  // crash count, can trip auto-restart and alerting, and on 2026-08-07 filed two
+  // normal side-run exits as crashes against an agent that was stopped at the
+  // time and had nothing to do with them.
+  //
+  // Keyed on a positive marker set by the spawner, not on the absence of
+  // CTX_AGENT_NAME: absence cannot distinguish a side-run from a misconfigured
+  // spawn, and treating "no identity" as "nothing to see" is the failure mode
+  // this file exists to catch in the first place.
+  if (process.env.CTX_SIDE_RUN === '1') return;
+
   const agentName = process.env.CTX_AGENT_NAME;
   const instanceId = process.env.CTX_INSTANCE_ID || 'default';
   if (!agentName) return;

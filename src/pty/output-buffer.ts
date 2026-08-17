@@ -33,6 +33,10 @@ export class OutputBuffer {
   private maxChunks: number;
   private logPath: string | null;
   private bootstrapPattern: string;
+  // Readiness is monotonic within one PTY lifecycle. Prompt-like text can
+  // remain in or arrive through ordinary output after the real ready marker;
+  // it must never revoke readiness and re-enable bootstrap keystrokes.
+  private bootstrapped: boolean = false;
   // Trailing substring of the previous push that could be the prefix of a
   // JWT *or a formatted SSN* split across the OS chunk boundary. Prepended
   // to the next chunk so redactSecrets sees the reassembled token. Bounded
@@ -295,18 +299,34 @@ export class OutputBuffer {
    * The bootstrap pattern is set at construction time by the PTY class.
    */
   isBootstrapped(): boolean {
+    if (this.bootstrapped) return true;
+
     const recent = this.getRecent();
     const cleaned = recent.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
 
     if (this.bootstrapPattern === 'permissions') {
-      // Claude Code: exclude trust-folder prompt false positives.
-      // The trust prompt shows "trust this folder" before the status bar appears.
-      if (cleaned.includes('trust') && !cleaned.includes('> ')) {
-        return false;
-      }
+      // Claude Code: a first-run dialog can itself contain the readiness word,
+      // and old dialog text remains in the ring after the real status bar is
+      // rendered. Treat the latest relevant marker as authoritative: a status
+      // bar must appear after every blocking-dialog marker.
+      const lower = cleaned.toLowerCase();
+      const readyAt = cleaned.lastIndexOf(this.bootstrapPattern);
+      const continueWithoutAt = lower.lastIndexOf('continue without these permissions');
+      const continuePermissionsAt = continueWithoutAt >= 0
+        ? continueWithoutAt + 'continue without these '.length
+        : -1;
+      const blockedAt = Math.max(
+        lower.lastIndexOf('trust'),
+        lower.lastIndexOf('no, exit'),
+        continuePermissionsAt,
+        lower.lastIndexOf('bypass permissions'),
+      );
+      this.bootstrapped = readyAt >= 0 && readyAt > blockedAt;
+      return this.bootstrapped;
     }
 
-    return cleaned.includes(this.bootstrapPattern);
+    this.bootstrapped = cleaned.includes(this.bootstrapPattern);
+    return this.bootstrapped;
   }
 
   /**
@@ -360,5 +380,6 @@ export class OutputBuffer {
     this.chunkGenerations = [];
     this.pendingTail = '';
     this.pendingGeneration = 0;
+    this.bootstrapped = false;
   }
 }

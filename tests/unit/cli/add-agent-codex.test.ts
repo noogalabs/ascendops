@@ -128,14 +128,19 @@ describe('PR-02: add-agent --runtime codex-app-server', () => {
     const skills = readdirSync(skillsDir, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => d.name);
-    expect(skills.length).toBe(26);
+    expect(skills.length).toBe(27);
     // Spot check: comms is the skill that teaches the Telegram reply pattern.
     expect(skills).toContain('comms');
     expect(skills).toContain('onboarding');
     expect(skills).toContain('study-and-borrow');
     expect(skills).toContain('trending-repo-scout');
+    expect(skills).toContain('html-briefing');
+    // The public scaffold deliberately excludes tenant-specific integration
+    // recovery skills while retaining the reusable framework skills.
+    expect(skills).not.toContain('appfolio-session-restore');
     expect(existsSync(join(skillsDir, 'study-and-borrow', 'SKILL.md'))).toBe(true);
     expect(existsSync(join(skillsDir, 'trending-repo-scout', 'scripts', 'classify-trending.mjs'))).toBe(true);
+    expect(existsSync(join(skillsDir, 'html-briefing', 'template.html'))).toBe(true);
   });
 
   it('creates ~/.codex/skills/<agent>__<skill> symlinks for every skill', async () => {
@@ -150,9 +155,11 @@ describe('PR-02: add-agent --runtime codex-app-server', () => {
     const codexSkillsDir = join(tempHome, '.codex', 'skills');
     expect(existsSync(codexSkillsDir)).toBe(true);
     const links = readdirSync(codexSkillsDir).filter(n => n.startsWith('codex-links__'));
-    expect(links.length).toBe(26);
+    expect(links.length).toBe(27);
     expect(links).toContain('codex-links__study-and-borrow');
     expect(links).toContain('codex-links__trending-repo-scout');
+    expect(links).toContain('codex-links__html-briefing');
+    expect(links).not.toContain('codex-links__appfolio-session-restore');
 
     // Each entry must be a symlink (not a copy), pointing at the agent's local skill dir.
     for (const link of links) {

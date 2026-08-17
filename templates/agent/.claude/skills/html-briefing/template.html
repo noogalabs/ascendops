@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Morning Brief — {{DATE}}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0f1419; color: #e6e6e6;
+    padding: 16px; line-height: 1.5; font-size: 15px;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: #8b949e; margin: 22px 0 10px; padding-bottom: 6px;
+    border-bottom: 1px solid #2d3748;
+  }
+  .subtitle { color: #8b949e; font-size: 13px; margin-bottom: 22px; }
+  .card {
+    background: #1a1f2e; border: 1px solid #2d3748;
+    border-radius: 10px; padding: 14px; margin-bottom: 12px;
+  }
+  .card.tight { padding: 10px 14px; }
+  .row {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 8px 0; border-bottom: 1px solid #2d3748;
+  }
+  .row:last-child { border-bottom: none; padding-bottom: 0; }
+  .row:first-child { padding-top: 0; }
+  .row .label {
+    flex-shrink: 0; width: 70px; font-size: 11px;
+    text-transform: uppercase; color: #8b949e; padding-top: 2px;
+    letter-spacing: 0.5px; font-weight: 600;
+  }
+  .row .body { flex: 1; font-size: 14px; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; margin-right: 4px;
+  }
+  .badge.green { background: #1e4d2b; color: #4ade80; }
+  .badge.yellow { background: #3a2d1a; color: #fbbf24; }
+  .badge.red { background: #4d1e1e; color: #f87171; }
+  .badge.blue { background: #1e3a4d; color: #60a5fa; }
+  .badge.gray { background: #2d3748; color: #94a3b8; }
+  .stat-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px; margin: 8px 0 12px;
+  }
+  .stat {
+    background: #131825; padding: 10px 6px; border-radius: 6px; text-align: center;
+  }
+  .stat-num { font-size: 20px; font-weight: 700; color: #4ade80; }
+  .stat-num.yellow { color: #fbbf24; }
+  .stat-num.red { color: #f87171; }
+  .stat-label {
+    font-size: 10px; color: #8b949e;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .focus-banner {
+    background: linear-gradient(135deg, #1e3a4d 0%, #1e4d3a 100%);
+    border-radius: 10px; padding: 14px; margin: 8px 0 22px;
+    border-left: 4px solid #58a6ff;
+  }
+  .focus-banner .label {
+    font-size: 11px; color: #8b949e;
+    text-transform: uppercase; letter-spacing: 0.6px;
+  }
+  .focus-banner .text { font-size: 16px; font-weight: 600; margin-top: 4px; }
+  ul.tight { padding-left: 18px; margin: 4px 0; }
+  ul.tight li { margin-bottom: 4px; font-size: 14px; }
+  .meta { font-size: 12px; color: #8b949e; font-family: ui-monospace, monospace; }
+  .signal { color: #fbbf24; font-weight: 600; }
+  .noise { color: #8b949e; }
+  .task-list {
+    list-style: none; padding: 0;
+  }
+  .task-list li {
+    padding: 8px 0; border-bottom: 1px solid #2d3748;
+    font-size: 14px; display: flex; align-items: flex-start; gap: 8px;
+  }
+  .task-list li:last-child { border-bottom: none; }
+  .task-num {
+    flex-shrink: 0; width: 22px; height: 22px;
+    background: #2d3748; border-radius: 50%;
+    font-size: 11px; text-align: center; line-height: 22px;
+    color: #94a3b8; font-weight: 600;
+  }
+  .footer {
+    margin-top: 24px; padding-top: 14px;
+    border-top: 1px solid #2d3748;
+    font-size: 11px; color: #6b7588; text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<h1>Morning Brief</h1>
+<div class="subtitle">{{DATE_LONG}}</div>
+
+<div class="focus-banner">
+  <div class="label">Today's Focus</div>
+  <div class="text">{{DAILY_FOCUS}}</div>
+</div>
+
+<h2>Inbox</h2>
+<div class="card">
+  {{INBOX_SECTION}}
+</div>
+
+<h2>Calendar</h2>
+<div class="card">
+  {{CALENDAR_SECTION}}
+</div>
+
+<h2>Fleet Overnight</h2>
+<div class="card">
+  {{FLEET_OVERNIGHT}}
+</div>
+
+<h2>Agent Health</h2>
+<div class="card tight">
+  {{AGENT_HEALTH}}
+</div>
+
+<h2>Today's Tasks</h2>
+<div class="card">
+  <strong style="font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:0.4px;">User Tasks</strong>
+  {{USER_TASKS}}
+  <strong style="font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:0.4px;display:block;margin-top:14px;">Agent Tasks</strong>
+  {{AGENT_TASKS}}
+</div>
+
+{{PENDING_APPROVALS_SECTION}}
+
+<div class="footer">
+  Generated {{GEN_TIME}} · approve in Telegram with <code>go all</code> or <code>go 1,2</code>
+</div>
+
+</body>
+</html>

@@ -128,7 +128,11 @@ describe('CronNoopDetector', () => {
     });
   }
 
-  function register(detector: CronNoopDetector, firedAt = '2026-06-17T12:00:00.000Z'): string {
+  function register(
+    detector: CronNoopDetector,
+    firedAt = '2026-06-17T12:00:00.000Z',
+    fireKind: 'scheduled' | 'catch_up' = 'scheduled',
+  ): string {
     detector.registerFire({
       agentName,
       agentDir,
@@ -136,6 +140,7 @@ describe('CronNoopDetector', () => {
       cronName,
       prompt: 'Read HEARTBEAT.md',
       firedAt,
+      fireKind,
     });
     return cronFireSalt(firedAt, cronName);
   }
@@ -230,7 +235,7 @@ describe('CronNoopDetector', () => {
   });
 
   it('escalates persistent no-op after one re-inject also misses both windows', async () => {
-    register(makeDetector());
+    register(makeDetector(), '2026-06-17T12:00:00.000Z', 'catch_up');
 
     await vi.advanceTimersByTimeAsync(verifyDelayMs);
     await vi.advanceTimersByTimeAsync(verifyDelayMs);
@@ -243,6 +248,12 @@ describe('CronNoopDetector', () => {
       'noop_reinjected',
       'noop_unconfirmed',
       'noop_persistent',
+    ]);
+    expect(logs.map((l) => l.fire_kind)).toEqual([
+      'catch_up',
+      'catch_up',
+      'catch_up',
+      'catch_up',
     ]);
     expect(events.map((e) => e.event)).toEqual([
       'cron_fire_unconfirmed',

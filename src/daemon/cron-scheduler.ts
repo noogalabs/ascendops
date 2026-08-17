@@ -7,6 +7,12 @@
  *
  * CATCH-UP POLICY
  * ---------------
+ * Catch-up fires are MARKED (`caughtUp`), because a caught-up fire and a
+ * genuinely-due fire are otherwise indistinguishable in Last Fire - the reporting
+ * half of the same invisibility. Catch-up pacing is intentionally not implemented:
+ * the 30-second scheduler tick needs an explicit performance budget before overdue
+ * work can be spread without creating unbounded restart delay.
+ *
  * If the daemon was stopped and a cron's computed nextFireAt is in the past
  * on start(), we fire ONCE for the most recent missed window, then advance
  * nextFireAt to the next future slot.  We deliberately do not flood-fire all
@@ -29,7 +35,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { parseDurationMs, readCronState } from '../bus/cron-state.js';
 import { readCronsWithStatus, updateCron } from '../bus/crons.js';
-import type { CronDefinition } from '../types/index.js';
+import type { CronDefinition, CronFireKind } from '../types/index.js';
 import { appendExecutionLog } from './cron-execution-log.js';
 
 // ---------------------------------------------------------------------------
@@ -138,6 +144,13 @@ interface ScheduledCron {
   changeKey: string;
   /** True while onFire (+ retries) is executing — prevents re-entry on the next tick. */
   firing?: boolean;
+  /**
+   * True when this fire was scheduled by CATCH-UP (daemon was down through the
+   * window) rather than by arriving at its scheduled time. Without this, Last Fire
+   * reports a caught-up fire identically to a due fire, so a post-restart replay
+   * is indistinguishable from normal operation.
+   */
+  caughtUp?: boolean;
 }
 
 function changeKeyFor(c: CronDefinition): string {
@@ -169,21 +182,24 @@ function computeNextFireAt(cron: CronDefinition, referenceMs: number): number {
 
 const RETRY_DELAYS_MS = [1_000, 4_000, 16_000];
 
-async function fireWithRetry(
+export async function fireWithRetry(
   cron: CronDefinition,
+  fireKind: CronFireKind,
+  firedAt: string,
   agentName: string,
-  onFire: (c: CronDefinition) => Promise<void> | void,
+  onFire: (c: CronDefinition, context: CronFireContext) => Promise<void> | void,
   logger: (msg: string) => void,
 ): Promise<boolean> {
   const maxAttempts = RETRY_DELAYS_MS.length + 1; // 4 attempts total
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const start = Date.now();
     try {
-      await Promise.resolve(onFire(cron));
+      await Promise.resolve(onFire(cron, { fireKind, firedAt }));
       appendExecutionLog(agentName, {
         ts: new Date().toISOString(),
         cron: cron.name,
         status: 'fired',
+        fire_kind: fireKind,
         attempt: attempt + 1,
         duration_ms: Date.now() - start,
         error: null,
@@ -202,6 +218,7 @@ async function fireWithRetry(
           ts: new Date().toISOString(),
           cron: cron.name,
           status: 'retried',
+          fire_kind: fireKind,
           attempt: attempt + 1,
           duration_ms,
           error: errMsg,
@@ -216,6 +233,7 @@ async function fireWithRetry(
           ts: new Date().toISOString(),
           cron: cron.name,
           status: 'failed',
+          fire_kind: fireKind,
           attempt: attempt + 1,
           duration_ms,
           error: errMsg,
@@ -236,13 +254,26 @@ function sleep(ms: number): Promise<void> {
 
 export interface CronSchedulerOptions {
   agentName: string;
-  onFire: (cron: CronDefinition) => Promise<void> | void;
+  onFire: (cron: CronDefinition, context: CronFireContext) => Promise<void> | void;
+  /**
+   * Optional per-tick hook, invoked before the due-cron scan on every tick.
+   * Used to sweep outstanding side-run outcome slots without adding a timer.
+   * Errors are caught and logged: a failing hook must never stop fires.
+   */
+  onTick?: (nowMs: number) => Promise<void> | void;
   logger?: (msg: string) => void;
+}
+
+export interface CronFireContext {
+  fireKind: CronFireKind;
+  /** Stable identity for one scheduler admission, reused across every retry. */
+  firedAt: string;
 }
 
 export class CronScheduler {
   private readonly agentName: string;
-  private readonly onFire: (cron: CronDefinition) => Promise<void> | void;
+  private readonly onFire: CronSchedulerOptions['onFire'];
+  private readonly onTick: CronSchedulerOptions['onTick'];
   private readonly logger: (msg: string) => void;
 
   /** In-memory schedule, keyed by cron name. */
@@ -270,6 +301,7 @@ export class CronScheduler {
   constructor(opts: CronSchedulerOptions) {
     this.agentName = opts.agentName;
     this.onFire    = opts.onFire;
+    this.onTick    = opts.onTick;
     this.logger    = opts.logger ?? ((msg: string) => process.stdout.write(msg + '\n'));
   }
 
@@ -325,6 +357,21 @@ export class CronScheduler {
     }));
   }
 
+  /**
+   * The live definition for a scheduled cron, or null if it is not scheduled.
+   *
+   * Added for the side-run fallback path, which must inject exactly the prompt
+   * that would have fired. That path previously reached for a `definition`
+   * field on getNextFireTimes() output, which does not have one — so it silently
+   * resolved to null and would have injected nothing while logging the fallback
+   * as handled. A fallback that reports success and skips the check is precisely
+   * what the side-run design exists to prevent, so the lookup gets a real
+   * accessor rather than an optional-chained guess.
+   */
+  getCronDefinition(name: string): CronDefinition | null {
+    return this.scheduled.get(name)?.definition ?? null;
+  }
+
   // -------------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------------
@@ -333,7 +380,6 @@ export class CronScheduler {
     const now = Date.now();
     const { crons: defs, corrupt } = readCronsWithStatus(this.agentName);
     const nextScheduled = new Map<string, ScheduledCron>();
-
     // Read cron-state.json so catch-up sees fires recorded by `bus update-cron-fire`
     // (e.g. agent heartbeat skills). Without this, a cron that pre-dates the
     // external-cron migration shows last_fire only in cron-state.json — the
@@ -408,14 +454,16 @@ export class CronScheduler {
       // CATCH-UP POLICY: if nextFireAt is in the past (daemon was stopped),
       // fire once immediately for the missed window, then recompute from now.
       // We do NOT flood-fire all missed windows — one catch-up is sufficient.
+      let caughtUp = false;
       if (nextFireAt <= now) {
         this.logger(
-          `[cron-scheduler] catch-up: cron "${def.name}" missed fire at ${new Date(nextFireAt).toISOString()} — scheduling immediate fire`
+          `[cron-scheduler] catch-up: cron "${def.name}" missed fire at ${new Date(nextFireAt).toISOString()} — scheduling one immediate catch-up`
         );
-        nextFireAt = now; // fire on the very next tick
+        nextFireAt = now;
+        caughtUp = true;
       }
 
-      nextScheduled.set(def.name, { definition: def, nextFireAt, changeKey: key });
+      nextScheduled.set(def.name, { definition: def, nextFireAt, changeKey: key, caughtUp });
     }
 
     // LAST-GOOD-SCHEDULE FALLBACK (corruption-only)
@@ -488,6 +536,27 @@ export class CronScheduler {
   private async tick(): Promise<void> {
     const now = Date.now();
 
+    // Per-tick hook, currently used to sweep outstanding cron side-runs.
+    //
+    // It rides this existing loop deliberately: a side-run's outcome has to be
+    // re-checked on a timer rather than awaited inside onFire, because blocking
+    // a fire slot on a chore that exists to be cheap inverts the point and would
+    // let one slow side-run delay unrelated fires. Reusing this tick means the
+    // re-check needs no new timer and no state beyond the slot file itself.
+    //
+    // Isolated from the fire loop: a throwing hook must never stop crons from
+    // firing, which would turn a sweep bug into silently skipped checks.
+    if (this.onTick) {
+      try {
+        await this.onTick(now);
+      } catch (err) {
+        this.logger(
+          `[cron-scheduler] onTick hook failed (non-fatal, fires continue) — ` +
+          `${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
     for (const [name, sc] of this.scheduled) {
       if (sc.nextFireAt > now) {
         continue; // not yet due
@@ -509,14 +578,19 @@ export class CronScheduler {
 
       const cron = refreshed;
       sc.definition = cron;
-      this.logger(`[cron-scheduler] firing cron "${name}" (was due ${new Date(sc.nextFireAt).toISOString()})`);
+      const wasCaughtUp = sc.caughtUp === true;
+      const fireKind: CronFireKind = wasCaughtUp ? 'catch_up' : 'scheduled';
+      const fireKindSuffix = wasCaughtUp ? ' [catch-up]' : '';
+      this.logger(`[cron-scheduler] firing cron "${name}"${fireKindSuffix} (was due ${new Date(sc.nextFireAt).toISOString()})`);
+      sc.caughtUp = false;
 
       // Persist last_fire_attempted_at to disk BEFORE awaiting the dispatch.
       // If the daemon crashes between this point and the post-success
       // updateCron below, loadCrons() on restart will see this attempt
       // timestamp in the referenceMs candidates and avoid re-firing the
       // same slot via the catch-up gate. (See iter 10/11 audit.)
-      const attemptIso = new Date(now).toISOString();
+      const admissionMs = Date.now();
+      const attemptIso = new Date(admissionMs).toISOString();
       try {
         updateCron(this.agentName, name, { last_fire_attempted_at: attemptIso });
         sc.definition = { ...cron, last_fire_attempted_at: attemptIso };
@@ -528,18 +602,17 @@ export class CronScheduler {
         );
       }
 
-      const success = await fireWithRetry(cron, this.agentName, this.onFire, this.logger);
+      const success = await fireWithRetry(cron, fireKind, attemptIso, this.agentName, this.onFire, this.logger);
 
       if (success) {
         // Persist last_fired_at + fire_count to disk.
         // updateCron writes through atomicWriteSync and can throw ENOSPC or
         // EACCES (disk full / read-only filesystem).  These errors must not
         // crash the tick loop — we log and keep the in-memory schedule intact.
-        const nowIso = new Date(now).toISOString();
         const newFireCount = (cron.fire_count ?? 0) + 1;
         try {
           updateCron(this.agentName, name, {
-            last_fired_at: nowIso,
+            last_fired_at: attemptIso,
             fire_count: newFireCount,
           });
         } catch (err) {
@@ -551,10 +624,10 @@ export class CronScheduler {
         }
 
         // Advance in-memory nextFireAt
-        const next = computeNextFireAt(cron, now);
+        const next = computeNextFireAt(cron, admissionMs);
         if (!isNaN(next)) {
           sc.nextFireAt = next;
-          sc.definition = { ...cron, last_fired_at: nowIso, fire_count: newFireCount };
+          sc.definition = { ...cron, last_fired_at: attemptIso, fire_count: newFireCount };
         } else {
           // Unrecognised schedule after fire — remove from schedule to avoid infinite loops
           this.scheduled.delete(name);
@@ -566,7 +639,7 @@ export class CronScheduler {
         // we don't re-fire the same scheduled slot on every subsequent tick —
         // that produced a busy-loop when an agent was unreachable. Treat the
         // failed window as a missed slot and schedule the next normal fire.
-        const next = computeNextFireAt(cron, now);
+        const next = computeNextFireAt(cron, admissionMs);
         if (!isNaN(next)) {
           sc.nextFireAt = next;
           this.logger(

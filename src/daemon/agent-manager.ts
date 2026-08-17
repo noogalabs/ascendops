@@ -1,16 +1,16 @@
 import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
 import { join, relative } from 'path';
 import type { AgentConfig, AgentStatus, CtxEnv, BusPaths, WorkerStatus, TelegramMessage, TeamMember } from '../types/index.js';
-import { AgentProcess } from './agent-process.js';
+import { AgentProcess, type AgentInjectionOptions, type AgentInjectionResult } from './agent-process.js';
 import { WorkerProcess } from './worker-process.js';
 import { FastChecker } from './fast-checker.js';
 import { SlackSocketListener } from './slack-socket-listener.js';
 import { resolveSlackInboundMode } from './slack-inbound-mode.js';
-import { CronScheduler } from './cron-scheduler.js';
+import { CronScheduler, type CronFireContext } from './cron-scheduler.js';
 import { syncCronsForAgent } from './cron-migration.js';
 import { appendExecutionLog } from './cron-execution-log.js';
 import { CronNoopDetector } from './cron-noop-detector.js';
-import type { CronDefinition } from '../types/index.js';
+import type { CronDefinition, CronFireKind } from '../types/index.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { TelegramPoller } from '../telegram/poller.js';
 import { resolvePaths } from '../utils/paths.js';
@@ -25,9 +25,28 @@ import { evaluateShift } from './shift.js';
 import { stripBom } from '../utils/strip-bom.js';
 import { normalizeAllowedUser } from './allowed-user.js';
 import { confirmSupportAccessOnFirstContact } from '../cli/support-access-notify.js';
+import {
+  discoverSourceAgentCandidates,
+  isAgentStartCandidate,
+  loadSourceAgentConfig,
+} from './agent-discovery.js';
+import { resolveCodexCronRouting } from './cron-model-routing.js';
+import { resolveSideRunRouting, resolveSideRunResolution, buildEscalationInjection, type ELIGIBLE } from './cron-side-run.js';
+import {
+  writePendingSlot,
+  startSideRun,
+  sweepSideRuns,
+  clearSlot,
+  type SideRunPending,
+} from './cron-side-run-runner.js';
 
 type LogFn = (msg: string) => void;
 type AgentStartOptions = { partOfFleetStart?: boolean };
+type PendingRestartCause = 'post-crash' | 'in-flight-duplicate';
+type PendingRestartEntry = {
+  cause: PendingRestartCause;
+  queuedAt: number;
+};
 type AgentRestartOptions = {
   partOfFleetStart?: boolean;
   fleetTotal?: number;
@@ -44,6 +63,32 @@ type FleetStartBatch = {
 /**
  * Manages all agents in a cortextOS instance.
  */
+
+/**
+ * Does this cron declare an emergency class the agent has agreed to wake for?
+ *
+ * Exported so the no-reader-regression test can assert this function is what
+ * consumes `off_shift_can_wake_for` — the field spent an unknown period declared
+ * and unread, and the test exists so that can never silently recur.
+ *
+ * Matching is exact and case-insensitive on trimmed strings. Deliberately NOT
+ * fuzzy: a near-miss must fail closed and suppress, because a cron that thinks
+ * it is exempt and is not is worse than one that knows it is suppressed.
+ */
+export function cronWakesForEmergencyClass(
+  cron: Pick<CronDefinition, 'emergency_class'>,
+  agentConfig: Pick<AgentConfig, 'shift_schedule'>,
+): boolean {
+  const cls = cron.emergency_class;
+  if (typeof cls !== 'string' || cls.trim() === '') return false;
+
+  const allowed = agentConfig.shift_schedule?.emergency_override?.off_shift_can_wake_for;
+  if (!Array.isArray(allowed) || allowed.length === 0) return false;
+
+  const want = cls.trim().toLowerCase();
+  return allowed.some((a) => typeof a === 'string' && a.trim().toLowerCase() === want);
+}
+
 export class AgentManager {
   private agents: Map<string, { process: AgentProcess; checker: FastChecker; poller?: TelegramPoller; activityPoller?: TelegramPoller; slackListener?: SlackSocketListener; telegramRejectCount?: number; telegramLastRejectAlertAt?: number }> = new Map();
   private workers: Map<string, WorkerProcess> = new Map();
@@ -51,9 +96,27 @@ export class AgentManager {
   private cronSchedulers: Map<string, CronScheduler> = new Map();
   /** Post-fire verifier that confirms Claude cron prompts reached the REPL transcript. */
   private cronNoopDetector: CronNoopDetector;
+  /**
+   * Side-run eligibility registry. Undefined in production, where
+   * resolveSideRunRouting falls back to the shipped ELIGIBLE list.
+   *
+   * Exists ONLY so the admission path can be driven by a test. The shipped
+   * heartbeat rows pin the live agent skill file, which is symlinked runtime and
+   * absent from the repo, so no CI-runnable test could reach the accept path
+   * through here — which meant the copy of plan.continuationPrompt into the
+   * pending slot had no coverage at all, and a mutation dropping it stayed green.
+   *
+   * Same seam, and the same reason, as ResolveSideRunInput.registry one layer
+   * down: a gate whose accept path cannot be exercised is indistinguishable from
+   * one that never opens.
+   */
+  private sideRunRegistry?: typeof ELIGIBLE;
   // Tracks agents that received a start request while still stopping.
   // stopAgent() honors these after cleanup completes so restart-all is race-free.
-  private pendingRestarts: Set<string> = new Set();
+  private pendingRestarts: Map<string, PendingRestartEntry> = new Map();
+  private inFlightRestarts: Set<string> = new Set();
+  /** Names whose stale registry entries are being torn down before a fresh start. */
+  private evictingAgents: Set<string> = new Set();
   private instanceId: string;
   private ctxRoot: string;
   private frameworkRoot: string;
@@ -110,6 +173,57 @@ export class AgentManager {
     });
   }
 
+  private async handleAgentCronFire(
+    agentName: string,
+    cron: CronDefinition,
+    context: CronFireContext,
+  ): Promise<void> {
+    const prompt = cron.prompt ?? `[cron] ${cron.name} fired`;
+
+    // Shift gate (RFC your org internal docs §4).
+    const suppression = this.evaluateCronShiftSuppression(agentName, cron);
+    if (suppression) {
+      console.log(`[daemon] cron suppressed off-shift for ${agentName}: ${cron.name} (mode=${suppression.mode})`);
+      try {
+        const resolvedOrg = this.resolveAgentOrg(agentName);
+        const paths = resolvePaths(agentName, this.instanceId, resolvedOrg);
+        logEvent(paths, agentName, resolvedOrg || '', 'action', 'cron_suppressed_off_shift', 'info', {
+          agent: agentName,
+          cron: cron.name,
+          mode: suppression.mode,
+          path: 'daemon_cron_fire',
+        });
+      } catch (err) {
+        console.log(`[daemon] logEvent failed for cron-suppressed (non-fatal): ${err}`);
+      }
+      return;
+    }
+
+    const firedAt = context.firedAt;
+    const injection = `[CRON FIRED ${firedAt}] ${cron.name}: ${prompt}`;
+    const injected = this.injectCronAgent(agentName, cron, injection, firedAt);
+    if (!injected) {
+      throw new Error(`injectAgent returned false for agent "${agentName}" — agent may not be running`);
+    }
+    try {
+      const entry = this.agents.get(agentName);
+      const config = entry?.process.getConfig();
+      if (entry && config) {
+        this.cronNoopDetector.registerFire({
+          agentName,
+          agentDir: entry.process.getAgentDir(),
+          config,
+          cronName: cron.name,
+          prompt,
+          firedAt,
+          fireKind: context.fireKind,
+        });
+      }
+    } catch (err) {
+      console.log(`[cron-noop-detector] register failed for ${agentName}/${cron.name} (non-fatal): ${err}`);
+    }
+  }
+
   /**
    * Scan state/<agent>/.daemon-crashed markers (written by daemon/index.ts:handleFatal).
    * Presence means the previous daemon process died via uncaughtException
@@ -125,6 +239,42 @@ export class AgentManager {
       return dirs.some(name => existsSync(join(stateBase, name, '.daemon-crashed')));
     } catch {
       return false;
+    }
+  }
+
+  private pendingRestartCause(): PendingRestartCause {
+    return this.daemonJustCrashed ? 'post-crash' : 'in-flight-duplicate';
+  }
+
+  private emitPendingRestartEvent(
+    name: string,
+    event: 'pending_restart_enqueued' | 'pending_restart_consumed' | 'pending_restart_cause_disagreement',
+    phase: 'enqueue' | 'consume',
+    entry: PendingRestartEntry,
+    consumeDerivedCause: PendingRestartCause,
+  ): void {
+    const elapsedMs = Math.max(0, Date.now() - entry.queuedAt);
+    try {
+      const resolvedOrg = this.resolveAgentOrg(name);
+      const paths = resolvePaths(name, this.instanceId, resolvedOrg);
+      logEvent(
+        paths,
+        name,
+        resolvedOrg || '',
+        'action',
+        event,
+        event === 'pending_restart_cause_disagreement' ? 'warning' : 'info',
+        {
+          agent: name,
+          phase,
+          recorded_cause: entry.cause,
+          consume_derived_cause: consumeDerivedCause,
+          queued_at: entry.queuedAt,
+          elapsed_ms: elapsedMs,
+        },
+      );
+    } catch (err) {
+      console.warn(`[agent-manager] Failed to emit ${event} for ${name} (non-fatal): ${err}`);
     }
   }
 
@@ -181,15 +331,14 @@ export class AgentManager {
     // single up-front snapshot would let a just-disabled agent still start
     // (and a just-enabled agent stay dark) until the next daemon restart.
     for (const { name, dir, org, config } of agentDirs) {
-      // Per-agent config.json `enabled: false` (existing behavior, unchanged)
-      if (config.enabled === false) {
-        console.log(`[agent-manager] Skipping disabled agent: ${name} (per-agent config.json)`);
-        continue;
-      }
       const instanceEnabled = this.readInstanceEnableList();
       const entry = instanceEnabled[name];
-      if (entry && entry.enabled === false) {
-        console.log(`[agent-manager] Skipping disabled agent: ${name} (enabled-agents.json)`);
+      if (!isAgentStartCandidate(config, entry)) {
+        if (config.enabled === false) {
+          console.log(`[agent-manager] Skipping disabled agent: ${name} (per-agent config.json)`);
+        } else {
+          console.log(`[agent-manager] Skipping disabled agent: ${name} (enabled-agents.json)`);
+        }
         continue;
       }
       startCandidates.push({ name, dir, org, config });
@@ -234,6 +383,34 @@ export class AgentManager {
       notifyHandle: null,
       source,
     };
+  }
+
+  /**
+   * Account for a fleet-restart member that the IPC gate REFUSED (e.g. DEDUPED because
+   * a manual restart of that agent is already in flight).
+   *
+   * Without this, a refused member is never recorded: `restartAgent` is never called for
+   * it, so `finishFleetStartBatch` strands at completed < expected and the stale
+   * coordinator then suppresses the NEXT fleet batch via the already-active guard in
+   * `beginFleetStartBatch`. Found in review of PR #183.
+   *
+   * Deliberately does NOT touch `inFlightRestarts` — the agent really is mid-restart and
+   * its marker must survive — and does NOT dispatch, which is the whole point of the refusal.
+   */
+  recordFleetStartRejection(name: string, fleetTotal?: number): void {
+    if (!this.fleetStartBatch) {
+      // Without a real fleetTotal we cannot size a batch. Defaulting to 1 would create a
+      // bogus single-member batch, immediately satisfy it, clear it, and then let the
+      // FIRST GENUINE member open a second batch that strands one short — turning a
+      // missing total into silent corruption. Refuse to guess; log instead.
+      if (!fleetTotal || fleetTotal <= 0) {
+        console.warn(`[agent-manager] refused fleet member ${name} not accounted: no active batch and no fleetTotal`);
+        return;
+      }
+      this.beginFleetStartBatch(fleetTotal, 'restart-all');
+    }
+    this.recordFleetStartAgent(name);
+    this.finishFleetStartBatch();
   }
 
   private captureFleetNotifyHandle(api: TelegramAPI, chatId: string): void {
@@ -454,10 +631,13 @@ export class AgentManager {
   inspectAgentOp(op: 'start' | 'stop' | 'restart', name: string): { ok: true } | { ok: false; code: 'DEDUPED' | 'NOT_FOUND'; message: string } {
     const inRegistry = this.agents.has(name);
     if (op === 'start') {
-      if (inRegistry) {
+      if (inRegistry && this.isAgentActuallyAlive(name)) {
         return { ok: false, code: 'DEDUPED', message: `start request for "${name}" deduped — agent already in registry (in-flight start or already running)` };
       }
       return { ok: true };
+    }
+    if (op === 'restart' && this.inFlightRestarts.has(name)) {
+      return { ok: false, code: 'DEDUPED', message: `restart request for "${name}" deduped — restart already in flight` };
     }
     // stop / restart need the agent to be present
     if (!inRegistry) {
@@ -466,8 +646,31 @@ export class AgentManager {
     return { ok: true };
   }
 
+  /** Registry membership is not liveness: AgentProcess reconciles its status with the OS pid. */
+  private isAgentActuallyAlive(name: string): boolean {
+    const entry = this.agents.get(name);
+    if (!entry) return false;
+    // Be conservative if a test double or future transitional entry cannot
+    // report status: unknown custody must never be evicted as dead.
+    if (typeof entry.process.getStatus !== 'function') return true;
+    const { status } = entry.process.getStatus();
+    return status === 'starting' || status === 'running';
+  }
+
   async startAgent(name: string, agentDir: string, config?: AgentConfig, org?: string, options: AgentStartOptions = {}): Promise<void> {
     if (this.agents.has(name)) {
+      const mapped = this.agents.get(name)!;
+      const mappedStatus = typeof mapped.process.getStatus === 'function'
+        ? mapped.process.getStatus().status
+        : undefined;
+      // A delayed start is already the canonical registered admission. A
+      // duplicate start must collapse completely, not leave a latent queued
+      // restart that can fire during a later lifecycle operation.
+      if (mappedStatus === 'starting') {
+        console.log(`[agent-manager] ${name} start already in flight — deduping without queued restart.`);
+        return;
+      }
+
       // BUG-031: this branch was the workaround for the BUG-011 PTY race
       // (restart-all could send stop+start simultaneously, and the new
       // start would arrive while the old stop's PTY exit was still in
@@ -481,20 +684,62 @@ export class AgentManager {
       // the core stability test plan + cycle 2 of PR #13 both confirmed
       // this branch is dormant. Once we have weeks of zero-warning
       // production data, we can delete the queue mechanism entirely.
-      if (this.daemonJustCrashed) {
-        // Post-crash startup. The previous daemon exited via
-        // uncaughtException without running stopAll(), so the in-memory
-        // registry from the prior process is gone — but the post-crash
-        // discoverAndStart pass can briefly re-enter startAgent for an
-        // agent whose pendingRestarts entry survived. This is benign and
-        // distinct from the BUG-011 in-flight race PR #11 closed. Log at
-        // info level so operators don't think PR #11 has regressed.
-        console.log(`[agent-manager] ${name} already in registry (post-crash discovery overlap, expected). Queueing restart.`);
-      } else {
-        console.warn(`[agent-manager] BUG-011 REGRESSION CHECK: ${name} still in registry during startAgent — pendingRestarts queueing engaged. This should not happen with PR #11 protections active.`);
+      if (this.isAgentActuallyAlive(name)) {
+        if (this.daemonJustCrashed) {
+          console.log(`[agent-manager] ${name} already in registry (post-crash discovery overlap, expected). Queueing restart.`);
+        } else {
+          console.warn(`[agent-manager] BUG-011 REGRESSION CHECK: ${name} still in registry during startAgent — pendingRestarts queueing engaged. This should not happen with PR #11 in place.`);
+        }
+        const consumeDerivedCause = this.pendingRestartCause();
+        const entry = this.pendingRestarts.get(name) ?? {
+          cause: consumeDerivedCause,
+          queuedAt: Date.now(),
+        };
+        this.pendingRestarts.set(name, entry);
+        this.emitPendingRestartEvent(
+          name,
+          'pending_restart_enqueued',
+          'enqueue',
+          entry,
+          consumeDerivedCause,
+        );
+        if (entry.cause !== consumeDerivedCause) {
+          this.emitPendingRestartEvent(
+            name,
+            'pending_restart_cause_disagreement',
+            'enqueue',
+            entry,
+            consumeDerivedCause,
+          );
+        }
+        return;
       }
-      this.pendingRestarts.add(name);
-      return;
+
+      if (this.evictingAgents.has(name)) {
+        console.log(`[agent-manager] ${name} stale-entry eviction already in flight — skipping duplicate start.`);
+        return;
+      }
+
+      this.evictingAgents.add(name);
+      try {
+        const stale = this.agents.get(name)!;
+        console.log(`[agent-manager] ${name} is mapped but not alive — evicting stale entry before restart.`);
+        try { stale.poller?.stop(); } catch { /* best effort */ }
+        try { stale.activityPoller?.stop(); } catch { /* best effort */ }
+        try { stale.slackListener?.stop(); } catch { /* best effort */ }
+        this.cronNoopDetector.cancelAgentVerifications(name);
+        try { stale.checker.stop(); } catch { /* best effort */ }
+        try { await stale.process.stop(); } catch { /* best effort */ }
+        if (this.agents.get(name) === stale) this.agents.delete(name);
+        this.pendingRestarts.delete(name);
+        const scheduler = this.cronSchedulers.get(name);
+        if (scheduler) {
+          scheduler.stop();
+          this.cronSchedulers.delete(name);
+        }
+      } finally {
+        this.evictingAgents.delete(name);
+      }
     }
 
     // BUG-043 fix: resolve the agent's true org instead of using `this.org`.
@@ -512,7 +757,7 @@ export class AgentManager {
     }
 
     if (!config) {
-      config = this.loadAgentConfig(agentDir);
+      config = loadSourceAgentConfig(agentDir);
     }
 
     const env: CtxEnv = {
@@ -1258,7 +1503,7 @@ export class AgentManager {
   /**
    * Stop a specific agent.
    */
-  async stopAgent(name: string): Promise<void> {
+  async stopAgent(name: string, userInitiated = false): Promise<void> {
     const entry = this.agents.get(name);
     if (!entry) {
       console.log(`[agent-manager] Agent ${name} not found`);
@@ -1280,12 +1525,37 @@ export class AgentManager {
       this.cronSchedulers.delete(name);
     }
 
+    if (userInitiated) {
+      if (this.pendingRestarts.delete(name)) {
+        console.log(`[agent-manager] Dropped queued restart for ${name} — explicit user stop/disable wins.`);
+      }
+      return;
+    }
+
     // BUG-031: honor any restart that was queued while we were stopping.
     // After PR #11 (BUG-011 fix) this branch should never fire — see the
     // matching warning comment in startAgent(). The honor logic is preserved
     // as a safety net in case BUG-011 regresses; the warn line tells us
     // immediately if it ever does.
-    if (this.pendingRestarts.has(name)) {
+    const pendingRestart = this.pendingRestarts.get(name);
+    if (pendingRestart) {
+      const consumeDerivedCause = this.pendingRestartCause();
+      this.emitPendingRestartEvent(
+        name,
+        'pending_restart_consumed',
+        'consume',
+        pendingRestart,
+        consumeDerivedCause,
+      );
+      if (pendingRestart.cause !== consumeDerivedCause) {
+        this.emitPendingRestartEvent(
+          name,
+          'pending_restart_cause_disagreement',
+          'consume',
+          pendingRestart,
+          consumeDerivedCause,
+        );
+      }
       if (this.daemonJustCrashed) {
         console.log(`[agent-manager] pendingRestarts fired for ${name} (post-crash safety net, expected). Honoring queued restart.`);
       } else {
@@ -1311,30 +1581,35 @@ export class AgentManager {
    * Participates in the pendingRestarts race protection used by restart-all.
    */
   async restartAgent(name: string, options: AgentRestartOptions = {}): Promise<void> {
-    if (options.partOfFleetStart && !this.fleetStartBatch) {
-      // `soft-restart-all` restarts child agent sessions only. The daemon and
-      // this AgentManager instance are not part of that restart set, so this
-      // in-memory coordinator persists until every requested child settles.
-      this.beginFleetStartBatch(options.fleetTotal ?? 1, 'restart-all');
-    }
-    if (!this.agents.has(name)) {
-      console.log(`[agent-manager] Agent ${name} not found — cannot restart`);
-      if (options.partOfFleetStart) {
-        this.recordFleetStartAgent(name);
-        this.finishFleetStartBatch();
-      }
-      return;
-    }
-    console.log(`[agent-manager] Restarting ${name}`);
+    this.inFlightRestarts.add(name);
     try {
-      await this.stopAgent(name);
-      await this.startAgent(name, '', undefined, undefined, { partOfFleetStart: options.partOfFleetStart });
-      console.log(`[agent-manager] Restart complete for ${name}`);
-    } finally {
-      if (options.partOfFleetStart) {
-        this.recordFleetStartAgent(name);
-        this.finishFleetStartBatch();
+      if (options.partOfFleetStart && !this.fleetStartBatch) {
+        // `soft-restart-all` restarts child agent sessions only. The daemon and
+        // this AgentManager instance are not part of that restart set, so this
+        // in-memory coordinator persists until every requested child settles.
+        this.beginFleetStartBatch(options.fleetTotal ?? 1, 'restart-all');
       }
+      if (!this.agents.has(name)) {
+        console.log(`[agent-manager] Agent ${name} not found — cannot restart`);
+        if (options.partOfFleetStart) {
+          this.recordFleetStartAgent(name);
+          this.finishFleetStartBatch();
+        }
+        return;
+      }
+      console.log(`[agent-manager] Restarting ${name}`);
+      try {
+        await this.stopAgent(name);
+        await this.startAgent(name, '', undefined, undefined, { partOfFleetStart: options.partOfFleetStart });
+        console.log(`[agent-manager] Restart complete for ${name}`);
+      } finally {
+        if (options.partOfFleetStart) {
+          this.recordFleetStartAgent(name);
+          this.finishFleetStartBatch();
+        }
+      }
+    } finally {
+      this.inFlightRestarts.delete(name);
     }
   }
 
@@ -1502,16 +1777,259 @@ export class AgentManager {
    * Inject text into an agent's PTY with structured outcome — issue #346.
    *
    * Returns NOT_FOUND if the agent isn't in the registry, NOT_RUNNING if
-   * registered but the PTY is gone, DEDUPED on a MessageDedup hash hit. The
+   * registered but the PTY is gone, DEDUPED on a MessageDedup hash hit, and
+   * ADMISSION_FAILED if the runtime could not durably take custody. The
    * boolean-returning `injectAgent()` is preserved for callers (cron
    * scheduler, fast-checker, fire-cron) that only need pass/fail.
    */
-  injectAgentDetailed(agentName: string, text: string): { ok: true } | { ok: false; code: 'NOT_FOUND' | 'NOT_RUNNING' | 'DEDUPED'; message: string } {
+  injectAgentDetailed(
+    agentName: string,
+    text: string,
+    options?: AgentInjectionOptions,
+  ): AgentInjectionResult | { ok: false; code: 'NOT_FOUND'; message: string } {
     const entry = this.agents.get(agentName);
     if (!entry) {
       return { ok: false, code: 'NOT_FOUND', message: `agent "${agentName}" not in registry` };
     }
-    return entry.process.injectMessageDetailed(text);
+    return entry.process.injectMessageDetailed(text, options);
+  }
+
+  /**
+   * Telemetry for the side-run path. Every event carries the cron and the fire
+   * it belongs to; fallback events additionally carry a REASON.
+   *
+   * Six distinct fallback reasons are only worth having if they reach a log
+   * someone can count — an invisible fallback means routing looks successful
+   * while quietly doing nothing, which is the failure this path must not create.
+   */
+  private logSideRunEvent(agentName: string, event: string, meta: Record<string, unknown>): void {
+    try {
+      const org = this.resolveAgentOrg(agentName);
+      const paths = resolvePaths(agentName, this.instanceId, org);
+      logEvent(paths, agentName, org || '', 'action', event, 'info', { agent: agentName, ...meta });
+    } catch (err) {
+      console.log(`[daemon] side-run telemetry failed for ${agentName} (non-fatal): ${err}`);
+    }
+  }
+
+  /**
+   * Re-check outstanding side-run outcome slots. Called from the cron
+   * scheduler's existing tick, never awaited inside a fire.
+   *
+   * Every terminal verdict clears its slot, so a slot can only produce one
+   * action: the escalation path is idempotent because a redelivery finds
+   * nothing left to act on.
+   */
+  private sweepSideRunsForAgent(agentName: string, nowMs: number): void {
+    let stateDir: string;
+    try {
+      const org = this.resolveAgentOrg(agentName);
+      stateDir = resolvePaths(agentName, this.instanceId, org).stateDir;
+    } catch {
+      return;
+    }
+
+    for (const action of sweepSideRuns(stateDir, nowMs)) {
+      const { admissionId, cronName, verdict, continuationPrompt } = action;
+      try {
+        if (verdict.action === 'done') {
+          this.logSideRunEvent(agentName, 'cron_side_run_clean', {
+            cron: cronName, fired_at: admissionId,
+          });
+        } else if (verdict.action === 'escalate') {
+          // Judgment belongs to the main session. The side-run only decided
+          // that judgment is required.
+          //
+          // For a handoff-shaped cron the summary alone is not enough: it says
+          // what was collected, never what the session still owes. The directive
+          // travels in the slot from admission, so it is delivered here rather
+          // than reconstructed.
+          this.injectAgent(agentName, buildEscalationInjection({
+            cronName, summary: verdict.summary, continuationPrompt,
+          }));
+          this.logSideRunEvent(agentName, 'cron_side_run_escalated', {
+            cron: cronName, fired_at: admissionId,
+          });
+        } else {
+          // Fall back to exactly what would have happened without side-runs.
+          const cronDef = this.findCronDefinition(agentName, cronName);
+          if (cronDef?.prompt) this.injectAgent(agentName, cronDef.prompt);
+          this.logSideRunEvent(agentName, 'cron_side_run_fallback', {
+            cron: cronName,
+            fired_at: admissionId,
+            reason: verdict.reason,
+            injected: Boolean(cronDef?.prompt),
+          });
+        }
+      } finally {
+        // Cleared even if the injection threw: a slot left behind would be
+        // re-actioned on the next tick, turning one missed fire into a loop.
+        clearSlot(stateDir, admissionId);
+      }
+    }
+  }
+
+  /**
+   * Look up a cron definition for the fallback injection.
+   *
+   * Uses the scheduler's real accessor. The first version of this reached for a
+   * `definition` field on getNextFireTimes() output, which returns only
+   * { name, nextFireAt } — so it always resolved to null and the fallback would
+   * have injected nothing while logging itself as handled. The optional chain
+   * turned a wrong lookup into a silent empty answer, which is the same shape as
+   * every other absence bug this codebase has hit.
+   */
+  private findCronDefinition(agentName: string, cronName: string): CronDefinition | null {
+    try {
+      return this.cronSchedulers.get(agentName)?.getCronDefinition(cronName) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Inject a daemon-owned cron fire with structured Codex routing metadata.
+   * Prompt text is never parsed by the PTY as routing authority.
+   */
+  injectCronAgent(
+    agentName: string,
+    cron: Pick<CronDefinition, 'name' | 'prompt'>,
+    text: string,
+    firedAt = new Date().toISOString(),
+  ): boolean {
+    const entry = this.agents.get(agentName);
+    if (!entry) return false;
+    const config = entry.process.getConfig();
+
+    // Claude-side cheap-model side-run. Mutually exclusive with the codex route
+    // below (that requires runtime codex-app-server, this requires claude-code).
+    //
+    // Returning true here means ADMITTED, not COMPLETE: the chore runs headless
+    // and the scheduler's tick sweep decides what its outcome means. A side-run
+    // that never answers falls back to normal injection at its deadline, so this
+    // branch cannot silently skip a check.
+    // Resolve the agent directory defensively. This whole branch sits IN FRONT OF
+    // the ordinary cron path, so anything it can throw becomes a cron fire that
+    // never happens — the exact failure the side-run design exists to prevent,
+    // relocated into its own entry check. An unavailable agent dir means "cannot
+    // verify the pinned instruction file", which means do not route.
+    let sideAgentDir: string | undefined;
+    try {
+      const getDir = (entry.process as { getAgentDir?: () => string }).getAgentDir;
+      sideAgentDir = typeof getDir === 'function' ? getDir.call(entry.process) : undefined;
+    } catch {
+      sideAgentDir = undefined;
+    }
+
+    let sidePlan: ReturnType<typeof resolveSideRunRouting> = null;
+    try {
+      const resolution = resolveSideRunResolution({
+        cron,
+        runtime: config.runtime,
+        admissionId: firedAt,
+        agent: agentName,
+        agentDir: sideAgentDir,
+        registry: this.sideRunRegistry,
+      });
+      sidePlan = resolution.plan;
+      // A decline used to be SILENT. Routing could switch itself off fleet-wide
+      // and the only evidence was the shape of the prompt someone noticed
+      // (2026-08-09). Counted only for CANDIDATES — crons whose name is in the
+      // registry and therefore SHOULD route — so the event means "something that
+      // should have routed did not", never "an ordinary cron ran normally".
+      if (!resolution.plan && resolution.candidate && resolution.reason) {
+        this.logSideRunEvent(agentName, 'cron_side_run_declined', {
+          cron: cron.name,
+          fired_at: firedAt,
+          reason: resolution.reason,
+        });
+      }
+    } catch (err) {
+      console.log(`[daemon] side-run routing check failed for ${agentName}/${cron.name}, using main session: ${err}`);
+      sidePlan = null;
+    }
+    if (sidePlan) {
+      try {
+        const org = this.resolveAgentOrg(agentName);
+        const stateDir = resolvePaths(agentName, this.instanceId, org).stateDir;
+        const pending: SideRunPending = {
+          admissionId: sidePlan.admissionId,
+          cronName: cron.name,
+          agent: agentName,
+          admittedAtMs: Date.parse(firedAt) || Date.now(),
+          deadlineMs: sidePlan.deadlineMs,
+          cronPrompt: cron.prompt ?? text,
+          sideRunPrompt: sidePlan.prompt,
+          continuationPrompt: sidePlan.continuationPrompt,
+        };
+        // Slot first, then spawn. If the spawn dies instantly the slot still
+        // exists and the sweep converts it to a fallback; spawning first would
+        // leave a fire with no record that it was ever admitted.
+        writePendingSlot(stateDir, pending);
+        startSideRun(stateDir, sideAgentDir ?? this.frameworkRoot, sidePlan, pending);
+        this.logSideRunEvent(agentName, 'cron_side_run_started', {
+          cron: cron.name,
+          fired_at: firedAt,
+          model: sidePlan.routing.model,
+          prompt_sha256: sidePlan.routing.promptSha256,
+        });
+        // `true` here means ADMITTED, not COMPLETE. The scheduler reads it as
+        // fired, which is correct ONLY because the tick sweep guarantees either a
+        // later injection or a counted fallback for this admission id. If that
+        // guarantee ever breaks, this fire is silently lost.
+        return true;
+      } catch (err) {
+        // Any failure here falls through to normal injection below. The chore
+        // still runs; it just costs what it costs today.
+        console.log(`[daemon] side-run admission failed for ${agentName}/${cron.name}, using main session: ${err}`);
+      }
+    }
+
+    const plan = resolveCodexCronRouting({
+      cron,
+      frameworkRoot: this.frameworkRoot,
+      runtime: config.runtime,
+      configuredModel: config.model,
+    });
+    const dedupIdentity = `daemon-cron:${cron.name}:${firedAt}`;
+    const result = this.injectAgentDetailed(
+      agentName,
+      plan?.preflightPrompt ?? text,
+      plan ? {
+        codexRouting: plan.routing,
+        codexContinuation: plan.continuationPrompt,
+        codexFallback: plan.fallbackPrompt,
+        dedupIdentity,
+      } : undefined,
+    );
+    if (!result.ok) {
+      // A scheduler retry for the same admitted fire is idempotent success:
+      // MessageDedup proves the sequence already crossed admission. Do not
+      // emit a second route-planned event, but let the scheduler close fired.
+      if (result.code === 'DEDUPED' && plan && result.dedupIdentity === dedupIdentity) return true;
+      return false;
+    }
+
+    if (plan) {
+      const { routing } = plan;
+      try {
+        const resolvedOrg = this.resolveAgentOrg(agentName);
+        const paths = resolvePaths(agentName, this.instanceId, resolvedOrg);
+        logEvent(paths, agentName, resolvedOrg || '', 'action', 'cron_model_route_planned', 'info', {
+          agent: agentName,
+          cron: cron.name,
+          fired_at: firedAt,
+          model: routing.model,
+          reason: routing.reason,
+          skill_name: routing.skillName ?? null,
+          requested_model: routing.requestedModel ?? null,
+          requested_effort: routing.effort ?? null,
+        });
+      } catch (err) {
+        console.log(`[daemon] cron model route telemetry failed for ${agentName}/${cron.name} (non-fatal): ${err}`);
+      }
+    }
+    return true;
   }
 
   /**
@@ -1585,65 +2103,15 @@ export class AgentManager {
       return;
     }
 
-    const onFire = async (cron: CronDefinition): Promise<void> => {
-      const prompt = cron.prompt ?? `[cron] ${cron.name} fired`;
-
-      // Shift gate (RFC your org internal docs §4).
-      // When the agent is off-shift, drop the cron fire silently and emit a
-      // cron_suppressed_off_shift event for telemetry. Crons with
-      // wake_on_fire=true bypass this gate (see CronDefinition.wake_on_fire).
-      const suppression = this.evaluateCronShiftSuppression(agentName, cron);
-      if (suppression) {
-        console.log(`[daemon] cron suppressed off-shift for ${agentName}: ${cron.name} (mode=${suppression.mode})`);
-        try {
-          // F4 fix (BUG-043 class): resolve the agent's true org instead of
-          // the daemon's startup org, so suppression events land in the
-          // correct org's event log on multi-org installs.
-          const resolvedOrg = this.resolveAgentOrg(agentName);
-          const paths = resolvePaths(agentName, this.instanceId, resolvedOrg);
-          logEvent(paths, agentName, resolvedOrg || '', 'action', 'cron_suppressed_off_shift', 'info', {
-            agent: agentName,
-            cron: cron.name,
-            mode: suppression.mode,
-            path: 'daemon_cron_fire',
-          });
-        } catch (err) {
-          console.log(`[daemon] logEvent failed for cron-suppressed (non-fatal): ${err}`);
-        }
-        return;
-      }
-
-      // Salt with the fire timestamp so MessageDedup (which hashes the last 100
-      // injects) does not reject identical cron prompts on subsequent fires.
-      // Without the salt, every recurring cron after its first fire would be
-      // dedup-rejected and treated as a dispatch failure.
-      const firedAt = new Date().toISOString();
-      const injection = `[CRON FIRED ${firedAt}] ${cron.name}: ${prompt}`;
-      const injected = this.injectAgent(agentName, injection);
-      if (!injected) {
-        throw new Error(`injectAgent returned false for agent "${agentName}" — agent may not be running`);
-      }
-      try {
-        const entry = this.agents.get(agentName);
-        const config = entry?.process.getConfig();
-        if (entry && config) {
-          this.cronNoopDetector.registerFire({
-            agentName,
-            agentDir: entry.process.getAgentDir(),
-            config,
-            cronName: cron.name,
-            prompt,
-            firedAt,
-          });
-        }
-      } catch (err) {
-        console.log(`[cron-noop-detector] register failed for ${agentName}/${cron.name} (non-fatal): ${err}`);
-      }
-    };
+    const onFire = (cron: CronDefinition, context: CronFireContext) =>
+      this.handleAgentCronFire(agentName, cron, context);
 
     const scheduler = new CronScheduler({
       agentName,
       onFire,
+      // Rides the existing 30s tick so side-run outcomes are re-checked without
+      // a new timer and without blocking a fire slot.
+      onTick: (nowMs) => this.sweepSideRunsForAgent(agentName, nowMs),
       logger: (msg) => console.log(`[daemon] ${msg}`),
     });
 
@@ -1669,11 +2137,26 @@ export class AgentManager {
     agentName: string,
     cron: CronDefinition
   ): { mode: 'no_wake' | 'emergency_only_no_tag' } | null {
+    // Tier 1 — unconditional pierce. Blunt on purpose: fires through every
+    // suppression window, emits no suppression telemetry.
     if (cron.wake_on_fire) return null;
 
     const agentEntry = this.agents.get(agentName);
     const agentConfig = agentEntry?.process['config'] as AgentConfig | undefined;
     if (!agentConfig) return null;
+
+    // Tier 2 — conditional wake by declared emergency CLASS.
+    //
+    // Added 2026-08-10 after the Greenwood/TDL50WP post-mortem. The agent's
+    // `off_shift_can_wake_for` list had been written by a human, read correctly
+    // to a human, and was consulted by NOTHING: an emergency check-back fired at
+    // 02:00:29Z, was suppressed off-shift, and never reached the agent. A flood
+    // would have been suppressed identically.
+    //
+    // A boolean could not express "flood wakes this agent, a routine sweep does
+    // not" — hence a class matched against the agent's own list, which makes the
+    // configuration the author already wrote actually govern behaviour.
+    if (cronWakesForEmergencyClass(cron, agentConfig)) return null;
 
     const tz = agentConfig.timezone || 'America/New_York';
     const ev = evaluateShift(new Date(), agentConfig.shift_schedule, tz);
@@ -1711,88 +2194,7 @@ export class AgentManager {
    * lookups via `resolveAgentOrg()`.
    */
   private discoverAgents(): Array<{ name: string; dir: string; org: string; config: AgentConfig }> {
-    const agents: Array<{ name: string; dir: string; org: string; config: AgentConfig }> = [];
-
-    const orgsBase = join(this.frameworkRoot, 'orgs');
-    if (!existsSync(orgsBase)) return agents;
-
-    let orgNames: string[] = [];
-    try {
-      orgNames = readdirSync(orgsBase, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name);
-    } catch {
-      return agents; // unreadable orgs dir — treat as empty
-    }
-
-    for (const org of orgNames) {
-      const agentsBase = join(orgsBase, org, 'agents');
-      if (!existsSync(agentsBase)) continue;
-
-      try {
-        const dirs = readdirSync(agentsBase, { withFileTypes: true })
-          .filter(d => d.isDirectory())
-          // Skip non-agent reserved dirs: leading `_` (e.g. _shared/ shared-utility)
-          // and leading `.` (hidden / VCS / OS metadata). Treating these as agents
-          // makes the daemon spawn a Claude session with no .env, which then falls
-          // through to operator-cred discovery and sends Telegram from a phantom
-          // agent identity (see _shared rogue-spawn incident 2026-05-10).
-          .filter(d => !d.name.startsWith('_') && !d.name.startsWith('.'))
-          .map(d => d.name);
-
-        for (const name of dirs) {
-          const dir = join(agentsBase, name);
-          const config = this.loadAgentConfig(dir);
-          agents.push({ name, dir, org, config });
-        }
-      } catch {
-        // Ignore read errors for this org — continue scanning others
-      }
-    }
-
-    return agents;
-  }
-
-  /**
-   * Load agent config from config.json.
-   *
-   * On parse error: log a clear, operator-actionable error to stderr (file path,
-   * SyntaxError message, and a 1-line offending-snippet hint when locatable) and
-   * fall back to default config so the daemon does not hard-crash. Without this
-   * surfacing, a trailing comma in config.json silently degrades the agent into
-   * a "model not available" state because the model field is missing — see #345.
-   */
-  private loadAgentConfig(agentDir: string): AgentConfig {
-    const configPath = join(agentDir, 'config.json');
-    if (!existsSync(configPath)) return {};
-    let raw: string;
-    try {
-      raw = readFileSync(configPath, 'utf-8');
-    } catch (err) {
-      console.error(`[agent-manager] config read failed: ${configPath}: ${(err as Error).message}`);
-      return {};
-    }
-    try {
-      return JSON.parse(raw);
-    } catch (err) {
-      const msg = (err as SyntaxError).message;
-      // Best-effort line/column extraction from V8 SyntaxError messages.
-      // V8 emits "Unexpected token ... in JSON at position N" — we resolve
-      // N back to a 1-indexed line/column so operators can jump to the offender.
-      const posMatch = /position (\d+)/.exec(msg);
-      let locHint = '';
-      if (posMatch) {
-        const pos = Math.min(Number(posMatch[1]), raw.length);
-        const before = raw.slice(0, pos);
-        const line = before.split('\n').length;
-        const col = pos - (before.lastIndexOf('\n') + 1) + 1;
-        const offendingLine = raw.split('\n')[line - 1] || '';
-        locHint = ` (line ${line}, col ${col}: \`${offendingLine.trim().slice(0, 80)}\`)`;
-      }
-      console.error(`[agent-manager] config.json invalid JSON: ${configPath}${locHint}: ${msg}`);
-      console.error(`[agent-manager] hint: trailing commas, unquoted keys, and single quotes are common causes`);
-      return {};
-    }
+    return discoverSourceAgentCandidates(this.frameworkRoot);
   }
 }
 

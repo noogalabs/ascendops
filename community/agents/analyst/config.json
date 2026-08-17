@@ -27,12 +27,6 @@
       "prompt": "Run nightly metrics collection: cortextos bus collect-metrics. Review the output and report any anomalies via Telegram to the orchestrator."
     },
     {
-      "name": "auto-commit",
-      "type": "recurring",
-      "interval": "24h",
-      "prompt": "Read .claude/skills/local-version-control/SKILL.md and execute the daily version control workflow. Stage, review, and commit changes."
-    },
-    {
       "name": "check-upstream",
       "type": "recurring",
       "interval": "24h",
@@ -47,7 +41,8 @@
   ],
   "ecosystem": {
     "local_version_control": {
-      "enabled": true
+      "enabled": false,
+      "blocked_reason": "Catalog agent installation does not ship the required local-version-control skill; gated on task_1785554595214_38473619"
     },
     "upstream_sync": {
       "enabled": true

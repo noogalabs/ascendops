@@ -380,12 +380,13 @@ Proceed with the rest of the session start protocol in AGENTS.md. Crons are alre
 ### Step 20: Ask about ecosystem preferences
 
 > "I can manage some automated workflows for the team. Quick yes/no for each:
-> 1. Daily git snapshots - I commit agent changes daily so nothing is lost
-> 2. Framework updates - I check for cortextOS updates and tell you what changed before applying
-> 3. Community catalog - I browse for new skills weekly and recommend useful ones
-> 4. Community publishing - I can help package your custom skills to share with the community
+> 1. Framework updates - I check for cortextOS updates and tell you what changed before applying
+> 2. Community catalog - I browse for new skills weekly and recommend useful ones
+> 3. Community publishing - I can help package your custom skills to share with the community
 >
 > Which of these do you want enabled?"
+
+Daily local snapshots are **DISARMED FOR THIS PUBLIC AGENT PACKAGE**. Catalog agent installation does not ship `.claude/skills/local-version-control/SKILL.md`, and the catalog `dependencies` field is not implemented by the installer. Do not offer or enable the workflow until `task_1785554595214_38473619` implements that dependency path and the community package passes its own review and publish gates.
 
 **END YOUR TURN.** You need their ecosystem preferences before writing config.
 
@@ -393,7 +394,7 @@ Proceed with the rest of the session start protocol in AGENTS.md. Crons are alre
 
 ```bash
 jq --argjson eco '{
-  "local_version_control": {"enabled": true},
+  "local_version_control": {"enabled": false},
   "upstream_sync": {"enabled": false},
   "catalog_browse": {"enabled": false},
   "community_publish": {"enabled": false}
@@ -401,7 +402,7 @@ jq --argjson eco '{
   mv "${CTX_AGENT_DIR}/config.json.tmp" "${CTX_AGENT_DIR}/config.json"
 ```
 
-(Set each feature's `enabled` value to true/false based on user answers before running.)
+(Set each available feature's `enabled` value to true/false based on user answers before running. Keep `local_version_control.enabled` false while the public package lacks its required skill.)
 
 ### Step 22: Set up ecosystem crons for enabled features
 
@@ -418,10 +419,7 @@ DAILY_HOUR=$(( (NIGHT_HOUR + 1) % 24 ))
 
 For each enabled feature, register the cron via `cortextos bus add-cron`. The daemon persists it to `crons.json` and dispatches automatically — do not edit config.json directly.
 
-**local_version_control** — register via `cortextos bus add-cron` (time-anchored, daemon-managed):
-```bash
-cortextos bus add-cron $CTX_AGENT_NAME auto-commit "0 ${DAILY_HOUR} * * *" "Run daily git snapshot. cortextos bus auto-commit - review the staged diff for PII - commit with descriptive message. Never push."
-```
+**local_version_control:** DISARMED FOR THIS PUBLIC AGENT PACKAGE. Do not register an `auto-commit` cron. Catalog dependency resolution task `task_1785554595214_38473619` must land before this package can ship the required skill and re-arm through its own publish gates.
 
 **upstream_sync** — register via `cortextos bus add-cron` (time-anchored, same hour, 2 minutes offset):
 ```bash
@@ -486,7 +484,7 @@ fi
 
 ### Step 26: If theta wave enabled, register the cron
 
-Compute the theta wave hour (2 hours into night mode, so it runs after auto-commit and check-upstream):
+Compute the theta wave hour (2 hours into night mode, after the framework-update check):
 
 ```bash
 # Re-read night hour (each bash block is a separate shell invocation)

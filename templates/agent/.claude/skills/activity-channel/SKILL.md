@@ -1,6 +1,7 @@
 ---
 name: activity-channel
-description: "You have completed something significant and want the whole org - all agents and the user - to know about it. Or you need to broadcast a status update, a briefing summary, or a coordination announcement that is not directed at one specific agent. Use this skill any time the audience is the entire org rather than a single person or agent."
+effort: low
+description: "You have completed something significant and want the whole org — all agents and the user — to know about it. Or you need to broadcast a status update, a briefing summary, or a coordination announcement that is not directed at one specific agent. Use this skill any time the audience is the entire org rather than a single person or agent."
 triggers: ["post activity", "activity channel", "broadcast", "announce to everyone", "org announcement", "post to channel", "notify all agents", "team update", "org-wide update", "let everyone know", "status broadcast", "announce completion", "briefing summary", "coordination update", "fleet announcement"]
 ---
 

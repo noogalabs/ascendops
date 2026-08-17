@@ -1,76 +1,101 @@
 ---
 name: local-version-control
-description: "Daily git snapshots of agent workspace changes. Stages files with safety checks, reviews diff for PII, commits with descriptive message. Never pushes automatically."
+description: "Daily local snapshots of the invoking agent's allowlisted state. Requires a clean index, verifies the actual staged set, reviews the diff, commits locally, and never pushes."
 triggers: ["auto-commit", "git snapshot", "commit changes", "version control"]
 ---
 
 # Local Version Control
 
-Daily snapshot of all agent workspace changes. Runs via auto-commit.sh with a two-layer safety review.
+The 2026-07-31 incident staged 147 files and about 194,743 insertions, including databases, WAL files, bytecode, generated `dist` backups, and broad agent content. The workflow was disarmed while the candidate filter was replaced. The replacement was merged, built, independently activated, and explicitly re-enabled on 2026-07-31. This history remains part of the operating contract.
 
-## Scope (worktree-aware)
+## Closed Scope
 
-This skill operates EXCLUSIVELY at the canonical framework root (`$CTX_FRAMEWORK_ROOT`) and snapshots **agent state files only** - `memory/`, `MEMORY.md`, `GOALS.md`, `config.json`, and the agent dir's tracked-by-canonical files. Worktree-tree code work is NOT auto-committed here - it ships via the PR workflow (feature branch on the agent's worktree + `gh pr create`). Every bash block in this skill starts with `cd "${CTX_FRAMEWORK_ROOT:?CTX_FRAMEWORK_ROOT must be set}"` to guarantee correct cwd; each shell invocation in an agent session is a fresh shell. Running this skill from a per-agent worktree would either commit to the wrong tree or miss the canonical agent state files entirely.
+Only these paths for the invoking agent are eligible:
 
-## When to Run
+- `orgs/$CTX_ORG/agents/$CTX_AGENT_NAME/MEMORY.md`
+- `orgs/$CTX_ORG/agents/$CTX_AGENT_NAME/GOALS.md`
+- `orgs/$CTX_ORG/agents/$CTX_AGENT_NAME/config.json`
 
-- Daily cron (configured via `cortextos bus add-cron`)
-- After major agent work sessions
-- Before any destructive operations
+Daily `memory/` journals remain excluded from Git pending David's privacy ruling in `task_1785556710544_11012959`; they are not part of the active allowlist.
+
+Everything else is reported as blocked. Gitignore still governs whether an allowlisted path is visible to Git.
+
+## Single-Writer Boundary
+
+The CLI acquires a state-side, persistent single-writer lease before it inspects the shared index. The lease remains held after staging so it covers review and commit even though the staging process has exited. Contention refuses immediately and names the holder and expiry. The default lease is 10 minutes; `ecosystem.local_version_control.lease_ttl_ms` may override it only from 5 through 60 minutes. Out-of-bounds values refuse instead of clamping. This closes the gate tracked by `task_1785555336924_76305344`.
+
+The lease serializes auto-commit writers only. Do not start during a protected build or deploy window, or while a person or another process is staging or committing in the canonical checkout. Check `cortextos bus auto-commit-lease-status` during preflight. Never infer that an expired lease is gone: acquisition performs the atomic takeover and records the prior owner.
 
 ## Workflow
 
-### Step 1: Run auto-commit.sh
+1. Confirm no protected build/deploy window or concurrent canonical-tree Git mutation is active. Read the lease status, then change to the canonical root and require an empty index. Never mix this workflow with work already staged by a person or another process.
 
-```bash
-cd "${CTX_FRAMEWORK_ROOT:?CTX_FRAMEWORK_ROOT must be set}"
-RESULT=$(cortextos bus auto-commit)
-```
+   ```bash
+   cortextos bus auto-commit-lease-status
+   cd "${CTX_FRAMEWORK_ROOT:?CTX_FRAMEWORK_ROOT must be set}"
+   test -z "$(git diff --cached --name-only)" || { echo "Refusing: git index is not empty"; return 1 2>/dev/null || exit 1; }
+   ```
 
-This stages files with safety checks:
-- Blocks .env files and credentials
-- Blocks files over 10MB
-- Blocks binary/temp files
-- Respects .gitignore rules
+2. Run the live filter and preserve its output and exit status.
 
-### Step 2: Review the staged diff
+   ```bash
+   RESULT=$(cortextos bus auto-commit)
+   STATUS=$?
+   printf '%s\n' "$RESULT"
+   ```
 
-```bash
-cd "${CTX_FRAMEWORK_ROOT:?CTX_FRAMEWORK_ROOT must be set}"
-git diff --cached
-```
+   `clean` or `nothing_to_stage` means there is no snapshot to create; the CLI releases its lease before returning. A nonzero status is a refusal or error. If its report says `lease.status: held`, abort as one unit: save the exact token, unstage the workflow's index, then release with that token. Never release first.
 
-Check for:
-- PII: names, emails, phone numbers in memory files
-- Secrets: tokens, API keys, passwords
-- Large diffs that look wrong
-- Files that should not be committed
+   ```bash
+   LEASE_TOKEN=$(printf '%s' "$RESULT" | jq -r 'select(.lease.status == "held") | .lease.token // empty')
+   if [ "$STATUS" -ne 0 ] && [ -n "$LEASE_TOKEN" ]; then
+     git reset
+     cortextos bus auto-commit-release "$LEASE_TOKEN"
+   fi
+   test "$STATUS" -eq 0 || { return "$STATUS" 2>/dev/null || exit "$STATUS"; }
+   ```
 
-If anything looks sensitive, unstage it:
-```bash
-cd "${CTX_FRAMEWORK_ROOT:?CTX_FRAMEWORK_ROOT must be set}"
-git reset HEAD <file>
-```
+3. For `status: staged`, require the held lease token and compare the report's `staged` array with the real index:
 
-### Step 3: Commit
+   ```bash
+   LEASE_TOKEN=$(printf '%s' "$RESULT" | jq -er '.lease | select(.status == "held") | .token')
+   git diff --cached --name-only
+   ```
 
-Generate a descriptive commit message summarizing what changed:
-```bash
-cd "${CTX_FRAMEWORK_ROOT:?CTX_FRAMEWORK_ROOT must be set}"
-git commit -m "daily: <summary of changes>"
-```
+   They must be identical, and every path must be inside the closed scope above. Any mismatch or review rejection takes the mandatory abort unit: `git reset`, then exact-token `auto-commit-release`. Never leave a rejected index staged and never release while it remains staged.
 
-### Step 4: Do NOT push
+4. Review the full staged diff. Reject secrets, credentials, personal data that should not be versioned, unexpected volume, or content outside the intended daily record.
 
-Auto-commit never pushes. The user or orchestrator decides when to push.
+   ```bash
+   git diff --cached --check
+   git diff --cached
+   ```
 
-## Config
+5. Assert the exact token still owns the lease with at least 60 seconds remaining, then commit and release as one unit. If the assertion refuses, reset and report without committing. A failed commit takes the abort unit instead. Never omit release after a commit attempt.
 
-Requires `ecosystem.local_version_control.enabled: true` in config.json.
+   ```bash
+   ASSERT_RESULT=$(cortextos bus auto-commit-assert-held "$LEASE_TOKEN")
+   ASSERT_STATUS=$?
+   printf '%s\n' "$ASSERT_RESULT"
+   if [ "$ASSERT_STATUS" -ne 0 ]; then
+     git reset
+     return "$ASSERT_STATUS" 2>/dev/null || exit "$ASSERT_STATUS"
+   elif git commit -m "daily: <summary of agent-state changes>"; then
+     cortextos bus auto-commit-release "$LEASE_TOKEN"
+   else
+     git reset
+     cortextos bus auto-commit-release "$LEASE_TOKEN"
+     return 1 2>/dev/null || exit 1
+   fi
+   ```
 
-## Safety
+   The fixed 60-second floor is not configurable. A commit that somehow runs longer than that margin could still outlive the lease; this workflow does not claim atomic commit coverage.
 
-- Never commits .env files
-- Never commits files matching credential patterns
-- Always reviews diff before committing
-- Never pushes automatically
+6. Confirm the index is empty and the commit contains exactly the reviewed paths. Never push automatically.
+
+   ```bash
+   git diff --cached --name-only
+   git show --stat --oneline HEAD
+   ```
+
+Manual, user-directed version-control work outside this closed scope uses its own explicit staging and review process.

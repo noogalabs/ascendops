@@ -23,6 +23,25 @@ describe('MessageDedup', () => {
     expect(dedup.isDuplicate('msg1')).toBe(false); // no longer in cache
     expect(dedup.isDuplicate('msg4')).toBe(true); // still in cache
   });
+
+  it('can release a provisional identity after failed admission', () => {
+    const dedup = new MessageDedup();
+    expect(dedup.isDuplicate('fire-1')).toBe(false);
+    dedup.remove('fire-1');
+    expect(dedup.isDuplicate('fire-1')).toBe(false);
+    expect(dedup.isDuplicate('fire-1')).toBe(true);
+  });
+
+  it('bounds eviction independently per provenance scope', () => {
+    const dedup = new MessageDedup(2);
+    expect(dedup.isDuplicate('fire-1', 'daemon-structured')).toBe(false);
+    expect(dedup.isDuplicate('ordinary-1', 'ordinary-content')).toBe(false);
+    expect(dedup.isDuplicate('ordinary-2', 'ordinary-content')).toBe(false);
+    expect(dedup.isDuplicate('ordinary-3', 'ordinary-content')).toBe(false);
+
+    expect(dedup.isDuplicate('fire-1', 'daemon-structured')).toBe(true);
+    expect(dedup.isDuplicate('ordinary-1', 'ordinary-content')).toBe(false);
+  });
 });
 
 describe('KEYS', () => {

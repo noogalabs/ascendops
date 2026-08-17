@@ -4,6 +4,11 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+if [[ -f scripts/fleet-population.mjs && -f scripts/fleet-populations.json ]]; then
+  echo "[pre-commit] checking tracked framework population"
+  node scripts/fleet-population.mjs check --registry scripts/fleet-populations.json --root . --population framework.skill-templates
+fi
+
 if [[ -f scripts/skill-drift-check.mjs && -f scripts/skill-mirrors.json ]]; then
   echo "[pre-commit] checking tracked skill mirror drift (ci tier)"
   node scripts/skill-drift-check.mjs --tier ci

@@ -514,6 +514,10 @@ describe('AD-5: User actions audit', () => {
     expect(injectFn).toHaveBeenCalledWith(
       AGENT,
       expect.stringContaining('[CRON: manual-fire-audit]'),
+      expect.objectContaining({
+        name: 'manual-fire-audit',
+        prompt: 'Run the manual-fire-audit workflow.',
+      }),
     );
   });
 });

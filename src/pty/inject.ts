@@ -21,7 +21,7 @@ export const KEYS = {
  * Matches bash fast-checker.sh dedup pattern.
  */
 export class MessageDedup {
-  private hashes: string[] = [];
+  private hashesByScope = new Map<string, string[]>();
   private maxEntries: number;
 
   constructor(maxEntries: number = 100) {
@@ -31,20 +31,40 @@ export class MessageDedup {
   /**
    * Returns true if this content has been seen before (duplicate).
    */
-  isDuplicate(content: string): boolean {
-    const hash = createHash('md5').update(content).digest('hex');
-    if (this.hashes.includes(hash)) {
-      return true;
-    }
-    this.hashes.push(hash);
-    if (this.hashes.length > this.maxEntries) {
-      this.hashes.shift();
-    }
+  isDuplicate(content: string, scope: string = 'default'): boolean {
+    if (this.has(content, scope)) return true;
+    this.record(content, scope);
     return false;
   }
 
+  has(content: string, scope: string = 'default'): boolean {
+    return (this.hashesByScope.get(scope) ?? []).includes(this.hash(content));
+  }
+
+  record(content: string, scope: string = 'default'): void {
+    const hash = this.hash(content);
+    const hashes = this.hashesByScope.get(scope) ?? [];
+    if (hashes.includes(hash)) return;
+    hashes.push(hash);
+    if (hashes.length > this.maxEntries) {
+      hashes.shift();
+    }
+    this.hashesByScope.set(scope, hashes);
+  }
+
+  remove(content: string, scope: string = 'default'): void {
+    const hash = this.hash(content);
+    const hashes = (this.hashesByScope.get(scope) ?? []).filter((entry) => entry !== hash);
+    if (hashes.length === 0) this.hashesByScope.delete(scope);
+    else this.hashesByScope.set(scope, hashes);
+  }
+
   clear(): void {
-    this.hashes = [];
+    this.hashesByScope.clear();
+  }
+
+  private hash(content: string): string {
+    return createHash('md5').update(content).digest('hex');
   }
 }
 

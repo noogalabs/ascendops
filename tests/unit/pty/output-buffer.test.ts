@@ -79,6 +79,21 @@ describe('OutputBuffer redaction', () => {
     expect(buf.isBootstrapped()).toBe(true);
   });
 
+  it('latches bootstrap readiness until the buffer lifecycle is cleared', () => {
+    const buf = new OutputBuffer(1000, undefined, 'permissions');
+
+    buf.push('accept edits · permissions\n');
+    expect(buf.isBootstrapped()).toBe(true);
+
+    // Prompt-like ordinary output after readiness must not re-arm bootstrap
+    // automation by making the latest blocking token newer than readiness.
+    buf.push('documentation: trust this folder, then choose Yes\n');
+    expect(buf.isBootstrapped()).toBe(true);
+
+    buf.clear();
+    expect(buf.isBootstrapped()).toBe(false);
+  });
+
   it('JWT split across a chunk boundary IS redacted (buffer-aware holdback)', () => {
     // Split a JWT across two push() calls — the OS chunk-boundary case
     // that the stateless chunk-local redactor used to miss. push() now

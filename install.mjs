@@ -652,6 +652,18 @@ log('Building...');
 runVisible('npm run build', { cwd: INSTALL_DIR });
 ok('Build complete');
 
+// Best-effort: install the tracked, non-clobbering local security gates in a
+// fresh checkout. Failure is visible but does not invalidate an otherwise
+// usable install; operators can run the same command manually.
+if (!IS_WINDOWS && existsSync(join(INSTALL_DIR, 'scripts', 'setup-hooks.sh'))) {
+  try {
+    run('bash scripts/setup-hooks.sh', { cwd: INSTALL_DIR });
+    ok('Installed local git hooks (pre-commit + pre-push gates)');
+  } catch {
+    warn('Could not install local git hooks — run: bash scripts/setup-hooks.sh');
+  }
+}
+
 // ─── 10. Link CLI globally ────────────────────────────────────────────────────
 
 log('Linking cortextos CLI...');

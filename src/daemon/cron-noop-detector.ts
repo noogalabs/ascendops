@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, sep } from 'path';
-import type { AgentConfig, AgentStatus, CronExecutionLogEntry } from '../types/index.js';
+import type { AgentConfig, AgentStatus, CronExecutionLogEntry, CronFireKind } from '../types/index.js';
+import { resolveClaudeProjectDir } from '../utils/claude-project-dir.js';
 
 export const CRON_NOOP_VERIFY_DELAY_MS = 75_000;
 export interface CronTranscriptLookup {
@@ -108,7 +109,7 @@ function transcriptContainsAnyCronTurn(
 
 type InjectResult =
   | { ok: true }
-  | { ok: false; code: 'NOT_FOUND' | 'NOT_RUNNING' | 'DEDUPED'; message: string };
+  | { ok: false; code: 'NOT_FOUND' | 'NOT_RUNNING' | 'DEDUPED' | 'ADMISSION_FAILED'; message: string };
 
 interface PendingCronVerification {
   agentName: string;
@@ -117,6 +118,7 @@ interface PendingCronVerification {
   cronName: string;
   prompt: string;
   firedAt: string;
+  fireKind: CronFireKind;
   salt: string;
   acceptedSalts: CronSaltCandidate[];
   window: 1 | 2;
@@ -170,6 +172,7 @@ export class CronNoopDetector {
     cronName: string;
     prompt: string;
     firedAt: string;
+    fireKind?: CronFireKind;
   }): void {
     if (input.config.runtime === 'codex-app-server' || input.config.runtime === 'hermes') {
       return;
@@ -182,6 +185,7 @@ export class CronNoopDetector {
       cronName: input.cronName,
       prompt: input.prompt,
       firedAt: input.firedAt,
+      fireKind: input.fireKind ?? 'scheduled',
       salt,
       acceptedSalts: [{ salt, firedAt: input.firedAt }],
       window: 1,
@@ -225,6 +229,7 @@ export class CronNoopDetector {
           ts: this.now().toISOString(),
           cron: pending.cronName,
           status: 'confirmed',
+          fire_kind: pending.fireKind,
           attempt: pending.window,
           duration_ms: 0,
           error: null,
@@ -238,6 +243,7 @@ export class CronNoopDetector {
           ts: this.now().toISOString(),
           cron: pending.cronName,
           status: 'confirmed',
+          fire_kind: pending.fireKind,
           attempt: pending.window,
           duration_ms: 0,
           error: null,
@@ -259,6 +265,7 @@ export class CronNoopDetector {
           ts: this.now().toISOString(),
           cron: pending.cronName,
           status: 'noop_unconfirmed',
+          fire_kind: pending.fireKind,
           attempt: 1,
           duration_ms: 0,
           error: null,
@@ -329,6 +336,7 @@ export class CronNoopDetector {
       ts: this.now().toISOString(),
       cron: pending.cronName,
       status: 'noop_reinjected',
+      fire_kind: pending.fireKind,
       attempt: 2,
       duration_ms: 0,
       error: null,
@@ -349,6 +357,7 @@ export class CronNoopDetector {
       ts: this.now().toISOString(),
       cron: pending.cronName,
       status: 'noop_persistent',
+      fire_kind: pending.fireKind,
       attempt: pending.window,
       duration_ms: 0,
       error: reason ?? 'salted user turn absent after re-inject verification windows',

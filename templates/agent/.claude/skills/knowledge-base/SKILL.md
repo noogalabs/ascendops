@@ -52,13 +52,15 @@ Ingest after:
 `--scope shared` writes to the `shared-<org>` collection, which is gated by an ingest allowlist. A file lands only if its absolute path is on `shared_ingest_allowlist` in the KB config (`~/.cortextos/<instance>/orgs/<org>/knowledge-base/config.json`):
 
 - A path matches if it **equals** an allowlist entry exactly, or sits **under** an allowlist directory (dir-prefix match).
-- Anything not on the list is skipped with `BLOCKED (not in shared allowlist)` - the ingest does not error, it silently drops that file.
-- `--scope private` (collection `agent-<name>`) is **exempt** - no allowlist, anything ingests.
+- Anything not on the list is skipped with `BLOCKED (not in shared allowlist)` — the ingest does not error, it silently drops that file.
+- `--scope private` (collection `agent-<name>`) bypasses only the **shared allowlist**. Owner-personal paths remain refused under every scope. Agent memory is allowed only when agent `<name>` ingests its own `agents/<name>/MEMORY.md`, `memory/`, or `migrated/` path into that matching private collection; shared and cross-agent memory are refused.
 - If `shared_ingest_allowlist` is unset or empty, shared ingest is open (legacy behaviour).
 
 To add a source, append its absolute path (a file or a directory) to `shared_ingest_allowlist` in that config, then re-run the ingest.
 
-Convention: shared-KB source docs live under `orgs/<org>/knowledge/` (already allowlisted), **not** `orgs/<org>/docs/`. Put any doc you intend to ingest into shared in `knowledge/`.
+The Node bus preflight and Python engine enforce the same owner-personal and agent-memory boundary before collection admission; the engine applies `shared_ingest_allowlist` only after that boundary. Private scope therefore means no shared-allowlist check, not unrestricted ingestion.
+
+Convention: shared-KB source docs live under `orgs/<org>/knowledge/`, **not** `orgs/<org>/docs/`. Verify that the intended file or directory is present in the active `shared_ingest_allowlist`; do not assume every org knowledge root is already listed.
 
 ---
 

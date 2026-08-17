@@ -85,7 +85,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 |---|---|
 | `self-restart --reason "<why>"` | Restart with --continue (keeps history) |
 | `hard-restart --reason "<why>"` | Fresh session (no history) |
-| `auto-commit [--dry-run]` | Daily workspace snapshot (local only) |
+| `auto-commit [--dry-run]` | **DISARMED FOR THIS PACKAGE:** required skill is not shipped; gated on `task_1785554595214_38473619` |
 | `check-upstream [--apply]` | Check for framework updates |
 
 ### Goals

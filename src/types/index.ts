@@ -146,9 +146,14 @@ export interface EcosystemFeatureConfig {
   enabled?: boolean;
 }
 
+export interface LocalVersionControlFeatureConfig extends EcosystemFeatureConfig {
+  /** Persistent single-writer lease duration: 5-60 minutes, default 10. */
+  lease_ttl_ms?: number;
+}
+
 export interface EcosystemConfig {
   /** Daily git snapshots of agent workspace. Agent stages safe files, reviews diff, commits. */
-  local_version_control?: EcosystemFeatureConfig;
+  local_version_control?: LocalVersionControlFeatureConfig;
   /** 24h cron to check canonical repo for framework updates. Requires upstream git remote. */
   upstream_sync?: EcosystemFeatureConfig;
   /** Weekly cron to browse community catalog and surface new skills/templates to user. */
@@ -364,6 +369,28 @@ export interface AgentConfig {
 
 export interface CronEntry {
   name: string;
+  /**
+   * Operator switch. `false` means DO NOT ARM THIS CRON, whatever `type` says.
+   *
+   * Undeclared until 2026-08-12, which is the whole defect: operators wrote
+   * `enabled: false` into config.json, TypeScript could not see the field, and
+   * `convertEntry` hardcoded `enabled: true` on the way to crons.json. Since
+   * config.json is reconciled into crons.json on EVERY AGENT BOOT (#125), every
+   * boot silently re-armed every cron an operator had switched off.
+   *
+   * It surfaced when an agent hardened cash's config with `enabled: false` on five
+   * proactive crons specifically so a fleet restart could not re-arm them; the
+   * restart re-armed all five. Zero prohibited fires only because cash noticed
+   * and re-disabled them ~25 minutes before the next window.
+   *
+   * `type: "disabled"` was the only disable signal the reader honoured. Both are
+   * legitimate ways to express intent, so both are honoured now.
+   */
+  enabled?: boolean;
+  /** Human-readable purpose. Written by operators; previously dropped in migration. */
+  description?: string;
+  /** Why this cron was switched off. Written alongside `enabled: false`; previously dropped. */
+  disabled_reason?: string;
   /** For recurring crons: how often to fire (e.g. "4h", "1d"). */
   interval?: string;
   /** For time-anchored crons: a cron expression (e.g. "0 8 * * *"). Takes precedence over interval. */
@@ -374,9 +401,15 @@ export interface CronEntry {
   /** "recurring" (default) restores on every session start.
    *  "once" restores only if fire_at is still in the future; deleted after firing. */
   type?: 'recurring' | 'once' | 'disabled';
-  /** When true, this cron is allowed to fire during off_shift_emergency_only windows.
-   *  Has no effect during in_shift (always fires) or off_shift_no_wake (always drops). */
+  /** @deprecated Never had a reader. Use `emergency_class` instead — a boolean
+   *  cannot express "flood wakes this agent but a routine sweep does not", which
+   *  is what the agent's `off_shift_can_wake_for` list is for. Declared 2026-xx,
+   *  found unread and deprecated 2026-08-10 (Greenwood post-mortem). */
   emergency_allowed?: boolean;
+  /** Emergency class for off-shift wake decisions, e.g. "flood", "no_heat_freezing".
+   *  Wakes the agent when this value appears in its
+   *  shift_schedule.emergency_override.off_shift_can_wake_for list. */
+  emergency_class?: string;
   /** When true, this cron bypasses the daemon's off-shift suppression gate entirely
    *  (see CronDefinition.wake_on_fire). Propagated to crons.json by bus reload-crons. */
   wake_on_fire?: boolean;
@@ -548,6 +581,15 @@ export interface CronDefinition {
    * @example "Periodic health check and status update."
    */
   description?: string;
+  /**
+   * Why this cron is switched off. Mirrors `CronEntry.disabled_reason` so the
+   * operator's stated reason survives the config -> crons.json reconcile.
+   *
+   * Added 2026-08-13: the field was declared on CronEntry but had no
+   * counterpart here, so it was unrepresentable and every boot discarded it.
+   * Declaring a field is not the same as preserving it.
+   */
+  disabled_reason?: string;
 
   /**
    * Arbitrary key-value pairs for agent-specific context.
@@ -581,6 +623,24 @@ export interface CronDefinition {
    * @default false (off-shift suppression applies — opt-out model)
    */
   wake_on_fire?: boolean;
+  /**
+   * Emergency class for CONDITIONAL off-shift wake, e.g. "flood", "fire",
+   * "safety", "no_heat_freezing".
+   *
+   * SUPPRESSION HIERARCHY — exactly three outcomes, in this order:
+   *   1. wake_on_fire        -> unconditional pierce of ALL suppression windows
+   *   2. emergency_class     -> wakes IF the value is in the agent's
+   *                             shift_schedule.emergency_override.off_shift_can_wake_for
+   *   3. neither             -> suppressed off-shift
+   *
+   * Added 2026-08-10. Before it, `off_shift_can_wake_for` was a list a human had
+   * written and no code had ever read: an emergency check-back was suppressed
+   * off-shift and never delivered, and a flood-class fire would have been
+   * suppressed the same way. Matching is exact and case-insensitive; a near-miss
+   * fails closed, because a cron that believes it is exempt and is not is worse
+   * than one that knows it is suppressed.
+   */
+  emergency_class?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +663,8 @@ export interface CronDefinition {
  *   "retried"            — this attempt failed but more retries remain (see `error`).
  *   "failed"             — final failure after exhausting all retries (see `error`).
  */
+export type CronFireKind = 'scheduled' | 'catch_up';
+
 export interface CronExecutionLogEntry {
   /** ISO 8601 UTC timestamp of the fire attempt. */
   ts: string;
@@ -610,6 +672,11 @@ export interface CronExecutionLogEntry {
   cron: string;
   /** Outcome of this attempt. */
   status: 'fired' | 'confirmed' | 'noop_unconfirmed' | 'noop_reinjected' | 'noop_persistent' | 'retried' | 'failed';
+  /**
+   * Why this fire occurred. Optional only for backward compatibility with
+   * execution-log rows written before the field existed.
+   */
+  fire_kind?: CronFireKind;
   /** Attempt index (1-based). */
   attempt: number;
   /** Wall-clock duration of the fire attempt in milliseconds. */
@@ -875,6 +942,8 @@ export interface CronSummaryRow {
    * Null when the cron has never fired.
    */
   lastStatus: CronExecutionLogEntry['status'] | null;
+  /** Kind of the most recent execution, or null for legacy/no history. */
+  lastFireKind: CronFireKind | null;
   /**
    * ISO 8601 timestamp of the next scheduled fire.
    * Computed from the cron's schedule + last_fired_at (or now).
@@ -896,6 +965,8 @@ export interface CronHealthRow {
   state: CronHealthState;
   reason: string;
   lastFire: number | null;
+  /** Kind of the most recent execution, or null for legacy/no history. */
+  lastFireKind: CronFireKind | null;
   expectedIntervalMs: number;
   gapMs: number | null;
   successRate24h: number;
@@ -938,6 +1009,8 @@ export interface IPCRequest {
    * Optional for backwards compatibility — older clients fall back to 'unknown'.
    */
   source?: string;
+  /** False only when stop-agent is the first half of an explicit restart. */
+  userInitiated?: boolean;
 }
 
 // Worker Types
@@ -960,10 +1033,11 @@ export interface IPCResponse {
   error?: string;
   /**
    * Structured error code for failed responses. Lets operators distinguish
-   * "agent does not exist" (NOT_FOUND) from "request collapsed against an
-   * in-flight identical op" (DEDUPED). See issue #346.
+   * "agent does not exist" (NOT_FOUND), "request collapsed against an
+   * in-flight identical op" (DEDUPED), and a live runtime that could not
+   * durably admit the request (ADMISSION_FAILED). See issue #346.
    */
-  code?: 'NOT_FOUND' | 'DEDUPED' | 'INVALID_INPUT' | 'NOT_RUNNING';
+  code?: 'NOT_FOUND' | 'DEDUPED' | 'INVALID_INPUT' | 'NOT_RUNNING' | 'ADMISSION_FAILED';
 }
 
 // Agent Discovery Types
@@ -1012,4 +1086,5 @@ export interface AgentStatus {
   sessionStart?: string;
   crashCount?: number;
   model?: string;
+  awaitingConfirmation?: boolean;
 }

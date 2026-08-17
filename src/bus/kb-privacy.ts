@@ -49,16 +49,13 @@ function denyPrefixes(): string[] {
 const SEGMENT_DENY = ['/state/ea', '/crm'];
 
 // Live agent-memory trees: agents/<O>/MEMORY.md | memory/ | migrated/. The owning
-// agent O is CAPTURED so the narrowed rule (an agent may ingest its OWN memory into
-// its OWN private scope — the heartbeat) can compare O to the ingesting agent A.
+// agent O is captured so own-memory can enter only its matching own-private scope.
 // Matched on the REALPATH-resolved path so a traversal
 // (agents/an agent/../an agent/MEMORY.md) is attributed to the true owner (an agent).
 const AGENT_MEMORY_RE = /\/agents\/([^/]+)\/(?:MEMORY\.md|memory|migrated)(?:\/|$)/;
 
 type DenyHit =
-  // state/ea, crm, vault — owner-private, blocked under EVERY scope, no exemption.
   | { category: 'always'; rule: string }
-  // agent memory — allowed ONLY as own-memory into own private scope (see below).
   | { category: 'agent-memory'; rule: string; owningAgent: string };
 
 /** Fully symlink-resolved absolute path (matches the engine's Path.resolve()).
@@ -89,9 +86,7 @@ function matchDeny(resolved: string): DenyHit | null {
   return null;
 }
 
-/** Throw if a single owner-private hit is not permitted under `ctx`. Returns
- *  (does not throw) only for an agent ingesting its OWN memory into its OWN private
- *  scope. `hitPath` is the resolved path of the actual offending file. */
+/** Throw unless this is own-memory entering the matching own-private scope. */
 function assertHitAllowed(
   hitPath: string,
   hit: DenyHit,
@@ -100,7 +95,7 @@ function assertHitAllowed(
   if (hit.category === 'agent-memory') {
     const ownMemoryOwnPrivate =
       ctx.scope === 'private' && !!ctx.agent && hit.owningAgent === ctx.agent;
-    if (ownMemoryOwnPrivate) return; // the heartbeat — allowed
+    if (ownMemoryOwnPrivate) return;
     throw new Error(
       `[kb] BLOCKED: agent memory is filesystem-only except an agent ingesting ` +
         `its OWN memory into its OWN private scope. "${hitPath}" is agent ` +
@@ -160,16 +155,12 @@ export function isOwnerPrivatePath(p: string): boolean {
  * Refuse owner-private ingests. Call before any collection is chosen.
  *
  * - `state/ea`, `crm`, owner-personal vault: BLOCKED under every scope, no exemption.
- * - agent memory: allowed ONLY when an agent ingests its OWN memory into its OWN
- *   private scope (`scope==='private'` AND owner O === ingesting agent A) — this is
- *   the heartbeat (own-memory -> `agent-<A>`). Shared scope, or a DIFFERENT agent's
- *   memory, is refused (blocks owner-PII sprawl + the cross-agent leak, finding 5).
+ * - agent memory: allowed only when agent A ingests its own memory into private
+ *   collection agent-A; shared and cross-agent memory are refused.
  *
  * Trust model: self-hosted TRUSTED fleet; the threat is accidental owner-PII sprawl,
- * not a malicious agent. Anti-spoof anyway: O is extracted from the REALPATH-resolved
- * path (a `..` traversal collapses to the true owner), compared EXACT-STRING to A, and
- * for private the caller's target collection is `agent-<A>` — so a mismatched `--agent`
- * cannot smuggle another agent's memory into its own collection.
+ * not a malicious agent. REALPATH resolution prevents traversal or symlink aliases
+ * from escaping owner attribution.
  */
 export function assertNoOwnerPrivatePaths(
   paths: string[],

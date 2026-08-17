@@ -9,6 +9,7 @@ import { tmpdir, homedir } from 'os';
 // allowlisted phrases now pass through to the real send.
 const sendMessageSpy = vi.fn().mockReturnValue('msg-test-1');
 const telegramSendSpy = vi.fn().mockResolvedValue({ result: { message_id: 1 } });
+const logEventSpy = vi.fn();
 
 vi.mock('../../../src/bus/message.js', () => ({
   sendMessage: (...args: unknown[]) => sendMessageSpy(...args),
@@ -22,7 +23,7 @@ vi.mock('../../../src/bus/message.js', () => ({
 }));
 
 vi.mock('../../../src/bus/event.js', () => ({
-  logEvent: vi.fn(),
+  logEvent: (...args: unknown[]) => logEventSpy(...args),
 }));
 
 vi.mock('../../../src/telegram/api.js', () => ({
@@ -89,6 +90,7 @@ beforeEach(() => {
 
   sendMessageSpy.mockClear();
   telegramSendSpy.mockClear();
+  logEventSpy.mockReset();
 });
 
 afterEach(() => {
@@ -159,30 +161,30 @@ describe('configurable comms lint', () => {
     expect(telegramSendSpy).toHaveBeenCalledTimes(1);
   });
 
-  // §8 case 2: agent allowlists banned:holding → "holding" now SENDS.
-  it('allows send-message with "holding" when agent allowlists banned:holding', async () => {
-    writeAgentConfig({ banned: { allow: ['banned:holding'] } });
-    // "holding" is in BOTH the banned and passive default groups. Allowlisting
-    // banned:holding removes the hard-fail; the passive stage only blocks
+  // §8 case 2: agent allowlists banned:parked → "parked" now SENDS.
+  it('allows send-message with "parked" when agent allowlists banned:parked', async () => {
+    writeAgentConfig({ banned: { allow: ['banned:parked'] } });
+    // "parked" is in BOTH the banned and passive default groups. Allowlisting
+    // banned:parked removes the hard-fail; the passive stage only blocks
     // WITHOUT active-work context, so include a working-on clause so the passive
     // gate passes and the send proceeds.
     await busCommand.parseAsync(
-      ['send-message', 'target-agent', 'normal', 'holding the diff while testing the migration'],
+      ['send-message', 'target-agent', 'normal', 'parked the diff while testing the migration'],
       { from: 'user' },
     );
     // Proves the agent-layer allowlist removed a default banned rule.
     expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('allows send-telegram with "holding" when agent allowlists both banned and passive rules', async () => {
-    // "holding" is in BOTH the banned and passive default groups; allowlist both
+  it('allows send-telegram with "parked" when agent allowlists both banned and passive rules', async () => {
+    // "parked" is in BOTH the banned and passive default groups; allowlist both
     // ids so neither stage blocks. Proves multi-group allowlisting.
     writeAgentConfig({
-      banned: { allow: ['banned:holding'] },
+      banned: { allow: ['banned:parked'] },
       passive: { allow: ['passive:posture-set'] },
     });
     await busCommand.parseAsync(
-      ['send-telegram', '12345', 'holding the line on that'],
+      ['send-telegram', '12345', 'parked the line on that'],
       { from: 'user' },
     );
     expect(telegramSendSpy).toHaveBeenCalledTimes(1);
@@ -212,6 +214,80 @@ describe('configurable comms lint', () => {
     // Proves an org-added custom rule is enforced (the default set would NOT
     // have blocked this phrase).
     expect(sendMessageSpy).not.toHaveBeenCalled();
+  });
+
+  it('normalizes sticky y so an offset-zero passive match keeps exact telemetry', async () => {
+    writeOrgConfig({
+      passive: {
+        add: [
+          {
+            id: 'passive:queued',
+            pattern: '\\bqueued\\b',
+            flags: 'iy',
+            reason: 'passive posture',
+          },
+        ],
+      },
+    });
+
+    await expect(
+      busCommand.parseAsync(
+        ['send-message', 'target-agent', 'normal', 'queued for review'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow();
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-agent',
+      'testorg',
+      'action',
+      'comms_lint_blocked',
+      'warning',
+      expect.objectContaining({
+        matched_phrase: 'queued',
+        rule_class: 'passive',
+        rule_id: 'passive:queued',
+        target_type: 'agent',
+      }),
+    );
+  });
+
+  it('normalizes sticky y so the same passive rule blocks mid-string', async () => {
+    writeOrgConfig({
+      passive: {
+        add: [
+          {
+            id: 'passive:queued',
+            pattern: '\\bqueued\\b',
+            flags: 'iy',
+            reason: 'passive posture',
+          },
+        ],
+      },
+    });
+
+    await expect(
+      busCommand.parseAsync(
+        ['send-message', 'target-agent', 'normal', 'the item is queued for review'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow();
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(logEventSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-agent',
+      'testorg',
+      'action',
+      'comms_lint_blocked',
+      'warning',
+      expect.objectContaining({
+        matched_phrase: 'queued',
+        rule_class: 'passive',
+        rule_id: 'passive:queued',
+        target_type: 'agent',
+      }),
+    );
   });
 
   // §8 case 4: --suggest on a would-be-blocked message → prints phrase + hint,
