@@ -1,7 +1,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { spawnSync } from 'child_process';
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { describe, expect, it, vi } from 'vitest';
 import {
   installerConsentOutcome,
@@ -11,30 +11,45 @@ import {
   runConsentGate,
 } from '../../installer/consent-gate.mjs';
 
-const VITEST_TIMEOUT_DISABLED = 0;
-const LOCAL_REAL_SUBPROCESS_HANG_DETECTOR_MS = 30_000;
+const REAL_SUBPROCESS_DEADLINE_MS = 30_000;
+const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
 
-// A per-test wall-clock ceiling cannot distinguish a wedged subprocess from a
-// healthy worker starved by parallel CI load. CI therefore leaves correctness
-// to assertions and the job-level watchdog. Local runs retain a named wedge
-// guard so an operator gets prompt feedback from an actually stuck subprocess.
-const realSubprocessTestTimeout = (isCI = Boolean(process.env.CI)) => (
-  isCI ? VITEST_TIMEOUT_DISABLED : LOCAL_REAL_SUBPROCESS_HANG_DETECTOR_MS
-);
+// Vitest's timeout cannot interrupt spawnSync because the call blocks the JS
+// thread. Bound the child itself instead. This is the correctness mechanism in
+// both CI and local runs; the workflow-level watchdog is a separate backstop.
+function runRealSubprocess(
+  command: string,
+  args: string[],
+  options: Omit<SpawnSyncOptionsWithStringEncoding, 'timeout' | 'killSignal'>,
+  deadlineMs = REAL_SUBPROCESS_DEADLINE_MS,
+) {
+  return spawnSync(command, args, {
+    ...options,
+    timeout: deadlineMs,
+    killSignal: REAL_SUBPROCESS_KILL_SIGNAL,
+  });
+}
 
 describe('real subprocess timeout policy', () => {
-  it('removes the wall-clock ceiling from the CI correctness path', () => {
-    const localHangDetector = realSubprocessTestTimeout(false);
-    expect(localHangDetector).toBeGreaterThan(VITEST_TIMEOUT_DISABLED); // precondition: the paths diverge
+  it('kills a wedged installer subprocess at the child deadline', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wedged-installer-'));
+    const fakeInstaller = join(root, 'install.mjs');
+    const startedMarker = join(root, 'installer-started');
+    writeFileSync(
+      fakeInstaller,
+      `import fs from 'fs'; fs.writeFileSync(${JSON.stringify(startedMarker)}, 'started'); setInterval(() => {}, 1000);\n`,
+    );
 
-    expect(realSubprocessTestTimeout(true)).toBe(VITEST_TIMEOUT_DISABLED);
-  });
+    const result = runRealSubprocess(
+      process.execPath,
+      [fakeInstaller],
+      { encoding: 'utf8' },
+      200,
+    );
 
-  it('retains the named hang detector for local subprocess runs', () => {
-    const ciCorrectnessTimeout = realSubprocessTestTimeout(true);
-    expect(ciCorrectnessTimeout).toBe(VITEST_TIMEOUT_DISABLED); // precondition: CI has no per-test ceiling
-
-    expect(realSubprocessTestTimeout(false)).toBe(LOCAL_REAL_SUBPROCESS_HANG_DETECTOR_MS);
+    expect(existsSync(startedMarker)).toBe(true); // precondition: the fake installer reached its deliberate wedge
+    expect(result.signal).toBe('SIGKILL');
+    expect(result.error).toMatchObject({ code: 'ETIMEDOUT' });
   });
 });
 
@@ -135,13 +150,13 @@ describe('installer unattended consent gate', () => {
       'module.exports = { applyUnattendedConsent() { return { ok: true, recorded: true }; } };\n',
     );
 
-    const result = spawnSync(process.execPath, [join(installerDir, 'consent-gate.mjs'), action], {
+    const result = runRealSubprocess(process.execPath, [join(installerDir, 'consent-gate.mjs'), action], {
       encoding: 'utf8',
     });
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(message);
-  }, realSubprocessTestTimeout());
+  });
 
   it.each([
     ['grant then revoke', ['--grant', '--revoke']],
@@ -160,14 +175,14 @@ describe('installer unattended consent gate', () => {
       `module.exports = { applyUnattendedConsent() { require('fs').writeFileSync(${JSON.stringify(writeMarker)}, 'called'); return { ok: true, recorded: true }; } };\n`,
     );
 
-    const result = spawnSync(process.execPath, [join(installerDir, 'consent-gate.mjs'), ...args], {
+    const result = runRealSubprocess(process.execPath, [join(installerDir, 'consent-gate.mjs'), ...args], {
       encoding: 'utf8',
     });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('exactly one of --grant or --revoke');
     expect(existsSync(writeMarker)).toBe(false);
-  }, realSubprocessTestTimeout());
+  });
 
   it('stops before install work when the required consent gate is absent', () => {
     const installDir = mkdtempSync(join(tmpdir(), 'old-checkout-'));
@@ -206,7 +221,7 @@ describe('installer unattended consent gate', () => {
     fake('brew', 'exit 0');
 
     const installerPath = process.env.ASCENDOPS_INSTALLER_UNDER_TEST ?? join(process.cwd(), 'install.mjs');
-    const result = spawnSync(process.execPath, [installerPath], {
+    const result = runRealSubprocess(process.execPath, [installerPath], {
       cwd: process.cwd(),
       encoding: 'utf8',
       env: {
@@ -221,7 +236,7 @@ describe('installer unattended consent gate', () => {
     expect(existsSync(npmMarker)).toBe(false);
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain('Required installer file is missing');
-  }, realSubprocessTestTimeout());
+  });
 
   it.each([
     ['No', false, 'preflight import failure', vi.fn(async () => { throw new Error('missing bundle'); })],
