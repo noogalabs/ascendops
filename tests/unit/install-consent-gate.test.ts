@@ -17,14 +17,18 @@ const REAL_SUBPROCESS_DEADLINE_MS = 120_000;
 // if the async helper fails to settle after terminating the child.
 const REAL_SUBPROCESS_TEST_TIMEOUT_MS = REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
+// Casualty harness ceilings cover the full possible startup -> readiness ->
+// child-deadline chain plus close settlement. Unused phases do not cost runtime.
 const WEDGE_CASUALTY_DEADLINE_MS = 200;
 const GRANDCHILD_SURVIVAL_MARKER_DELAY_MS = 500;
 const WEDGE_CASUALTY_TEST_TIMEOUT_MS =
-  REAL_SUBPROCESS_DEADLINE_MS + WEDGE_CASUALTY_DEADLINE_MS + 5_000;
+  REAL_SUBPROCESS_DEADLINE_MS + REAL_SUBPROCESS_DEADLINE_MS +
+  WEDGE_CASUALTY_DEADLINE_MS + 5_000;
 const READINESS_CASUALTY_DEADLINE_MS = 200;
 const READINESS_CASUALTY_STARTUP_DELAY_MS = 300;
 const READINESS_CASUALTY_TEST_TIMEOUT_MS =
-  REAL_SUBPROCESS_DEADLINE_MS + READINESS_CASUALTY_DEADLINE_MS + 5_000;
+  REAL_SUBPROCESS_DEADLINE_MS + READINESS_CASUALTY_DEADLINE_MS +
+  REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 
 // Bound the child itself instead of relying on the later harness ceiling. The
 // production deadline is
