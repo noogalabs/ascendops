@@ -12,6 +12,9 @@ import {
 } from '../../installer/consent-gate.mjs';
 
 const REAL_SUBPROCESS_DEADLINE_MS = 120_000;
+// Keep Vitest outside the child deadline: it may report a harness failure, but
+// only spawnSync's native timeout can interrupt the blocking correctness path.
+const REAL_SUBPROCESS_TEST_TIMEOUT_MS = REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
 
 // Vitest's timeout cannot interrupt spawnSync because the call blocks the JS
@@ -159,7 +162,7 @@ describe('installer unattended consent gate', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(message);
-  });
+  }, REAL_SUBPROCESS_TEST_TIMEOUT_MS);
 
   it.each([
     ['grant then revoke', ['--grant', '--revoke']],
@@ -185,7 +188,7 @@ describe('installer unattended consent gate', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('exactly one of --grant or --revoke');
     expect(existsSync(writeMarker)).toBe(false);
-  });
+  }, REAL_SUBPROCESS_TEST_TIMEOUT_MS);
 
   it('stops before install work when the required consent gate is absent', () => {
     const installDir = mkdtempSync(join(tmpdir(), 'old-checkout-'));
@@ -239,7 +242,7 @@ describe('installer unattended consent gate', () => {
     expect(existsSync(npmMarker)).toBe(false);
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain('Required installer file is missing');
-  });
+  }, REAL_SUBPROCESS_TEST_TIMEOUT_MS);
 
   it.each([
     ['No', false, 'preflight import failure', vi.fn(async () => { throw new Error('missing bundle'); })],
