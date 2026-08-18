@@ -18,11 +18,13 @@ const REAL_SUBPROCESS_DEADLINE_MS = 120_000;
 const REAL_SUBPROCESS_TEST_TIMEOUT_MS = REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
 const WEDGE_CASUALTY_DEADLINE_MS = 200;
+const GRANDCHILD_SURVIVAL_MARKER_DELAY_MS = 500;
 const WEDGE_CASUALTY_TEST_TIMEOUT_MS =
   REAL_SUBPROCESS_DEADLINE_MS + WEDGE_CASUALTY_DEADLINE_MS + 5_000;
 const READINESS_CASUALTY_DEADLINE_MS = 200;
+const READINESS_CASUALTY_STARTUP_DELAY_MS = 300;
 const READINESS_CASUALTY_TEST_TIMEOUT_MS =
-  READINESS_CASUALTY_DEADLINE_MS * 2 + 5_000;
+  REAL_SUBPROCESS_DEADLINE_MS + READINESS_CASUALTY_DEADLINE_MS + 5_000;
 
 // Bound the child itself instead of relying on the later harness ceiling. The
 // production deadline is
@@ -37,6 +39,8 @@ function runRealSubprocess(
   deadlineMs = REAL_SUBPROCESS_DEADLINE_MS,
   readyMarkerPath?: string,
   readinessDeadlineMs = REAL_SUBPROCESS_DEADLINE_MS,
+  startupMarkerPath?: string,
+  startupDeadlineMs = REAL_SUBPROCESS_DEADLINE_MS,
 ): Promise<{
   status: number | null;
   signal: NodeJS.Signals | null;
@@ -53,10 +57,12 @@ function runRealSubprocess(
     });
     let stdout = '';
     let stderr = '';
-    let timeoutPhase: 'child' | 'readiness' | undefined;
+    let timeoutPhase: 'child' | 'readiness' | 'startup' | undefined;
     let deadline: NodeJS.Timeout | undefined;
     let readyPoll: NodeJS.Timeout | undefined;
     let readyWaitDeadline: NodeJS.Timeout | undefined;
+    let startupPoll: NodeJS.Timeout | undefined;
+    let startupWaitDeadline: NodeJS.Timeout | undefined;
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -82,7 +88,11 @@ function runRealSubprocess(
       }, deadlineMs);
     };
 
-    if (readyMarkerPath) {
+    const armReadinessWait = () => {
+      if (!readyMarkerPath) {
+        armDeadline();
+        return;
+      }
       readyWaitDeadline = setTimeout(() => {
         if (readyPoll) clearInterval(readyPoll);
         readyPoll = undefined;
@@ -97,6 +107,25 @@ function runRealSubprocess(
         readyWaitDeadline = undefined;
         armDeadline();
       }, 5);
+    };
+
+    if (startupMarkerPath) {
+      startupWaitDeadline = setTimeout(() => {
+        if (startupPoll) clearInterval(startupPoll);
+        startupPoll = undefined;
+        timeoutPhase = 'startup';
+        killSubprocessTree();
+      }, startupDeadlineMs);
+      startupPoll = setInterval(() => {
+        if (!existsSync(startupMarkerPath)) return;
+        clearInterval(startupPoll);
+        startupPoll = undefined;
+        if (startupWaitDeadline) clearTimeout(startupWaitDeadline);
+        startupWaitDeadline = undefined;
+        armReadinessWait();
+      }, 5);
+    } else if (readyMarkerPath) {
+      armReadinessWait();
     } else {
       child.once('spawn', armDeadline);
     }
@@ -105,12 +134,16 @@ function runRealSubprocess(
       if (deadline) clearTimeout(deadline);
       if (readyPoll) clearInterval(readyPoll);
       if (readyWaitDeadline) clearTimeout(readyWaitDeadline);
+      if (startupPoll) clearInterval(startupPoll);
+      if (startupWaitDeadline) clearTimeout(startupWaitDeadline);
       resolve({ status: null, signal: null, stdout, stderr, error });
     });
     child.once('close', (status, signal) => {
       if (deadline) clearTimeout(deadline);
       if (readyPoll) clearInterval(readyPoll);
       if (readyWaitDeadline) clearTimeout(readyWaitDeadline);
+      if (startupPoll) clearInterval(startupPoll);
+      if (startupWaitDeadline) clearTimeout(startupWaitDeadline);
       const error = timeoutPhase
         ? Object.assign(new Error(`Subprocess ${timeoutPhase} deadline exceeded`), {
           code: 'ETIMEDOUT',
@@ -136,7 +169,7 @@ describe('real subprocess timeout policy', () => {
       `#!/usr/bin/env node\n` +
         `const fs = require('fs');\n` +
         `fs.writeFileSync(${JSON.stringify(grandchildStartedMarker)}, 'started');\n` +
-        `setTimeout(() => fs.writeFileSync(${JSON.stringify(grandchildSurvivedMarker)}, 'survived'), 500);\n` +
+        `setTimeout(() => fs.writeFileSync(${JSON.stringify(grandchildSurvivedMarker)}, 'survived'), ${GRANDCHILD_SURVIVAL_MARKER_DELAY_MS});\n` +
         `setTimeout(() => process.exit(0), 1000);\n` +
         `setInterval(() => {}, 1000);\n`,
     );
@@ -157,22 +190,26 @@ describe('real subprocess timeout policy', () => {
       WEDGE_CASUALTY_DEADLINE_MS,
       startedMarker,
       REAL_SUBPROCESS_DEADLINE_MS,
+      grandchildStartedMarker,
+      REAL_SUBPROCESS_DEADLINE_MS,
     );
 
     expect(existsSync(startedMarker)).toBe(true); // precondition: the fake installer reached its deliberate wedge
     expect(existsSync(grandchildStartedMarker)).toBe(true); // precondition: fake git, not the installer parent, reached the wedge
     expect(result.signal).toBe('SIGKILL');
     expect(result.error).toMatchObject({ code: 'ETIMEDOUT', phase: 'child' });
-    expect(existsSync(grandchildSurvivedMarker)).toBe(false); // casualty: the pipe-inheriting descendant died with the group
+    await new Promise(resolve => setTimeout(resolve, GRANDCHILD_SURVIVAL_MARKER_DELAY_MS + 100));
+    expect(existsSync(grandchildSurvivedMarker)).toBe(false); // casualty: the pipe-inheriting descendant stayed dead through its write window
     const grandchildPid = Number(readFileSync(grandchildPidFile, 'utf8'));
-    let grandchildSurvived = true;
+    let grandchildPidStillPresent = true;
     try {
       process.kill(grandchildPid, 0);
     } catch {
-      grandchildSurvived = false;
+      grandchildPidStillPresent = false;
     }
-    if (grandchildSurvived) process.kill(grandchildPid, REAL_SUBPROCESS_KILL_SIGNAL);
-    expect(grandchildSurvived).toBe(false);
+    // signal 0 also succeeds for an unreaped zombie, so this is cleanup only;
+    // the delayed survival marker above is the zombie-immune death assertion.
+    if (grandchildPidStillPresent) process.kill(grandchildPid, REAL_SUBPROCESS_KILL_SIGNAL);
   }, WEDGE_CASUALTY_TEST_TIMEOUT_MS);
 
   it('kills a child that starts but never completes the readiness handshake', async () => {
@@ -182,7 +219,7 @@ describe('real subprocess timeout policy', () => {
     const readinessMarker = join(root, 'installer-ready');
     writeFileSync(
       fakeInstaller,
-      `import fs from 'fs'; fs.writeFileSync(${JSON.stringify(childStartedMarker)}, 'started'); setInterval(() => {}, 1000);\n`,
+      `import fs from 'fs'; await new Promise(resolve => setTimeout(resolve, ${READINESS_CASUALTY_STARTUP_DELAY_MS})); fs.writeFileSync(${JSON.stringify(childStartedMarker)}, 'started'); setInterval(() => {}, 1000);\n`,
     );
 
     const result = await runRealSubprocess(
@@ -192,6 +229,8 @@ describe('real subprocess timeout policy', () => {
       REAL_SUBPROCESS_DEADLINE_MS,
       readinessMarker,
       READINESS_CASUALTY_DEADLINE_MS,
+      childStartedMarker,
+      REAL_SUBPROCESS_DEADLINE_MS,
     );
 
     expect(existsSync(childStartedMarker)).toBe(true); // precondition: the child ran but deliberately never became ready
