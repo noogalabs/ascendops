@@ -5,6 +5,10 @@ interface NodePtyModule {
   spawn: (...args: any[]) => any;
 }
 
+type NodePtySpawn = NodePtyModule['spawn'];
+
+let loadedPackageRoot: string | null = null;
+
 function collectSpawnHelpers(directory: string, helpers: string[]): void {
   let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
   try {
@@ -48,6 +52,18 @@ export function repairNodePtySpawnHelpers(packageRoot: string): string[] {
 
 export function loadNodePty(): NodePtyModule {
   const packageJson = require.resolve('node-pty/package.json');
-  repairNodePtySpawnHelpers(dirname(packageJson));
+  loadedPackageRoot = dirname(packageJson);
+  repairNodePtySpawnHelpers(loadedPackageRoot);
   return require('node-pty') as NodePtyModule;
+}
+
+/**
+ * Cross the permission-repair door at every child spawn while retaining the
+ * native module function cache. Injected test spawn functions have no loaded
+ * package custody and therefore remain valid seams.
+ */
+export function prepareNodePtySpawn(cachedSpawn: NodePtySpawn | null): NodePtySpawn {
+  if (!cachedSpawn) return loadNodePty().spawn;
+  if (loadedPackageRoot) repairNodePtySpawnHelpers(loadedPackageRoot);
+  return cachedSpawn;
 }

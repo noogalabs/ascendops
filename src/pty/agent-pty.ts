@@ -11,7 +11,7 @@ import {
   readUnattendedConsent,
 } from '../utils/claude-preflight.js';
 import { parseEnvFileStrict } from '../utils/env.js';
-import { loadNodePty } from './node-pty-loader.js';
+import { prepareNodePtySpawn } from './node-pty-loader.js';
 
 // node-pty types
 interface IPty {
@@ -92,11 +92,9 @@ export class AgentPTY {
       effectiveSkip = readUnattendedConsent(this.env.frameworkRoot);
     }
 
-    // Lazy-load node-pty (native addon)
-    if (!this.spawnFn) {
-      const nodePty = loadNodePty();
-      this.spawnFn = nodePty.spawn;
-    }
+    // Repair the installed helper at every spawn boundary. npm can replace the
+    // package after this instance has cached node-pty's spawn function.
+    this.spawnFn = prepareNodePtySpawn(this.spawnFn);
 
     const configuredCwd = this.config.working_directory;
     if (configuredCwd !== undefined && configuredCwd !== '') {
