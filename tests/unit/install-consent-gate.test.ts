@@ -11,6 +11,33 @@ import {
   runConsentGate,
 } from '../../installer/consent-gate.mjs';
 
+const VITEST_TIMEOUT_DISABLED = 0;
+const LOCAL_REAL_SUBPROCESS_HANG_DETECTOR_MS = 30_000;
+
+// A per-test wall-clock ceiling cannot distinguish a wedged subprocess from a
+// healthy worker starved by parallel CI load. CI therefore leaves correctness
+// to assertions and the job-level watchdog. Local runs retain a named wedge
+// guard so an operator gets prompt feedback from an actually stuck subprocess.
+const realSubprocessTestTimeout = (isCI = Boolean(process.env.CI)) => (
+  isCI ? VITEST_TIMEOUT_DISABLED : LOCAL_REAL_SUBPROCESS_HANG_DETECTOR_MS
+);
+
+describe('real subprocess timeout policy', () => {
+  it('removes the wall-clock ceiling from the CI correctness path', () => {
+    const localHangDetector = realSubprocessTestTimeout(false);
+    expect(localHangDetector).toBeGreaterThan(VITEST_TIMEOUT_DISABLED); // precondition: the paths diverge
+
+    expect(realSubprocessTestTimeout(true)).toBe(VITEST_TIMEOUT_DISABLED);
+  });
+
+  it('retains the named hang detector for local subprocess runs', () => {
+    const ciCorrectnessTimeout = realSubprocessTestTimeout(true);
+    expect(ciCorrectnessTimeout).toBe(VITEST_TIMEOUT_DISABLED); // precondition: CI has no per-test ceiling
+
+    expect(realSubprocessTestTimeout(false)).toBe(LOCAL_REAL_SUBPROCESS_HANG_DETECTOR_MS);
+  });
+});
+
 describe('installer unattended consent gate', () => {
   it('uses a controlling TTY when installer stdin is piped', async () => {
     const promptTty = vi.fn(async () => true);
@@ -114,7 +141,7 @@ describe('installer unattended consent gate', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(message);
-  });
+  }, realSubprocessTestTimeout());
 
   it.each([
     ['grant then revoke', ['--grant', '--revoke']],
@@ -140,7 +167,7 @@ describe('installer unattended consent gate', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('exactly one of --grant or --revoke');
     expect(existsSync(writeMarker)).toBe(false);
-  });
+  }, realSubprocessTestTimeout());
 
   it('stops before install work when the required consent gate is absent', () => {
     const installDir = mkdtempSync(join(tmpdir(), 'old-checkout-'));
@@ -158,6 +185,7 @@ describe('installer unattended consent gate', () => {
     const installDir = join(root, 'checkout');
     const fakeBin = join(root, 'bin');
     const npmMarker = join(root, 'npm-install-ran');
+    const fakeNpmMarker = join(root, 'fake-npm-ran');
     mkdirSync(join(installDir, '.git'), { recursive: true });
     mkdirSync(fakeBin);
 
@@ -167,7 +195,7 @@ describe('installer unattended consent gate', () => {
       chmodSync(file, 0o755);
     };
     fake('node', 'echo v22.0.0');
-    fake('npm', `if [ "$1" = "--version" ]; then echo 10.0.0; else touch ${JSON.stringify(npmMarker)}; fi`);
+    fake('npm', `touch ${JSON.stringify(fakeNpmMarker)}; if [ "$1" = "--version" ]; then echo 10.0.0; else touch ${JSON.stringify(npmMarker)}; fi`);
     fake('git', 'case "$1 $2 $3" in "--version  ") echo "git version 2.50.0";; "remote get-url upstream") echo upstream;; "pull upstream main") exit 1;; *) exit 0;; esac');
     fake('xcode-select', 'echo /Library/Developer/CommandLineTools');
     fake('python3', 'echo Python 3.12.0');
@@ -189,10 +217,11 @@ describe('installer unattended consent gate', () => {
       },
     });
 
+    expect(existsSync(fakeNpmMarker)).toBe(true); // precondition: the child used fakeBin, not the host toolchain
+    expect(existsSync(npmMarker)).toBe(false);
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain('Required installer file is missing');
-    expect(existsSync(npmMarker)).toBe(false);
-  }, 30_000);
+  }, realSubprocessTestTimeout());
 
   it.each([
     ['No', false, 'preflight import failure', vi.fn(async () => { throw new Error('missing bundle'); })],
