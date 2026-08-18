@@ -185,6 +185,38 @@ describe('CodexAppServerPTY socket path policy', () => {
 });
 
 describe('CodexAppServerPTY lifecycle', () => {
+  it('re-repairs before a second app-server spawn on the same object with its retained function', async () => {
+    const pty = new CodexAppServerPTY(mockEnv, {});
+    let helperExecutable = false;
+    const retainedSpawn = vi.fn(() => {
+      if (!helperExecutable) throw new Error('posix_spawnp failed');
+      return spawnedPty;
+    });
+    const prepareSpawn = vi.fn((cached: typeof retainedSpawn | null) => {
+      helperExecutable = true;
+      return cached ?? retainedSpawn;
+    });
+    const internals = pty as unknown as {
+      _spawnFn: typeof retainedSpawn | null;
+      _prepareSpawnFn: typeof prepareSpawn;
+      startAppServer(): Promise<void>;
+      stopPidPoll(): void;
+    };
+    internals._spawnFn = null;
+    internals._prepareSpawnFn = prepareSpawn;
+
+    await internals.startAppServer();
+    helperExecutable = false;
+    await internals.startAppServer();
+
+    expect(prepareSpawn).toHaveBeenNthCalledWith(1, null);
+    expect(prepareSpawn).toHaveBeenNthCalledWith(2, retainedSpawn);
+    expect(retainedSpawn).toHaveBeenCalledTimes(2);
+    expect(internals._spawnFn).toBe(retainedSpawn);
+    expect(helperExecutable).toBe(true);
+    internals.stopPidPoll();
+  });
+
   it('finalizes once on RPC disconnect even if PTY exit arrives later', async () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     const onExit = vi.fn();

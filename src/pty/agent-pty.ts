@@ -53,6 +53,7 @@ export class AgentPTY {
   protected config: AgentConfig;
   private onExitHandler: ((exitCode: number, signal?: number) => void) | null = null;
   private spawnFn: SpawnFn | null = null;
+  private prepareSpawnFn: (cachedSpawn: SpawnFn | null) => SpawnFn = prepareNodePtySpawn;
   // Trust-prompt auto-accept timers. Stored so they can be cancelled when
   // the PTY exits or is killed — otherwise a timer from a previous spawn()
   // can fire against a RESPAWNED PTY on the same instance and write a stray
@@ -94,7 +95,7 @@ export class AgentPTY {
 
     // Repair the installed helper at every spawn boundary. npm can replace the
     // package after this instance has cached node-pty's spawn function.
-    this.spawnFn = prepareNodePtySpawn(this.spawnFn);
+    this.spawnFn = this.prepareSpawnFn(this.spawnFn);
 
     const configuredCwd = this.config.working_directory;
     if (configuredCwd !== undefined && configuredCwd !== '') {

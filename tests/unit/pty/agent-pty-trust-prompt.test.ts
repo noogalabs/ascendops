@@ -111,6 +111,38 @@ afterEach(() => {
 });
 
 describe('AgentPTY trust-prompt auto-accept', () => {
+  it('re-repairs before a second spawn on the same object with its retained function', async () => {
+    const handle = makeFakePty();
+    const pty = new AgentPTY(TEST_ENV, { vendor: 'anthropic' });
+    let helperExecutable = false;
+    const retainedSpawn = vi.fn(() => {
+      if (!helperExecutable) throw new Error('posix_spawnp failed');
+      return handle.fake;
+    });
+    const prepareSpawn = vi.fn((cached: typeof retainedSpawn | null) => {
+      helperExecutable = true;
+      return cached ?? retainedSpawn;
+    });
+    const internals = pty as unknown as {
+      spawnFn: typeof retainedSpawn | null;
+      prepareSpawnFn: typeof prepareSpawn;
+    };
+    internals.spawnFn = null;
+    internals.prepareSpawnFn = prepareSpawn;
+
+    await pty.spawn('fresh', 'first');
+    pty.kill();
+    helperExecutable = false;
+    await pty.spawn('fresh', 'second');
+
+    expect(prepareSpawn).toHaveBeenNthCalledWith(1, null);
+    expect(prepareSpawn).toHaveBeenNthCalledWith(2, retainedSpawn);
+    expect(retainedSpawn).toHaveBeenCalledTimes(2);
+    expect(internals.spawnFn).toBe(retainedSpawn);
+    expect(helperExecutable).toBe(true);
+    pty.kill();
+  });
+
   it.each([
     { label: 'declined record', record: false, config: {}, flag: false, bypassWrite: false },
     { label: 'accepted record', record: true, config: {}, flag: true, bypassWrite: true },

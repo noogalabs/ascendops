@@ -9,15 +9,15 @@ describe('node-pty materialization custody', () => {
     for (const relative of ['src/pty/agent-pty.ts', 'src/pty/codex-app-server-pty.ts']) {
       const source = readFileSync(join(root, relative), 'utf8');
       expect(source).toContain("import { prepareNodePtySpawn } from './node-pty-loader.js';");
-      expect(source).toContain('prepareNodePtySpawn(');
+      expect(source).toContain('= prepareNodePtySpawn;');
       expect(source).not.toContain("require('node-pty')");
     }
   });
 
   it('repairs before every spawn rather than only inside the function cache gate', () => {
     const cases = [
-      ['src/pty/agent-pty.ts', 'this.spawnFn = prepareNodePtySpawn(this.spawnFn);'],
-      ['src/pty/codex-app-server-pty.ts', 'this._spawnFn = prepareNodePtySpawn(this._spawnFn);'],
+      ['src/pty/agent-pty.ts', 'this.spawnFn = this.prepareSpawnFn(this.spawnFn);'],
+      ['src/pty/codex-app-server-pty.ts', 'this._spawnFn = this._prepareSpawnFn(this._spawnFn);'],
     ] as const;
 
     for (const [relative, repairBoundary] of cases) {

@@ -256,6 +256,7 @@ export class CodexAppServerPTY {
   private _turnReconcilePolls = 3;
   private _retiredTurnIds = new Set<string>();
   private _spawnFn: SpawnFn | null = null;
+  private _prepareSpawnFn: (cachedSpawn: SpawnFn | null) => SpawnFn = prepareNodePtySpawn;
   private _appServerPty: IPty | null = null;
   private _rpc: WsUnixJsonRpcClient | null = null;
   private _rpcMessageUnsubscribe: (() => void) | null = null;
@@ -854,7 +855,7 @@ export class CodexAppServerPTY {
   private async startAppServer(): Promise<void> {
     // Repair on every child spawn, even when this long-lived server object has
     // cached node-pty's spawn function and npm has since replaced the package.
-    this._spawnFn = prepareNodePtySpawn(this._spawnFn);
+    this._spawnFn = this._prepareSpawnFn(this._spawnFn);
 
     // codex-cli 0.118.0 dropped `unix://` --listen support. Allocate a free
     // ephemeral TCP port on loopback and spawn with `--listen ws://127.0.0.1:<port>`.
