@@ -1,7 +1,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
+import { spawn, type SpawnOptionsWithoutStdio } from 'child_process';
 import { describe, expect, it, vi } from 'vitest';
 import {
   installerConsentOutcome,
@@ -13,12 +13,12 @@ import {
 
 const REAL_SUBPROCESS_DEADLINE_MS = 120_000;
 // Keep Vitest outside the child deadline: it may report a harness failure, but
-// only spawnSync's native timeout can interrupt the blocking correctness path.
+// the child timer is the mechanism that interrupts the correctness path.
 const REAL_SUBPROCESS_TEST_TIMEOUT_MS = REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
 
-// Vitest's timeout cannot interrupt spawnSync because the call blocks the JS
-// thread. Bound the child itself instead. The production deadline is
+// Bound the child itself instead of relying on Vitest's reporting ceiling. The
+// production deadline is
 // deliberately loose: it targets an unbounded hang, not a slow run, so a tight
 // ceiling would buy no additional wedge protection and would recreate CI
 // starvation sensitivity one layer down. This mechanism is identical in CI and
@@ -26,18 +26,78 @@ const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
 function runRealSubprocess(
   command: string,
   args: string[],
-  options: Omit<SpawnSyncOptionsWithStringEncoding, 'timeout' | 'killSignal'>,
+  options: SpawnOptionsWithoutStdio,
   deadlineMs = REAL_SUBPROCESS_DEADLINE_MS,
-) {
-  return spawnSync(command, args, {
-    ...options,
-    timeout: deadlineMs,
-    killSignal: REAL_SUBPROCESS_KILL_SIGNAL,
+  readyMarkerPath?: string,
+): Promise<{
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  error?: NodeJS.ErrnoException;
+}> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let deadline: NodeJS.Timeout | undefined;
+    let readyPoll: NodeJS.Timeout | undefined;
+    let readyWaitDeadline: NodeJS.Timeout | undefined;
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+
+    const armDeadline = () => {
+      deadline = setTimeout(() => {
+        timedOut = true;
+        child.kill(REAL_SUBPROCESS_KILL_SIGNAL);
+      }, deadlineMs);
+    };
+
+    if (readyMarkerPath) {
+      readyWaitDeadline = setTimeout(() => {
+        if (readyPoll) clearInterval(readyPoll);
+        readyPoll = undefined;
+        child.kill(REAL_SUBPROCESS_KILL_SIGNAL);
+      }, REAL_SUBPROCESS_DEADLINE_MS);
+      readyPoll = setInterval(() => {
+        if (!existsSync(readyMarkerPath)) return;
+        clearInterval(readyPoll);
+        readyPoll = undefined;
+        if (readyWaitDeadline) clearTimeout(readyWaitDeadline);
+        readyWaitDeadline = undefined;
+        armDeadline();
+      }, 5);
+    } else {
+      child.once('spawn', armDeadline);
+    }
+
+    child.once('error', error => {
+      if (deadline) clearTimeout(deadline);
+      if (readyPoll) clearInterval(readyPoll);
+      if (readyWaitDeadline) clearTimeout(readyWaitDeadline);
+      resolve({ status: null, signal: null, stdout, stderr, error });
+    });
+    child.once('close', (status, signal) => {
+      if (deadline) clearTimeout(deadline);
+      if (readyPoll) clearInterval(readyPoll);
+      if (readyWaitDeadline) clearTimeout(readyWaitDeadline);
+      const error = timedOut
+        ? Object.assign(new Error('Subprocess deadline exceeded'), { code: 'ETIMEDOUT' })
+        : undefined;
+      resolve({ status, signal, stdout, stderr, error });
+    });
   });
 }
 
 describe('real subprocess timeout policy', () => {
-  it('kills a wedged installer subprocess at the child deadline', () => {
+  it('arms the deadline after readiness, then kills a wedged installer subprocess', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wedged-installer-'));
     const fakeInstaller = join(root, 'install.mjs');
     const startedMarker = join(root, 'installer-started');
@@ -46,11 +106,12 @@ describe('real subprocess timeout policy', () => {
       `import fs from 'fs'; fs.writeFileSync(${JSON.stringify(startedMarker)}, 'started'); setInterval(() => {}, 1000);\n`,
     );
 
-    const result = runRealSubprocess(
+    const result = await runRealSubprocess(
       process.execPath,
       [fakeInstaller],
-      { encoding: 'utf8' },
+      {},
       200,
+      startedMarker,
     );
 
     expect(existsSync(startedMarker)).toBe(true); // precondition: the fake installer reached its deliberate wedge
@@ -144,7 +205,7 @@ describe('installer unattended consent gate', () => {
   it.each([
     ['--grant', 'Unattended mode granted; consent recorded.'],
     ['--revoke', 'Unattended mode revoked; consent recorded.'],
-  ])('prints the exact successful consent-command result for %s', (action, message) => {
+  ])('prints the exact successful consent-command result for %s', async (action, message) => {
     const installDir = mkdtempSync(join(tmpdir(), 'consent-command-cli-'));
     const installerDir = join(installDir, 'installer');
     const distDir = join(installDir, 'dist');
@@ -156,9 +217,7 @@ describe('installer unattended consent gate', () => {
       'module.exports = { applyUnattendedConsent() { return { ok: true, recorded: true }; } };\n',
     );
 
-    const result = runRealSubprocess(process.execPath, [join(installerDir, 'consent-gate.mjs'), action], {
-      encoding: 'utf8',
-    });
+    const result = await runRealSubprocess(process.execPath, [join(installerDir, 'consent-gate.mjs'), action], {});
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(message);
@@ -168,7 +227,7 @@ describe('installer unattended consent gate', () => {
     ['grant then revoke', ['--grant', '--revoke']],
     ['revoke then grant', ['--revoke', '--grant']],
     ['no recognized action', ['--unknown']],
-  ])('rejects %s with a nonzero exit and no consent write', (_label, args) => {
+  ])('rejects %s with a nonzero exit and no consent write', async (_label, args) => {
     const installDir = mkdtempSync(join(tmpdir(), 'consent-command-cli-'));
     const installerDir = join(installDir, 'installer');
     const distDir = join(installDir, 'dist');
@@ -181,9 +240,7 @@ describe('installer unattended consent gate', () => {
       `module.exports = { applyUnattendedConsent() { require('fs').writeFileSync(${JSON.stringify(writeMarker)}, 'called'); return { ok: true, recorded: true }; } };\n`,
     );
 
-    const result = runRealSubprocess(process.execPath, [join(installerDir, 'consent-gate.mjs'), ...args], {
-      encoding: 'utf8',
-    });
+    const result = await runRealSubprocess(process.execPath, [join(installerDir, 'consent-gate.mjs'), ...args], {});
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('exactly one of --grant or --revoke');
@@ -201,7 +258,7 @@ describe('installer unattended consent gate', () => {
     expect(installDependencies).not.toHaveBeenCalled();
   });
 
-  it('aborts a stale checkout before npm install when pull fails and the gate is absent', () => {
+  it('aborts a stale checkout before npm install when pull fails and the gate is absent', async () => {
     const root = mkdtempSync(join(tmpdir(), 'stale-installer-'));
     const installDir = join(root, 'checkout');
     const fakeBin = join(root, 'bin');
@@ -227,9 +284,8 @@ describe('installer unattended consent gate', () => {
     fake('brew', 'exit 0');
 
     const installerPath = process.env.ASCENDOPS_INSTALLER_UNDER_TEST ?? join(process.cwd(), 'install.mjs');
-    const result = runRealSubprocess(process.execPath, [installerPath], {
+    const result = await runRealSubprocess(process.execPath, [installerPath], {
       cwd: process.cwd(),
-      encoding: 'utf8',
       env: {
         ...process.env,
         ASCENDOPS_DIR: installDir,
