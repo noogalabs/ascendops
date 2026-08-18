@@ -12,12 +12,13 @@ import {
 } from '../../installer/consent-gate.mjs';
 
 const REAL_SUBPROCESS_DEADLINE_MS = 120_000;
-// Keep Vitest outside the child deadline: it may report a harness failure, but
-// the child timer is the mechanism that interrupts the correctness path.
+// Keep Vitest structurally outside the child deadline. The child timer is
+// intended to fire first at 120s; Vitest is a live secondary backstop 5s later
+// if the async helper fails to settle after terminating the child.
 const REAL_SUBPROCESS_TEST_TIMEOUT_MS = REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
 
-// Bound the child itself instead of relying on Vitest's reporting ceiling. The
+// Bound the child itself instead of relying on the later harness ceiling. The
 // production deadline is
 // deliberately loose: it targets an unbounded hang, not a slow run, so a tight
 // ceiling would buy no additional wedge protection and would recreate CI
@@ -29,6 +30,7 @@ function runRealSubprocess(
   options: SpawnOptionsWithoutStdio,
   deadlineMs = REAL_SUBPROCESS_DEADLINE_MS,
   readyMarkerPath?: string,
+  readinessDeadlineMs = REAL_SUBPROCESS_DEADLINE_MS,
 ): Promise<{
   status: number | null;
   signal: NodeJS.Signals | null;
@@ -43,7 +45,7 @@ function runRealSubprocess(
     });
     let stdout = '';
     let stderr = '';
-    let timedOut = false;
+    let timeoutPhase: 'child' | 'readiness' | undefined;
     let deadline: NodeJS.Timeout | undefined;
     let readyPoll: NodeJS.Timeout | undefined;
     let readyWaitDeadline: NodeJS.Timeout | undefined;
@@ -55,7 +57,7 @@ function runRealSubprocess(
 
     const armDeadline = () => {
       deadline = setTimeout(() => {
-        timedOut = true;
+        timeoutPhase = 'child';
         child.kill(REAL_SUBPROCESS_KILL_SIGNAL);
       }, deadlineMs);
     };
@@ -64,8 +66,9 @@ function runRealSubprocess(
       readyWaitDeadline = setTimeout(() => {
         if (readyPoll) clearInterval(readyPoll);
         readyPoll = undefined;
+        timeoutPhase = 'readiness';
         child.kill(REAL_SUBPROCESS_KILL_SIGNAL);
-      }, REAL_SUBPROCESS_DEADLINE_MS);
+      }, readinessDeadlineMs);
       readyPoll = setInterval(() => {
         if (!existsSync(readyMarkerPath)) return;
         clearInterval(readyPoll);
@@ -88,8 +91,11 @@ function runRealSubprocess(
       if (deadline) clearTimeout(deadline);
       if (readyPoll) clearInterval(readyPoll);
       if (readyWaitDeadline) clearTimeout(readyWaitDeadline);
-      const error = timedOut
-        ? Object.assign(new Error('Subprocess deadline exceeded'), { code: 'ETIMEDOUT' })
+      const error = timeoutPhase
+        ? Object.assign(new Error(`Subprocess ${timeoutPhase} deadline exceeded`), {
+          code: 'ETIMEDOUT',
+          phase: timeoutPhase,
+        })
         : undefined;
       resolve({ status, signal, stdout, stderr, error });
     });
@@ -116,7 +122,32 @@ describe('real subprocess timeout policy', () => {
 
     expect(existsSync(startedMarker)).toBe(true); // precondition: the fake installer reached its deliberate wedge
     expect(result.signal).toBe('SIGKILL');
-    expect(result.error).toMatchObject({ code: 'ETIMEDOUT' });
+    expect(result.error).toMatchObject({ code: 'ETIMEDOUT', phase: 'child' });
+  });
+
+  it('kills a child that starts but never completes the readiness handshake', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'never-ready-installer-'));
+    const fakeInstaller = join(root, 'install.mjs');
+    const childStartedMarker = join(root, 'child-started');
+    const readinessMarker = join(root, 'installer-ready');
+    writeFileSync(
+      fakeInstaller,
+      `import fs from 'fs'; fs.writeFileSync(${JSON.stringify(childStartedMarker)}, 'started'); setInterval(() => {}, 1000);\n`,
+    );
+
+    const result = await runRealSubprocess(
+      process.execPath,
+      [fakeInstaller],
+      {},
+      REAL_SUBPROCESS_DEADLINE_MS,
+      readinessMarker,
+      200,
+    );
+
+    expect(existsSync(childStartedMarker)).toBe(true); // precondition: the child ran but deliberately never became ready
+    expect(existsSync(readinessMarker)).toBe(false);
+    expect(result.signal).toBe('SIGKILL');
+    expect(result.error).toMatchObject({ code: 'ETIMEDOUT', phase: 'readiness' });
   });
 });
 
