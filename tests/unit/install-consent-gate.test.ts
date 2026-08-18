@@ -11,12 +11,15 @@ import {
   runConsentGate,
 } from '../../installer/consent-gate.mjs';
 
-const REAL_SUBPROCESS_DEADLINE_MS = 30_000;
+const REAL_SUBPROCESS_DEADLINE_MS = 120_000;
 const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
 
 // Vitest's timeout cannot interrupt spawnSync because the call blocks the JS
-// thread. Bound the child itself instead. This is the correctness mechanism in
-// both CI and local runs; the workflow-level watchdog is a separate backstop.
+// thread. Bound the child itself instead. The production deadline is
+// deliberately loose: it targets an unbounded hang, not a slow run, so a tight
+// ceiling would buy no additional wedge protection and would recreate CI
+// starvation sensitivity one layer down. This mechanism is identical in CI and
+// local runs; the workflow-level watchdog is a separate backstop.
 function runRealSubprocess(
   command: string,
   args: string[],
