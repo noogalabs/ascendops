@@ -17,6 +17,12 @@ const REAL_SUBPROCESS_DEADLINE_MS = 120_000;
 // if the async helper fails to settle after terminating the child.
 const REAL_SUBPROCESS_TEST_TIMEOUT_MS = REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 const REAL_SUBPROCESS_KILL_SIGNAL = 'SIGKILL' as const;
+const WEDGE_CASUALTY_DEADLINE_MS = 200;
+const WEDGE_CASUALTY_TEST_TIMEOUT_MS =
+  REAL_SUBPROCESS_DEADLINE_MS + WEDGE_CASUALTY_DEADLINE_MS + 5_000;
+const READINESS_CASUALTY_DEADLINE_MS = 200;
+const READINESS_CASUALTY_TEST_TIMEOUT_MS =
+  READINESS_CASUALTY_DEADLINE_MS * 2 + 5_000;
 
 // Bound the child itself instead of relying on the later harness ceiling. The
 // production deadline is
@@ -120,13 +126,25 @@ describe('real subprocess timeout policy', () => {
   it('arms the deadline after readiness, then kills a wedged installer subprocess', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wedged-installer-'));
     const fakeInstaller = join(root, 'install.mjs');
+    const fakeGit = join(root, 'git');
     const startedMarker = join(root, 'installer-started');
     const grandchildStartedMarker = join(root, 'grandchild-started');
+    const grandchildSurvivedMarker = join(root, 'grandchild-survived');
     const grandchildPidFile = join(root, 'grandchild-pid');
+    writeFileSync(
+      fakeGit,
+      `#!/usr/bin/env node\n` +
+        `const fs = require('fs');\n` +
+        `fs.writeFileSync(${JSON.stringify(grandchildStartedMarker)}, 'started');\n` +
+        `setTimeout(() => fs.writeFileSync(${JSON.stringify(grandchildSurvivedMarker)}, 'survived'), 500);\n` +
+        `setTimeout(() => process.exit(0), 1000);\n` +
+        `setInterval(() => {}, 1000);\n`,
+    );
+    chmodSync(fakeGit, 0o755);
     writeFileSync(
       fakeInstaller,
       `import fs from 'fs'; import { spawn } from 'child_process';\n` +
-        `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(grandchildStartedMarker)}, 'started'); setInterval(() => {}, 1000);`)}], { stdio: 'ignore' });\n` +
+        `const grandchild = spawn(${JSON.stringify(fakeGit)}, ['pull'], { stdio: 'inherit' });\n` +
         `fs.writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid));\n` +
         `const ready = setInterval(() => { if (!fs.existsSync(${JSON.stringify(grandchildStartedMarker)})) return; clearInterval(ready); fs.writeFileSync(${JSON.stringify(startedMarker)}, 'started'); }, 5);\n` +
         `setInterval(() => {}, 1000);\n`,
@@ -136,14 +154,16 @@ describe('real subprocess timeout policy', () => {
       process.execPath,
       [fakeInstaller],
       {},
-      200,
+      WEDGE_CASUALTY_DEADLINE_MS,
       startedMarker,
+      REAL_SUBPROCESS_DEADLINE_MS,
     );
 
     expect(existsSync(startedMarker)).toBe(true); // precondition: the fake installer reached its deliberate wedge
-    expect(existsSync(grandchildStartedMarker)).toBe(true); // precondition: the wedge lives in a real descendant
+    expect(existsSync(grandchildStartedMarker)).toBe(true); // precondition: fake git, not the installer parent, reached the wedge
     expect(result.signal).toBe('SIGKILL');
     expect(result.error).toMatchObject({ code: 'ETIMEDOUT', phase: 'child' });
+    expect(existsSync(grandchildSurvivedMarker)).toBe(false); // casualty: the pipe-inheriting descendant died with the group
     const grandchildPid = Number(readFileSync(grandchildPidFile, 'utf8'));
     let grandchildSurvived = true;
     try {
@@ -153,7 +173,7 @@ describe('real subprocess timeout policy', () => {
     }
     if (grandchildSurvived) process.kill(grandchildPid, REAL_SUBPROCESS_KILL_SIGNAL);
     expect(grandchildSurvived).toBe(false);
-  });
+  }, WEDGE_CASUALTY_TEST_TIMEOUT_MS);
 
   it('kills a child that starts but never completes the readiness handshake', async () => {
     const root = mkdtempSync(join(tmpdir(), 'never-ready-installer-'));
@@ -171,14 +191,14 @@ describe('real subprocess timeout policy', () => {
       {},
       REAL_SUBPROCESS_DEADLINE_MS,
       readinessMarker,
-      200,
+      READINESS_CASUALTY_DEADLINE_MS,
     );
 
     expect(existsSync(childStartedMarker)).toBe(true); // precondition: the child ran but deliberately never became ready
     expect(existsSync(readinessMarker)).toBe(false);
     expect(result.signal).toBe('SIGKILL');
     expect(result.error).toMatchObject({ code: 'ETIMEDOUT', phase: 'readiness' });
-  });
+  }, READINESS_CASUALTY_TEST_TIMEOUT_MS);
 });
 
 describe('installer unattended consent gate', () => {
