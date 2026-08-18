@@ -39,8 +39,10 @@ function runRealSubprocess(
   error?: NodeJS.ErrnoException;
 }> {
   return new Promise((resolve) => {
+    const usesProcessGroup = process.platform !== 'win32';
     const child = spawn(command, args, {
       ...options,
+      detached: usesProcessGroup,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -55,10 +57,22 @@ function runRealSubprocess(
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
 
+    const killSubprocessTree = () => {
+      if (usesProcessGroup && child.pid) {
+        try {
+          process.kill(-child.pid, REAL_SUBPROCESS_KILL_SIGNAL);
+          return;
+        } catch {
+          // Fall through if the process group exited between observation and kill.
+        }
+      }
+      child.kill(REAL_SUBPROCESS_KILL_SIGNAL);
+    };
+
     const armDeadline = () => {
       deadline = setTimeout(() => {
         timeoutPhase = 'child';
-        child.kill(REAL_SUBPROCESS_KILL_SIGNAL);
+        killSubprocessTree();
       }, deadlineMs);
     };
 
@@ -67,7 +81,7 @@ function runRealSubprocess(
         if (readyPoll) clearInterval(readyPoll);
         readyPoll = undefined;
         timeoutPhase = 'readiness';
-        child.kill(REAL_SUBPROCESS_KILL_SIGNAL);
+        killSubprocessTree();
       }, readinessDeadlineMs);
       readyPoll = setInterval(() => {
         if (!existsSync(readyMarkerPath)) return;
@@ -107,9 +121,15 @@ describe('real subprocess timeout policy', () => {
     const root = mkdtempSync(join(tmpdir(), 'wedged-installer-'));
     const fakeInstaller = join(root, 'install.mjs');
     const startedMarker = join(root, 'installer-started');
+    const grandchildStartedMarker = join(root, 'grandchild-started');
+    const grandchildPidFile = join(root, 'grandchild-pid');
     writeFileSync(
       fakeInstaller,
-      `import fs from 'fs'; fs.writeFileSync(${JSON.stringify(startedMarker)}, 'started'); setInterval(() => {}, 1000);\n`,
+      `import fs from 'fs'; import { spawn } from 'child_process';\n` +
+        `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(grandchildStartedMarker)}, 'started'); setInterval(() => {}, 1000);`)}], { stdio: 'ignore' });\n` +
+        `fs.writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid));\n` +
+        `const ready = setInterval(() => { if (!fs.existsSync(${JSON.stringify(grandchildStartedMarker)})) return; clearInterval(ready); fs.writeFileSync(${JSON.stringify(startedMarker)}, 'started'); }, 5);\n` +
+        `setInterval(() => {}, 1000);\n`,
     );
 
     const result = await runRealSubprocess(
@@ -121,8 +141,18 @@ describe('real subprocess timeout policy', () => {
     );
 
     expect(existsSync(startedMarker)).toBe(true); // precondition: the fake installer reached its deliberate wedge
+    expect(existsSync(grandchildStartedMarker)).toBe(true); // precondition: the wedge lives in a real descendant
     expect(result.signal).toBe('SIGKILL');
     expect(result.error).toMatchObject({ code: 'ETIMEDOUT', phase: 'child' });
+    const grandchildPid = Number(readFileSync(grandchildPidFile, 'utf8'));
+    let grandchildSurvived = true;
+    try {
+      process.kill(grandchildPid, 0);
+    } catch {
+      grandchildSurvived = false;
+    }
+    if (grandchildSurvived) process.kill(grandchildPid, REAL_SUBPROCESS_KILL_SIGNAL);
+    expect(grandchildSurvived).toBe(false);
   });
 
   it('kills a child that starts but never completes the readiness handshake', async () => {
