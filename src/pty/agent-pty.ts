@@ -11,6 +11,7 @@ import {
   readUnattendedConsent,
 } from '../utils/claude-preflight.js';
 import { parseEnvFileStrict } from '../utils/env.js';
+import { loadNodePty } from './node-pty-loader.js';
 
 // node-pty types
 interface IPty {
@@ -93,7 +94,7 @@ export class AgentPTY {
 
     // Lazy-load node-pty (native addon)
     if (!this.spawnFn) {
-      const nodePty = require('node-pty');
+      const nodePty = loadNodePty();
       this.spawnFn = nodePty.spawn;
     }
 

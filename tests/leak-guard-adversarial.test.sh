@@ -121,6 +121,14 @@ if ! bash "$GUARD" "$TMP/window-skill-only.md" > /dev/null 2>&1; then
   failures=$((failures + 1))
 fi
 
+# Only a hashed roster owner may receive the compact agent/skill masking
+# exception. A syntactically valid non-roster owner must leave the cadence-like
+# skill visible, or bypassing the roster membership check would hide this leak.
+cat > "$TMP/non-roster-skill-owner.md" <<EOF
+Run visitor/morning-review for $roster_name
+EOF
+expect_block "non-roster skill owner cannot mask roster cadence" "agent roster and cron schedule" "$TMP/non-roster-skill-owner.md"
+
 # Substrings and hyphenated compounds of fleet names are whole non-matching
 # tokens, never roster hits — pins the tokenizer against splitting drift.
 cat > "$TMP/window-substrings.md" <<EOF
