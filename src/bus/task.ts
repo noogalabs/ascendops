@@ -416,13 +416,51 @@ export function updateTask(
 }
 
 /**
+ * Bump a task's `updated_at` without a status transition (BUG-030). A
+ * standing/recurring task (fleet watch, KB health, upstream monitor) is
+ * re-verified every heartbeat but never changes status, so `updated_at`
+ * only ever reflected the original pending->in_progress transition and
+ * check-stale-tasks flagged actively-monitored tasks as stale. The
+ * short-term workaround — re-running `update-task <id> in_progress` on an
+ * already-in_progress task — bumps updated_at too, but writes a
+ * misleading `"from":"in_progress","to":"in_progress"` line into the
+ * audit log every cycle, as if a real transition occurred. `touchTask`
+ * records a distinct `touch` event instead so the audit trail still
+ * reads as "re-verified", not "transitioned".
+ */
+export function touchTask(paths: BusPaths, taskId: string): void {
+  const filePath = findTaskFile(paths, taskId);
+  if (!filePath) {
+    throw new Error(
+      `Task ${taskId} not found in any org under ${paths.ctxRoot}/orgs/`,
+    );
+  }
+  let task: Task;
+  try {
+    task = JSON.parse(readFileSync(filePath, 'utf-8')) as Task;
+  } catch (err) {
+    throw new Error(`Task ${taskId} touch failed (unreadable): ${err}`);
+  }
+  try {
+    task.updated_at = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    atomicWriteSync(filePath, JSON.stringify(task));
+  } catch (err) {
+    throw new Error(`Task ${taskId} touch failed: ${err}`);
+  }
+  appendTaskAudit(paths, taskId, {
+    event: 'touch',
+    agent: task.assigned_to ?? 'unknown',
+  });
+}
+
+/**
  * One audit entry written to a task's append-only JSONL log. Every
  * status transition, claim, and completion emits one of these so the
  * full lifecycle can be replayed from disk.
  */
 export interface TaskAuditEntry {
   ts: string; // ISO 8601
-  event: 'create' | 'claim' | 'update' | 'complete';
+  event: 'create' | 'claim' | 'update' | 'complete' | 'touch';
   agent: string; // who caused the event
   from?: TaskStatus;
   to?: TaskStatus;
