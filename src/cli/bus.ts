@@ -5,7 +5,7 @@ import { join, dirname } from 'path';
 import { sendMessage, checkInbox, ackInbox, pruneProcessed, PROCESSED_TTL_DAYS, PROCESSED_TTL_MIN_DAYS } from '../bus/message.js';
 import { agentExists, listAgents } from '../bus/agents.js';
 import { validateAgentName, isValidJson, validateTaskId } from '../utils/validate.js';
-import { createTask, updateTask, completeTask, claimTask, readTaskAudit, checkTaskDependencies, compactTasks, listTasks, checkStaleTasks, archiveTasks, checkHumanTasks } from '../bus/task.js';
+import { createTask, updateTask, touchTask, completeTask, claimTask, readTaskAudit, checkTaskDependencies, compactTasks, listTasks, checkStaleTasks, archiveTasks, checkHumanTasks } from '../bus/task.js';
 import { saveOutput } from '../bus/save-output.js';
 import { logEvent } from '../bus/event.js';
 import { redactSSN } from '../utils/ssn-redaction.js';
@@ -663,6 +663,17 @@ busCommand
       sendMessage(assigneePaths, env.agentName, opts.assignee, 'normal',
         `Task reassigned to you: ${id} (status: ${status})`);
     }
+  });
+
+busCommand
+  .command('touch-task')
+  .description('Bump a task\'s updated_at without a status transition (BUG-030) — for standing/recurring tasks re-verified every heartbeat that never change status, so check-stale-tasks does not false-flag them. Prefer this over `update-task <id> <same-status>`, which writes a misleading no-op transition into the audit log.')
+  .argument('<id>', 'Task ID')
+  .action((id: string) => {
+    const env = resolveEnv();
+    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+    touchTask(paths, id);
+    console.log(`Touched ${id} (updated_at refreshed)`);
   });
 
 busCommand
