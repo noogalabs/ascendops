@@ -82,7 +82,12 @@ function statOf(dir: string): Record<string, string> {
 describe('install/build hook wiring — cold-install regression guard', () => {
   const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
     scripts?: Record<string, string>;
+    files?: string[];
   };
+
+  /** Is a repo-relative path shipped by the `files` allowlist? */
+  const shippedByFiles = (rel: string): boolean =>
+    (pkg.files ?? []).some((f) => (f.endsWith('/') ? rel.startsWith(f) : rel === f));
 
   it('postbuild compiles the native peer-credential helper', () => {
     expect(pkg.scripts?.postbuild, 'package.json scripts.postbuild is required').toBeTruthy();
@@ -92,6 +97,26 @@ describe('install/build hook wiring — cold-install regression guard', () => {
   it('postinstall repairs the node-pty spawn-helper permissions', () => {
     expect(pkg.scripts?.postinstall, 'package.json scripts.postinstall is required').toBeTruthy();
     expect(pkg.scripts?.postinstall ?? '').toContain('fix-spawn-helper-perms.mjs');
+  });
+
+  it('ships every install/build hook script in the npm `files` allowlist', () => {
+    // A tarball install (npm pack path) runs postinstall/postbuild but only
+    // includes what `files` ships — so a hook that references a script the
+    // allowlist omits fails with MODULE_NOT_FOUND on a package install, even
+    // though a git checkout (all files present) works. Assert every script a
+    // published-package hook invokes is actually shipped.
+    for (const hook of ['postinstall', 'postbuild'] as const) {
+      const cmd = pkg.scripts?.[hook];
+      if (!cmd) continue;
+      const scriptPath = cmd.match(/(?:^|\s)(scripts\/[^\s]+\.mjs)/)?.[1];
+      expect(scriptPath, `${hook} must invoke a scripts/*.mjs file`).toBeDefined();
+      expect(
+        shippedByFiles(scriptPath as string),
+        `${hook} runs ${scriptPath} but it is not shipped by package.json "files" (${JSON.stringify(pkg.files)})`,
+      ).toBe(true);
+    }
+    // The native compile reads its C source at build time — ship it too.
+    expect(shippedByFiles('src/native/peer-credentials.c'), 'native source must be shipped for the postbuild compile').toBe(true);
   });
 
   it('the postbuild script actually produces an executable native binary', { timeout: 60_000 }, () => {
