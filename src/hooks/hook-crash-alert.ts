@@ -20,6 +20,7 @@ import { homedir } from 'os';
 import { redactSSN } from '../utils/ssn-redaction.js';
 import { execFile } from 'child_process';
 
+import { hookBootstrap } from './bootstrap.js';
 const DEDUP_WINDOW_MS = 10 * 60 * 1000;         // 10 minutes
 const QUIET_HOUR_START_LA = 22;                 // 22:00 America/Los_Angeles
 const QUIET_HOUR_END_LA = 7;                    // 07:00 America/Los_Angeles
@@ -299,6 +300,12 @@ export function classifyFromMarkers(
 }
 
 async function main(): Promise<void> {
+  // PROCESS LINEAGE IS NOT INTENT — see bootstrap.ts.
+  // main() is invoked at module scope below, so importing a hook module runs
+  // hookBootstrap(). Shared validators live in skill-validators.ts specifically
+  // so bus code never imports a hook module merely to reuse its exports; that
+  // extraction, not main() placement, fixed the credential-loss regression.
+  hookBootstrap();
   // A cron side-run is a short-lived headless `claude -p` that exits as soon as
   // it has delivered its verdict. That exit is a COMPLETED RUN, not an agent
   // crash, and must never enter agent crash accounting: it would inflate the

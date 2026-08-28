@@ -78,11 +78,11 @@ describe('OutputBuffer — SSN redaction', () => {
   it('does NOT redact a phone number split across two chunks (0-FP)', () => {
     const buf = new OutputBuffer(1000, '/tmp/fake-stdout.log');
     buf.push('call 423-555');
-    buf.push('-0142 now');
+    buf.push('-0100 now');
     // Flush any held tail so the full phone is in the log.
     buf.close();
     const log = diskLog();
-    expect(log).toContain('423-555-0142');
+    expect(log).toContain('423-555-0100');
     expect(log).not.toContain(SSN_PLACEHOLDER);
   });
 
@@ -276,10 +276,10 @@ describe('OutputBuffer — SSN redaction', () => {
   it('does NOT redact a phone split across chunks even invisible-aware (#25 0-FP)', () => {
     const buf = new OutputBuffer(1000, '/tmp/fake-stdout.log');
     buf.push('call 423-555');
-    buf.push('-0142 now');
+    buf.push('-0100 now');
     buf.close();
     const log = diskLog();
-    expect(log).toContain('423-555-0142');
+    expect(log).toContain('423-555-0100');
     expect(log).not.toContain(SSN_PLACEHOLDER);
   });
 });

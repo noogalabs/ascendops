@@ -84,7 +84,7 @@ describe('non-atomic-write sweep — call sites use temp+rename', () => {
   describe('cron-audit.cronAudit --fix (#7)', () => {
     it('writes config.json + SKILL.md via temp+rename, valid JSON, no partials', () => {
       const org = 'testorg';
-      const agentDir = join(workDir, 'orgs', org, 'agents', 'collie');
+      const agentDir = join(workDir, 'orgs', org, 'agents', 'moss');
       mkdirSync(agentDir, { recursive: true });
 
       const longPrompt = 'X'.repeat(300); // over the default 100-char threshold

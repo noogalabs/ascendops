@@ -32,21 +32,24 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import { updateHeartbeat } from '../../../src/bus/heartbeat';
+import { HEARTBEAT_SESSION_ENV } from '../../../src/utils/env';
 import { logEvent } from '../../../src/bus/event';
 import * as lock from '../../../src/utils/lock';
 import type { BusPaths, Heartbeat } from '../../../src/types';
 
+import { recordSessionNonce } from '../../../src/bus/heartbeat-session-store';
 let testDir: string;
 let paths: BusPaths;
+const originalTz = process.env.TZ;
 
 function makePaths(root: string): BusPaths {
   return {
     ctxRoot: root,
-    inbox: join(root, 'inbox', 'collie'),
-    inflight: join(root, 'inflight', 'collie'),
-    processed: join(root, 'processed', 'collie'),
-    logDir: join(root, 'logs', 'collie'),
-    stateDir: join(root, 'state', 'collie'),
+    inbox: join(root, 'inbox', 'moss'),
+    inflight: join(root, 'inflight', 'moss'),
+    processed: join(root, 'processed', 'moss'),
+    logDir: join(root, 'logs', 'moss'),
+    stateDir: join(root, 'state', 'moss'),
     taskDir: join(root, 'tasks'),
     approvalDir: join(root, 'approvals'),
     analyticsDir: join(root, 'analytics'),
@@ -61,29 +64,69 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
+  if (originalTz === undefined) delete process.env.TZ;
+  else process.env.TZ = originalTz;
   rmSync(testDir, { recursive: true, force: true });
+});
+
+describe('heartbeat timezone coercion', () => {
+  it('NAMED HEARTBEAT BLANK TIMEZONE: omission preserves host-local mode', () => {
+    process.env.TZ = 'America/Los_Angeles';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-12T14:30:00Z')); // 07:30 PDT = night
+    updateHeartbeat(paths, 'moss', 'online', { org: 'ascendops', timezone: '' });
+    const heartbeat = JSON.parse(
+      readFileSync(join(paths.stateDir, 'heartbeat.json'), 'utf-8'),
+    ) as Heartbeat;
+    expect(heartbeat.mode).toBe('night');
+  });
+
+  it('NAMED HEARTBEAT EXPLICIT TIMEZONE: configured zone overrides host', () => {
+    process.env.TZ = 'America/Los_Angeles';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-12T14:30:00Z')); // 10:30 EDT = day
+    updateHeartbeat(paths, 'moss', 'online', {
+      org: 'ascendops',
+      timezone: 'America/New_York',
+    });
+    const heartbeat = JSON.parse(
+      readFileSync(join(paths.stateDir, 'heartbeat.json'), 'utf-8'),
+    ) as Heartbeat;
+    expect(heartbeat.mode).toBe('day');
+  });
 });
 
 describe('heartbeat lost-update — both writers take the per-agent stateDir lock', () => {
   it('updateHeartbeat acquires the stateDir lock', () => {
     const withLock = vi.spyOn(lock, 'withFileLockSync');
-    updateHeartbeat(paths, 'collie', 'busy', { org: 'ascendops' });
+    updateHeartbeat(paths, 'moss', 'busy', { org: 'ascendops' });
     expect(withLock).toHaveBeenCalled();
     expect(withLock.mock.calls.some(([dir]) => dir === paths.stateDir)).toBe(true);
   });
 
   it('logEvent heartbeat refresh acquires the stateDir lock', () => {
+    // A refresh now requires the agent-session credential as well. This test
+    // asserts the ALLOW direction, so it has to stand where a real agent session
+    // stands: inside a PTY-minted session. Before the credential existed this
+    // line was unnecessary and the guard was fail-OPEN — absence of a marker was
+    // enough. Its absence here is what the fail-closed half changed.
+    process.env[HEARTBEAT_SESSION_ENV] = 'moss:test-session-nonce-000';
+    recordSessionNonce(paths.ctxRoot, 'moss', 'test-session-nonce-000');
     // Refresh only runs when a heartbeat already exists.
     const hb: Heartbeat = {
-      agent: 'collie', org: 'ascendops', status: 'online',
+      agent: 'moss', org: 'ascendops', status: 'online',
       current_task: '', mode: 'day',
       last_heartbeat: '2026-04-23T12:00:00Z', loop_interval: '4h',
     };
     writeFileSync(join(paths.stateDir, 'heartbeat.json'), JSON.stringify(hb));
 
     const withLock = vi.spyOn(lock, 'withFileLockSync');
-    logEvent(paths, 'collie', 'ascendops', 'action', 'tick', 'info');
+    // Refresh is opt-in as of upstream 28500e76 (on-behalf writes must not spoof
+    // liveness). This test's subject is the LOCK taken DURING a refresh, not the
+    // always-refresh policy, so it opts in explicitly to keep exercising that path.
+    logEvent(paths, 'moss', 'ascendops', 'action', 'tick', 'info', undefined, { refreshHeartbeat: true });
     expect(withLock.mock.calls.some(([dir]) => dir === paths.stateDir)).toBe(true);
   });
 });
@@ -92,7 +135,7 @@ describe('heartbeat lost-update — the lock enforces mutual exclusion', () => {
   it('a second writer cannot enter the critical section while the stateDir lock is held', () => {
     // Seed: status=online (the value a stale RMW would clobber back to).
     const seed: Heartbeat = {
-      agent: 'collie', org: 'ascendops', status: 'online',
+      agent: 'moss', org: 'ascendops', status: 'online',
       current_task: 'old-task', mode: 'day',
       last_heartbeat: '2026-04-23T12:00:00Z', loop_interval: '4h',
     };
@@ -126,18 +169,18 @@ describe('heartbeat lost-update — the lock enforces mutual exclusion', () => {
 
     // After A released, B's update now applies cleanly and serially — the
     // post-fix world. Both contributions survive: B's status AND A's bump.
-    updateHeartbeat(paths, 'collie', 'busy', { org: 'ascendops', currentTask: 'now-busy' });
+    updateHeartbeat(paths, 'moss', 'busy', { org: 'ascendops', currentTask: 'now-busy' });
     const final = JSON.parse(readFileSync(hbPath, 'utf-8')) as Heartbeat;
     expect(final.status).toBe('busy');
     expect(final.current_task).toBe('now-busy');
   });
 
   it('sequential overwrite-then-refresh keeps the overwrite status and a fresh timestamp', async () => {
-    updateHeartbeat(paths, 'collie', 'online', { org: 'ascendops', currentTask: 'boot' });
+    updateHeartbeat(paths, 'moss', 'online', { org: 'ascendops', currentTask: 'boot' });
     await new Promise((r) => setTimeout(r, 2));
-    updateHeartbeat(paths, 'collie', 'busy', { org: 'ascendops', currentTask: 'working' });
+    updateHeartbeat(paths, 'moss', 'busy', { org: 'ascendops', currentTask: 'working' });
     await new Promise((r) => setTimeout(r, 2));
-    logEvent(paths, 'collie', 'ascendops', 'action', 'tick', 'info');
+    logEvent(paths, 'moss', 'ascendops', 'action', 'tick', 'info');
 
     const hbPath = join(paths.stateDir, 'heartbeat.json');
     expect(existsSync(hbPath)).toBe(true);

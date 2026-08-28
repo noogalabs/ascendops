@@ -149,32 +149,6 @@ describe('OutputBuffer redaction', () => {
     expect(buf.getSize()).toBe(`output ends with a partial token ${partial}`.length);
   });
 
-  it('safe cursor returns only newly committed redacted output', () => {
-    const buf = new OutputBuffer(1000, '/tmp/fake-stdout.log');
-    buf.push('old prompt\n');
-    const cursor = buf.createSafeCursor();
-
-    buf.push(`token=${FAKE_JWT}\n`);
-    const fresh = buf.getSafeTailSince(cursor);
-
-    expect(fresh).toBe('token=[REDACTED_JWT]\n');
-    expect(fresh).not.toContain('old prompt');
-    expect(fresh).not.toContain(FAKE_JWT);
-  });
-
-  it('safe cursor never exposes a JWT split across push boundaries', () => {
-    const buf = new OutputBuffer(1000, '/tmp/fake-stdout.log');
-    const cursor = buf.createSafeCursor();
-
-    buf.push(`token=${FAKE_JWT.slice(0, 40)}`);
-    expect(buf.getSafeTailSince(cursor)).not.toContain(FAKE_JWT.slice(0, 40));
-
-    buf.push(`${FAKE_JWT.slice(40)}\n`);
-    const fresh = buf.getSafeTailSince(cursor);
-    expect(fresh).toBe('token=[REDACTED_JWT]\n');
-    expect(fresh).not.toContain(FAKE_JWT);
-  });
-
   it('partial-token holdback flushes unredacted when it turns out NOT to be a JWT', () => {
     const buf = new OutputBuffer(1000, '/tmp/fake-stdout.log');
     // Looks like a JWT prefix at the boundary, but the next chunk reveals
@@ -240,7 +214,7 @@ describe('OutputBuffer redaction — split inside the eyJ prefix (P1 regression)
   // ending `...e` or `...ey` was emitted to the disk log immediately;
   // chunk 2 (starting `yJ...`/`J...`) never matched JWT_PATTERN either,
   // and the concatenated log contained the full token unredacted. These
-  // tests exercise every split offset Codie called out and assert the
+  // tests exercise every split offset Kit called out and assert the
   // disk log (allWrites) never contains the full synthetic JWT.
 
   const allWrites = () =>

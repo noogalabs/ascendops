@@ -18,7 +18,14 @@ import {
 import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
+import { hookBootstrap } from './bootstrap.js';
 async function main(): Promise<void> {
+  // PROCESS LINEAGE IS NOT INTENT — see bootstrap.ts.
+  // main() is invoked at module scope below, so importing a hook module runs
+  // hookBootstrap(). Shared validators live in skill-validators.ts specifically
+  // so bus code never imports a hook module merely to reuse its exports; that
+  // extraction, not main() placement, fixed the credential-loss regression.
+  hookBootstrap();
   const input = await readStdin();
   const { tool_input } = parseHookInput(input);
 

@@ -132,7 +132,7 @@ describe('atomic utilities', () => {
 
   it('atomicWriteSync follows a symlink whose target is in a different dir, link intact', () => {
     const targetDir = join(testDir, 'fleet-defs');
-    const linkDir = join(testDir, 'collie');
+    const linkDir = join(testDir, 'moss');
     ensureDir(targetDir);
     ensureDir(linkDir);
 

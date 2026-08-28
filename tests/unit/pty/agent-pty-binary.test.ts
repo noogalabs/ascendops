@@ -26,8 +26,8 @@ const mockEnv = {
   instanceId: 'test',
   ctxRoot: '/tmp/ctx',
   frameworkRoot: '/tmp/fw',
-  agentName: 'codie',
-  agentDir: '/tmp/fw/orgs/acme/agents/codie',
+  agentName: 'kit',
+  agentDir: '/tmp/fw/orgs/acme/agents/kit',
   org: 'acme',
   projectRoot: '/tmp/fw',
 };

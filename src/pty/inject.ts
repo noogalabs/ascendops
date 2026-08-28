@@ -15,6 +15,8 @@ export const KEYS = {
   TAB: '\t',
 } as const;
 
+export type TuiKey = typeof KEYS[keyof typeof KEYS];
+
 /**
  * Message deduplication via MD5 hash.
  * Prevents double-injection on crash recovery.

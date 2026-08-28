@@ -15,11 +15,11 @@ import type { BusPaths } from '../../../src/types';
 function makePaths(dir: string): BusPaths {
   return {
     ctxRoot: dir,
-    inbox: join(dir, 'inbox', 'blue'),
-    inflight: join(dir, 'inflight', 'blue'),
-    processed: join(dir, 'processed', 'blue'),
-    logDir: join(dir, 'logs', 'blue'),
-    stateDir: join(dir, 'state', 'blue'),
+    inbox: join(dir, 'inbox', 'indigo'),
+    inflight: join(dir, 'inflight', 'indigo'),
+    processed: join(dir, 'processed', 'indigo'),
+    logDir: join(dir, 'logs', 'indigo'),
+    stateDir: join(dir, 'state', 'indigo'),
     taskDir: join(dir, 'tasks'),
     approvalDir: join(dir, 'approvals'),
     analyticsDir: join(dir, 'analytics'),
@@ -45,9 +45,9 @@ describe('active-threads', () => {
     const thread = addActiveThread(paths, {
       meldId: '12729045',
       subject: 'No Hot Water In Home',
-      owner: 'blue',
+      owner: 'indigo',
       status: 'waiting_on_vendor',
-      lastAction: 'Sent schedule message to Example Plumbing',
+      lastAction: 'Sent schedule message to Stubblefield',
       nextTriggerAt: '2026-05-09T14:00:00Z',
       notes: 'Tenant says mornings are worst.',
     });
@@ -67,7 +67,7 @@ describe('active-threads', () => {
     addActiveThread(paths, {
       meldId: '12729045',
       subject: 'Verify tenant SSN 123-45-6789',
-      owner: 'blue',
+      owner: 'indigo',
       status: 'open',
       lastAction: 'Confirmed ssn 987654321 on file',
       notes: 'resident tax id: 123456789 pending',
@@ -87,7 +87,7 @@ describe('active-threads', () => {
     addActiveThread(paths, {
       meldId: '12729045',
       subject: 'Old subject',
-      owner: 'blue',
+      owner: 'indigo',
       status: 'waiting_on_vendor',
       lastAction: 'Initial note',
       notes: 'first',
@@ -96,7 +96,7 @@ describe('active-threads', () => {
     addActiveThread(paths, {
       meldId: '12729045',
       subject: 'No Hot Water In Home',
-      owner: 'blue',
+      owner: 'indigo',
       status: 'vendor_scheduled',
       lastAction: 'Vendor confirmed tomorrow morning',
       notes: 'updated',
@@ -119,15 +119,15 @@ describe('active-threads', () => {
     addActiveThread(paths, {
       meldId: '12729045',
       subject: 'No Hot Water In Home',
-      owner: 'blue',
+      owner: 'indigo',
       status: 'waiting_on_vendor',
-      lastAction: 'Sent schedule message to Example Plumbing',
+      lastAction: 'Sent schedule message to Stubblefield',
     });
 
     addActiveThread(paths, {
       meldId: '12729046',
       subject: 'Leaking Faucet',
-      owner: 'blue',
+      owner: 'indigo',
       status: 'waiting_on_tenant',
       lastAction: 'Asked for access window',
     });
@@ -143,9 +143,9 @@ describe('active-threads', () => {
     addActiveThread(paths, {
       meldId: '12729045',
       subject: 'No Hot Water In Home',
-      owner: 'blue',
+      owner: 'indigo',
       status: 'waiting_on_vendor',
-      lastAction: 'Sent schedule message to Example Plumbing',
+      lastAction: 'Sent schedule message to Stubblefield',
     });
 
     const removed = clearActiveThreads(paths);
@@ -163,7 +163,7 @@ describe('active-threads', () => {
         addActiveThread(paths, {
           meldId: String(12729045 + i),
           subject: `Work order ${i}`,
-          owner: 'blue',
+          owner: 'indigo',
           status: 'open',
           lastAction: `action ${i}`,
         });

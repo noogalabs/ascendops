@@ -13,7 +13,14 @@
 
 import { loadEnv } from './index.js';
 
+import { hookBootstrap } from './bootstrap.js';
 async function main(): Promise<void> {
+  // PROCESS LINEAGE IS NOT INTENT — see bootstrap.ts.
+  // main() is invoked at module scope below, so importing a hook module runs
+  // hookBootstrap(). Shared validators live in skill-validators.ts specifically
+  // so bus code never imports a hook module merely to reuse its exports; that
+  // extraction, not main() placement, fixed the credential-loss regression.
+  hookBootstrap();
   const env = loadEnv();
 
   if (!env.botToken || !env.chatId) return;

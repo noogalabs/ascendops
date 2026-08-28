@@ -34,7 +34,7 @@
 import { homedir } from 'os';
 import { join } from 'path';
 import { parseDurationMs, readCronState } from '../bus/cron-state.js';
-import { readCronsWithStatus, updateCron } from '../bus/crons.js';
+import { cronsFileMtimeMs, readCronsWithStatus, updateCron } from '../bus/crons.js';
 import type { CronDefinition, CronFireKind } from '../types/index.js';
 import { appendExecutionLog } from './cron-execution-log.js';
 
@@ -82,9 +82,12 @@ function expandField(field: string, min: number, max: number): number[] {
  *
  * @param expr   - 5-field cron expression ("min hour dom month dow").
  * @param fromMs - Starting epoch time in milliseconds.
+ * @param timezone - Optional IANA timezone for field evaluation. The daemon
+ *                   supplies the agent timezone; omission preserves legacy
+ *                   host-local behavior for callers without agent context.
  * @returns      Epoch ms of the next matching minute, or NaN if unparseable.
  */
-export function nextFireFromCron(expr: string, fromMs: number): number {
+export function nextFireFromCron(expr: string, fromMs: number, timezone?: string): number {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return NaN;
 
@@ -108,13 +111,47 @@ export function nextFireFromCron(expr: string, fromMs: number): number {
   const MAX_MINUTES = 366 * 24 * 60;
   let candidate = startMs;
 
+  let zonedFormatter: Intl.DateTimeFormat | undefined;
+  if (timezone) {
+    try {
+      zonedFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hourCycle: 'h23',
+        minute: '2-digit',
+        hour: '2-digit',
+        day: '2-digit',
+        month: '2-digit',
+        weekday: 'short',
+      });
+    } catch {
+      return NaN;
+    }
+  }
+  const weekdayNumber: Record<string, number> = {
+    Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+  };
+
   for (let i = 0; i < MAX_MINUTES; i++) {
     const d = new Date(candidate);
-    const m  = d.getMinutes();
-    const h  = d.getHours();
-    const dy = d.getDate();
-    const mo = d.getMonth() + 1; // 1-12
-    const dw = d.getDay();       // 0-6
+    let m: number, h: number, dy: number, mo: number, dw: number;
+    if (zonedFormatter) {
+      const parts = Object.fromEntries(
+        zonedFormatter.formatToParts(d)
+          .filter((part) => part.type !== 'literal')
+          .map((part) => [part.type, part.value]),
+      );
+      m = Number(parts.minute);
+      h = Number(parts.hour);
+      dy = Number(parts.day);
+      mo = Number(parts.month);
+      dw = weekdayNumber[parts.weekday];
+    } else {
+      m  = d.getMinutes();
+      h  = d.getHours();
+      dy = d.getDate();
+      mo = d.getMonth() + 1; // 1-12
+      dw = d.getDay();       // 0-6
+    }
 
     if (
       months.includes(mo) &&
@@ -166,13 +203,13 @@ function changeKeyFor(c: CronDefinition): string {
  * @param cron        - The cron definition.
  * @param referenceMs - Epoch ms to count forward from (usually now or lastFiredAt).
  */
-function computeNextFireAt(cron: CronDefinition, referenceMs: number): number {
+function computeNextFireAt(cron: CronDefinition, referenceMs: number, timezone?: string): number {
   const durationMs = parseDurationMs(cron.schedule);
   if (!isNaN(durationMs)) {
     return referenceMs + durationMs;
   }
   // Try as a cron expression
-  const next = nextFireFromCron(cron.schedule, referenceMs);
+  const next = nextFireFromCron(cron.schedule, referenceMs, timezone);
   return next;
 }
 
@@ -254,6 +291,8 @@ function sleep(ms: number): Promise<void> {
 
 export interface CronSchedulerOptions {
   agentName: string;
+  /** IANA timezone used to interpret 5-field cron expressions. */
+  timezone?: string;
   onFire: (cron: CronDefinition, context: CronFireContext) => Promise<void> | void;
   /**
    * Optional per-tick hook, invoked before the due-cron scan on every tick.
@@ -272,6 +311,7 @@ export interface CronFireContext {
 
 export class CronScheduler {
   private readonly agentName: string;
+  private readonly timezone?: string;
   private readonly onFire: CronSchedulerOptions['onFire'];
   private readonly onTick: CronSchedulerOptions['onTick'];
   private readonly logger: (msg: string) => void;
@@ -292,6 +332,9 @@ export class CronScheduler {
    */
   private lastGoodSchedule: Map<string, ScheduledCron> = new Map();
 
+  /** Last crons.json mtime actually loaded; null means unavailable. */
+  private lastLoadedCronsMtimeMs: number | null = null;
+
   /** The master 30-second interval handle. */
   private tickHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -300,6 +343,7 @@ export class CronScheduler {
 
   constructor(opts: CronSchedulerOptions) {
     this.agentName = opts.agentName;
+    this.timezone  = opts.timezone;
     this.onFire    = opts.onFire;
     this.onTick    = opts.onTick;
     this.logger    = opts.logger ?? ((msg: string) => process.stdout.write(msg + '\n'));
@@ -378,6 +422,9 @@ export class CronScheduler {
 
   private loadCrons(isReload: boolean): void {
     const now = Date.now();
+    // Stat before reading: a concurrent write can cause one harmless extra
+    // reload, but can never be silently missed.
+    this.lastLoadedCronsMtimeMs = cronsFileMtimeMs(this.agentName);
     const { crons: defs, corrupt } = readCronsWithStatus(this.agentName);
     const nextScheduled = new Map<string, ScheduledCron>();
     // Read cron-state.json so catch-up sees fires recorded by `bus update-cron-fire`
@@ -408,24 +455,47 @@ export class CronScheduler {
       const key = changeKeyFor(def);
       const existing = this.scheduled.get(def.name);
 
-      if (isReload && existing !== undefined && existing.changeKey === key) {
-        // Definition unchanged — preserve nextFireAt
-        nextScheduled.set(def.name, { ...existing, definition: def });
-        continue;
-      }
-
-      // RELOAD-WHILE-FIRING GUARD: if the cron is mid-fire, preserve the
-      // existing entry as-is until the fire completes.  A fresh ScheduledCron
-      // built from stale crons.json (last_fired_at not yet persisted) would
-      // catch-up-fire on the next tick and double-fire the same logical event.
-      // The next reload (manual or after fire completes) will pick up the
-      // new schedule cleanly.
+      // RELOAD-WHILE-FIRING GUARD RUNS FIRST. ORDER IS THE FIX HERE.
+      //
+      // It used to sit BELOW the unchanged-change-key check, and that ordering
+      // permanently wedged crons. `changeKeyFor` is `name|schedule` ONLY, so
+      // editing a cron's PROMPT leaves the key unchanged — which is the ordinary
+      // way a cron gets tuned, not an exotic input. The sequence:
+      //
+      //   1. the fire sets `firing = true` on entry A and keeps a REFERENCE to A,
+      //      rewriting `A.definition` as it records last_fire_attempted_at and
+      //      last_fired_at;
+      //   2. a mid-fire reload takes the unchanged-key path, which builds a NEW
+      //      object B via `{ ...existing, definition: def }` — B inherits
+      //      `firing: true` from the spread;
+      //   3. `this.scheduled` is swapped to the new map, ORPHANING A;
+      //   4. the fire completes and clears `firing` ON THE ORPHAN. B keeps
+      //      `firing: true` forever;
+      //   5. `if (sc.firing) continue;` in `tick()` then skips B on EVERY
+      //      subsequent tick.
+      //
+      // The cron never fires again until the daemon restarts, and the only
+      // symptom is SILENCE — on a scheduler, a cron that stopped firing is
+      // indistinguishable from a cron with nothing to do.
+      //
+      // Checking `firing` first keeps entry A ITSELF in the map, so the fire's
+      // mutations and its own `firing = false` land on the live entry. The
+      // unchanged-key optimisation below is then only reached when no fire is in
+      // flight, which is the only time copying the entry is safe.
       if (isReload && existing !== undefined && existing.firing === true) {
         this.logger(
           `[cron-scheduler] reload deferred for "${def.name}" — fire in progress; ` +
           `new schedule will apply on next reload after fire completes`
         );
         nextScheduled.set(def.name, existing);
+        continue;
+      }
+
+      if (isReload && existing !== undefined && existing.changeKey === key) {
+        // Definition unchanged — preserve nextFireAt.
+        // Safe to copy: the guard above proved no fire is in flight, so nothing
+        // holds a reference to the entry we are replacing.
+        nextScheduled.set(def.name, { ...existing, definition: def });
         continue;
       }
 
@@ -442,7 +512,7 @@ export class CronScheduler {
       if (stateFire) candidates.push(new Date(stateFire).getTime());
       const referenceMs = candidates.length > 0 ? Math.max(...candidates) : now;
 
-      let nextFireAt = computeNextFireAt(def, referenceMs);
+      let nextFireAt = computeNextFireAt(def, referenceMs, this.timezone);
 
       if (isNaN(nextFireAt)) {
         this.logger(
@@ -536,6 +606,11 @@ export class CronScheduler {
   private async tick(): Promise<void> {
     const now = Date.now();
 
+    const currentMtime = cronsFileMtimeMs(this.agentName);
+    if (currentMtime !== null && currentMtime !== this.lastLoadedCronsMtimeMs) {
+      this.reload();
+    }
+
     // Per-tick hook, currently used to sweep outstanding cron side-runs.
     //
     // It rides this existing loop deliberately: a side-run's outcome has to be
@@ -624,7 +699,7 @@ export class CronScheduler {
         }
 
         // Advance in-memory nextFireAt
-        const next = computeNextFireAt(cron, admissionMs);
+        const next = computeNextFireAt(cron, admissionMs, this.timezone);
         if (!isNaN(next)) {
           sc.nextFireAt = next;
           sc.definition = { ...cron, last_fired_at: attemptIso, fire_count: newFireCount };
@@ -639,7 +714,7 @@ export class CronScheduler {
         // we don't re-fire the same scheduled slot on every subsequent tick —
         // that produced a busy-loop when an agent was unreachable. Treat the
         // failed window as a missed slot and schedule the next normal fire.
-        const next = computeNextFireAt(cron, admissionMs);
+        const next = computeNextFireAt(cron, admissionMs, this.timezone);
         if (!isNaN(next)) {
           sc.nextFireAt = next;
           this.logger(

@@ -226,7 +226,7 @@ describe('assessOperatorAlertReadiness', () => {
   });
 
   it("returns 'ok' when an agent .env carries valid BOT_TOKEN + CHAT_ID", () => {
-    writeAgentEnv('ascendops', 'collie', `BOT_TOKEN=${VALID_TOKEN}\nCHAT_ID=42\n`);
+    writeAgentEnv('ascendops', 'moss', `BOT_TOKEN=${VALID_TOKEN}\nCHAT_ID=42\n`);
     expect(getOperatorChatCreds(fwRoot)).not.toBeNull();
     expect(assessOperatorAlertReadiness(fwRoot)).toBe('ok');
   });
@@ -234,7 +234,7 @@ describe('assessOperatorAlertReadiness', () => {
   it("returns 'degraded' when an agent .env exists but has no valid creds", () => {
     // .env present (configured install) but the token doesn't match the
     // expected shape → creds don't resolve, yet there's something to warn about.
-    writeAgentEnv('ascendops', 'collie', 'BOT_TOKEN=not-a-valid-token\nCHAT_ID=42\n');
+    writeAgentEnv('ascendops', 'moss', 'BOT_TOKEN=not-a-valid-token\nCHAT_ID=42\n');
     expect(getOperatorChatCreds(fwRoot)).toBeNull();
     expect(assessOperatorAlertReadiness(fwRoot)).toBe('degraded');
   });

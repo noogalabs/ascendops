@@ -8,7 +8,7 @@ import { acquireLock, releaseLock } from '../utils/lock.js';
 import { randomString } from '../utils/random.js';
 import { validateAgentName, validatePriority, validateMessageText } from '../utils/validate.js';
 import { redactSSN } from '../utils/ssn-redaction.js';
-// added 2026-04-29 via internal dispatch — RFC #15 Wave 1 events implementation
+// RFC #15 Wave 1 events implementation
 import { logEvent } from './event.js';
 
 // ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ export function sendMessage(
   ensureDir(inboxDir);
   atomicWriteSync(join(inboxDir, filename), JSON.stringify(message));
 
-  // added 2026-04-29 via internal dispatch — RFC #15 Wave 1 events implementation
+  // RFC #15 Wave 1 events implementation
   // Emit inbox_arrival event so hooks can subscribe to cross-agent message routing.
   // Best-effort: never throw out of the canonical send path.
   try {
@@ -118,8 +118,8 @@ export function sendMessage(
   return msgId;
 }
 
-// Added 2026-04-29 via internal dispatch — RFC #15 Wave 1 events implementation.
-// Fixed 2026-08-03: the original walked for `<root>/analytics/<org>`, a shape
+// RFC #15 Wave 1 events implementation
+// FIXED: the original walked for `<root>/analytics/<org>`, a shape
 // getBusPaths has never produced. buildBusPaths (utils/paths.ts:46) sets
 //   analyticsDir = join(ctxRoot, 'orgs', <org>, 'analytics')   when an org is scoped
 //   analyticsDir = join(ctxRoot, 'analytics')                  when it is not
@@ -137,6 +137,7 @@ export function sendMessage(
 function _splitPathSegments(p: string): string[] {
   return p.split(/[\\/]+/).filter(Boolean);
 }
+
 // Falls back to env CTX_ORG, then '' as last resort. logEvent treats '' as a no-op org tag.
 function _orgFromPaths(paths: BusPaths): string {
   try {

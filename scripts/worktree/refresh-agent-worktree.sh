@@ -2,7 +2,7 @@
 # refresh-agent-worktree.sh
 # Sync the per-agent worktree to origin/main at task-start time.
 #
-# DESTRUCTIVE-RESET REQUIRES OPT-IN (an agent Nit 1 on PR #53, 2026-05-23):
+# DESTRUCTIVE-RESET REQUIRES OPT-IN (a review note on PR #53):
 # The hard-reset path can discard uncommitted work in the worktree. To prevent
 # accidental loss on a routine refresh, the destructive path is gated behind
 # --force-discard. Default behavior is a non-destructive fetch + status check;
@@ -17,6 +17,7 @@
 #   --keep-branch X   — fetch + checkout X (no reset; stays on feature branch).
 
 set -uo pipefail
+ORIGINAL_ARGS=("$@")
 
 KEEP_BRANCH=""
 AGENT=""
@@ -52,11 +53,31 @@ fi
 CTX_ROOT_VAL="${CTX_ROOT:-$HOME/.cortextos/default}"
 WORKTREE="${CTX_AGENT_WORKTREE:-$CTX_ROOT_VAL/state/agents/$AGENT/worktree}"
 
+CORTEXTOS_BIN="${CTX_CORTEXTOS_BIN:-cortextos}"
+INSTANCE="${CTX_INSTANCE_ID:-default}"
+if [ -z "${CTX_WORKTREE_LEASE_TOKEN:-}" ]; then
+  FRAMEWORK_ROOT="${CTX_FRAMEWORK_ROOT:-$(git -C "$WORKTREE" rev-parse --show-toplevel 2>/dev/null)}"
+  [ -n "$FRAMEWORK_ROOT" ] || { echo "refresh-agent-worktree.sh: repository root unknown" >&2; exit 2; }
+  exec "$CORTEXTOS_BIN" with-worktree-lease --instance "$INSTANCE" --owner "$AGENT" --repo "$FRAMEWORK_ROOT" -- "$0" ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
+fi
+[ -n "${CTX_WORKTREE_LEASE_REQUEST_ID:-}" ] && [ -n "${CTX_WORKTREE_LEASE_SCOPE:-}" ] || {
+  echo "refresh-agent-worktree.sh: complete repository lease capability required" >&2; exit 2;
+}
+"$CORTEXTOS_BIN" check-worktree-lease \
+  --instance "$INSTANCE" \
+  --scope "$CTX_WORKTREE_LEASE_SCOPE" \
+  --request-id "$CTX_WORKTREE_LEASE_REQUEST_ID" \
+  --token "$CTX_WORKTREE_LEASE_TOKEN" >/dev/null 2>&1 || {
+    echo "refresh-agent-worktree.sh: repository lease validation failed" >&2; exit 1;
+  }
+
 if [ ! -e "$WORKTREE/.git" ]; then
   echo "refresh-agent-worktree.sh: worktree not found at $WORKTREE (run init-agent-worktree.sh first)" >&2
   exit 1
 fi
 
+# Fetch/checkout/reset/merge mutate shared repository metadata and therefore
+# run only inside the same repository-scoped lease used by reap/prune/remove.
 echo "refresh-agent-worktree.sh: fetching origin in $WORKTREE"
 git -C "$WORKTREE" fetch origin
 

@@ -12,6 +12,7 @@ const mockOutputBuffer = {
 };
 
 const mockPty = {
+  sessionNonce: vi.fn().mockReturnValue(null),
   spawn: vi.fn().mockResolvedValue(undefined),
   kill: vi.fn(),
   write: vi.fn(),
@@ -136,10 +137,19 @@ beforeEach(() => {
   mockWatchdogRollbackFloorRef.mockReturnValue(undefined);
   mockReadRecoveryNote.mockReturnValue(null);
   mockDeleteRecoveryNote.mockClear();
+  mockFindGitRoot.mockClear();
   mockFindGitRoot.mockReturnValue(null);
 });
 
 describe('AgentProcess - rate-limit recovery', () => {
+  it('resolves watchdog commits from the framework repo, not the nested agent repo', () => {
+    new AgentProcess('alice', mockEnv, {});
+
+    expect(mockFindGitRoot).toHaveBeenCalledOnce();
+    expect(mockFindGitRoot).toHaveBeenCalledWith(mockEnv.frameworkRoot);
+    expect(mockFindGitRoot).not.toHaveBeenCalledWith(mockEnv.agentDir);
+  });
+
   it('sets status to rate-limited (not crashed) when rate-limit signature detected', async () => {
     mockHasRateLimitSignature = true;
     const ap = new AgentProcess('alice', mockEnv, {});
@@ -293,6 +303,14 @@ describe('AgentProcess - rate-limit recovery', () => {
         cwd: '/tmp/fw/orgs/acme/agents/alice',
         env: expect.objectContaining({
           CTX_AGENT_NAME: 'alice',
+          // Positive borrowed-identity marker. The daemon sets CTX_AGENT_NAME
+          // to the SUBJECT agent here, so nothing downstream can tell this is
+          // an on-behalf write by absence or by comparing subject to actor.
+          // Consumed by borrowedIdentityMarker() in src/bus/event.ts to
+          // withhold the heartbeat refresh that `bus log-event` opts into
+          // unconditionally — this fires from handleExit(), when the agent has
+          // just crashed and is provably not running.
+          CTX_ON_BEHALF_OF: 'alice',
           CTX_AGENT_DIR: '/tmp/fw/orgs/acme/agents/alice',
           CTX_ORG: 'acme',
           CTX_ROOT: '/tmp/test-ctx',

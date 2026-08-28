@@ -2,15 +2,19 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { HEARTBEAT_SESSION_ENV } from '../../../src/utils/env';
 import { logEvent } from '../../../src/bus/event';
 import type { BusPaths, Heartbeat } from '../../../src/types';
 
+import { recordSessionNonce } from '../../../src/bus/heartbeat-session-store';
 /**
- * Tests for the heartbeat-refresh side-effect on logEvent. The data
- * point that motivated this behavior: 76.4% of fleet activity events
- * landed while the agent's heartbeat was >5min stale — every event
- * implies the agent is alive, so the stale-monitor should never fire
- * on an agent that is actively logging activity.
+ * Tests for the opt-in heartbeat-refresh side-effect on logEvent. The
+ * refresh now happens ONLY when the caller passes
+ * `{ refreshHeartbeat: true }`, which is reserved for an agent logging
+ * its OWN in-session activity. The default is off (fail-safe): a
+ * daemon-on-behalf write (e.g. delivering an inbound message to another
+ * agent) never opts in, so a wedged agent's heartbeat cannot be spoofed
+ * fresh by traffic it did not act on.
  */
 describe('Bus events', () => {
   let testDir: string;
@@ -212,7 +216,14 @@ describe('Bus events', () => {
   });
 
   describe('heartbeat refresh side-effect', () => {
-    it('bumps last_heartbeat on an existing heartbeat.json without overwriting other fields', async () => {
+    it('bumps last_heartbeat on an existing heartbeat.json without overwriting other fields when the caller opts in', async () => {
+      // A refresh now requires the agent-session credential as well. This test
+      // asserts the ALLOW direction, so it has to stand where a real agent session
+      // stands: inside a PTY-minted session. Before the credential existed this
+      // line was unnecessary and the guard was fail-OPEN — absence of a marker was
+      // enough. Its absence here is what the fail-closed half changed.
+      process.env[HEARTBEAT_SESSION_ENV] = 'spark:test-session-nonce-000';
+    recordSessionNonce(paths.ctxRoot, 'spark', 'test-session-nonce-000');
       const oldHeartbeat: Heartbeat = {
         agent: 'spark',
         org: 'eros-os',
@@ -226,7 +237,9 @@ describe('Bus events', () => {
 
       // Let one millisecond tick so the new timestamp is strictly newer.
       await new Promise((resolve) => setTimeout(resolve, 2));
-      logEvent(paths, 'spark', 'eros-os', 'action', 'activity_tick', 'info');
+      logEvent(paths, 'spark', 'eros-os', 'action', 'activity_tick', 'info', undefined, {
+        refreshHeartbeat: true,
+      });
 
       const refreshed = JSON.parse(
         readFileSync(join(paths.stateDir, 'heartbeat.json'), 'utf-8'),
@@ -243,6 +256,26 @@ describe('Bus events', () => {
       expect(refreshed.loop_interval).toBe('4h');
       expect(refreshed.agent).toBe('spark');
       expect(refreshed.org).toBe('eros-os');
+    });
+
+    it('leaves last_heartbeat byte-identical when the caller does not opt in (default off, spoof-safe)', () => {
+      const oldHeartbeat: Heartbeat = {
+        agent: 'spark',
+        org: 'eros-os',
+        status: 'online',
+        current_task: 'wedged',
+        mode: 'day',
+        last_heartbeat: '2026-04-23T12:00:00Z',
+        loop_interval: '4h',
+      };
+      const raw = JSON.stringify(oldHeartbeat);
+      writeFileSync(join(paths.stateDir, 'heartbeat.json'), raw);
+
+      // Daemon-on-behalf-style write: no opts, so no refresh.
+      logEvent(paths, 'spark', 'eros-os', 'message', 'telegram_received', 'info', { text_chars: 3 });
+
+      const after = readFileSync(join(paths.stateDir, 'heartbeat.json'), 'utf-8');
+      expect(after).toBe(raw);
     });
 
     it('is a no-op when no heartbeat.json exists yet', () => {
@@ -264,9 +297,11 @@ describe('Bus events', () => {
       // Write a corrupt heartbeat.json to exercise the error path.
       writeFileSync(join(paths.stateDir, 'heartbeat.json'), '{not valid json');
 
-      // Must not throw.
+      // Must not throw. Opt in so the refresh path is actually exercised.
       expect(() =>
-        logEvent(paths, 'spark', 'eros-os', 'action', 'after_corrupt_hb', 'info'),
+        logEvent(paths, 'spark', 'eros-os', 'action', 'after_corrupt_hb', 'info', undefined, {
+          refreshHeartbeat: true,
+        }),
       ).not.toThrow();
 
       // Event still written.

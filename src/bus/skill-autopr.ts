@@ -22,9 +22,8 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { basename, join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
-import { scanForSecurityIssues, validateFrontmatter } from '../hooks/hook-skill-autopr.js';
-
-const UPSTREAM_REPO = 'grandamenium/cortextos';
+import { scanForSecurityIssues, validateFrontmatter } from '../hooks/skill-validators.js';
+import { resolveSkillPrTarget } from './skill-pr-target.js';
 
 /**
  * Skill names must be lowercase alphanumeric slugs.
@@ -49,10 +48,10 @@ function run(cmd: string, cwd: string): string {
  * Returns the PR URL if found, null otherwise.
  * Logs auth/network failures to stderr rather than silently masking them.
  */
-function findExistingPR(skillName: string, cwd: string): string | null {
+function findExistingPR(skillName: string, cwd: string, skillPrTarget: string): string | null {
   try {
     const out = run(
-      `gh pr list --repo ${UPSTREAM_REPO} --state open --json headRefName,url ` +
+      `gh pr list --repo ${skillPrTarget} --state open --json headRefName,url ` +
       `--jq '.[] | select(.headRefName | startswith("community/skill/${skillName}-")) | .url'`,
       cwd,
     );
@@ -124,6 +123,9 @@ export async function createSkillPr(skillName: string): Promise<void> {
   }
 
   const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT || process.cwd();
+  // Resolve before reading the skill or performing any repository/network
+  // action. There is deliberately no default: either direction is unsafe.
+  const skillPrTarget = resolveSkillPrTarget(frameworkRoot);
 
   // Path traversal check: resolved skill dir must stay inside community/skills/
   const communitySkillsDir = join(frameworkRoot, 'community', 'skills');
@@ -150,7 +152,7 @@ export async function createSkillPr(skillName: string): Promise<void> {
   const security = scanForSecurityIssues(content);
 
   // Check for existing open PR (duplicate prevention)
-  const existing = findExistingPR(skillName, frameworkRoot);
+  const existing = findExistingPR(skillName, frameworkRoot, skillPrTarget);
   if (existing) {
     console.log(`Skill PR already open for "${skillName}": ${existing}`);
     return;
@@ -206,7 +208,7 @@ export async function createSkillPr(skillName: string): Promise<void> {
     writeFileSync(bodyFile, body, 'utf-8');
 
     const prUrl = run(
-      `gh pr create --repo ${UPSTREAM_REPO} --draft ` +
+      `gh pr create --repo ${skillPrTarget} --draft ` +
       `--title ${JSON.stringify(title)} ` +
       `--body-file ${JSON.stringify(bodyFile)} ` +
       `--head ${branch}`,

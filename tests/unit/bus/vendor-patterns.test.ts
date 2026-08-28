@@ -12,15 +12,15 @@ describe('vendor-patterns', () => {
   });
 
   it('looks up each vendor by exact canonical name', () => {
-    expect(vendorDocPattern('Example Plumbing')?.vendor_name).toBe('Example Plumbing');
-    expect(vendorDocPattern('Example Services')?.vendor_name).toBe('Example Services');
-    expect(vendorDocPattern('In-House Tech')?.vendor_name).toBe('In-House Tech');
+    expect(vendorDocPattern('Stubblefield')?.vendor_name).toBe('Stubblefield');
+    expect(vendorDocPattern('ZJB')?.vendor_name).toBe('ZJB');
+    expect(vendorDocPattern('Carlos')?.vendor_name).toBe('Carlos');
   });
 
   it('looks up aliases case-insensitively', () => {
-    expect(vendorDocPattern('EXAMPLE PLUMBER')?.vendor_name).toBe('Example Plumbing');
-    expect(vendorDocPattern('ExAmPlE VeNdOr')?.vendor_name).toBe('Example Services');
-    expect(vendorDocPattern('maintenance technician')?.vendor_name).toBe('In-House Tech');
+    expect(vendorDocPattern('stubblefield plumbing')?.vendor_name).toBe('Stubblefield');
+    expect(vendorDocPattern('ZjB SeRvIcEs')?.vendor_name).toBe('ZJB');
+    expect(vendorDocPattern('carlos calel')?.vendor_name).toBe('Carlos');
   });
 
   it('returns null for an unknown vendor', () => {

@@ -66,7 +66,7 @@ describe('CronDefinition — type shape', () => {
   it('accepts a full definition with all optional fields', () => {
     const briefing: CronDefinition = {
       name: 'morning-briefing',
-      prompt: 'Prepare and send the morning briefing to James.',
+      prompt: 'Prepare and send the morning briefing to Owen.',
       schedule: '0 13 * * *',
       enabled: true,
       created_at: '2026-04-01T00:00:00.000Z',

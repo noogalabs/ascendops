@@ -99,7 +99,7 @@ describe('anthropicAdapter — zero behavior change', () => {
     });
 
     it('appends local/*.md files as --append-system-prompt when present', () => {
-      const tmpAgent = mkdtempSync(join(tmpdir(), 'aussie-adapter-test-'));
+      const tmpAgent = mkdtempSync(join(tmpdir(), 'nova-adapter-test-'));
       try {
         const localDir = join(tmpAgent, 'local');
         mkdirSync(localDir);

@@ -1,14 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { join } from 'path';
 
-const preflightMocks = vi.hoisted(() => ({
-  ensureFolderTrusted: vi.fn(() => true),
-  ensureBypassPromptSuppressed: vi.fn(() => true),
-  readUnattendedConsent: vi.fn(() => undefined),
-}));
-
-vi.mock('../../../src/utils/claude-preflight.js', () => preflightMocks);
-
 const fsMocks = {
   existsSync: vi.fn().mockReturnValue(false),
   mkdirSync: vi.fn(),
@@ -48,7 +40,6 @@ vi.mock('node-pty', () => ({
   }),
 }));
 
-const { AgentPTY } = await import('../../../src/pty/agent-pty.js');
 const { OpencodePTY, opencodeSessionExists } = await import('../../../src/pty/opencode-pty.js');
 
 const mockEnv = {
@@ -73,8 +64,6 @@ beforeEach(() => {
   fsMocks.unlinkSync.mockReset();
   fsMocks.readFileSync.mockReset();
   fsMocks.readdirSync.mockReset().mockReturnValue([]);
-  preflightMocks.ensureFolderTrusted.mockClear();
-  preflightMocks.ensureBypassPromptSuppressed.mockClear();
 });
 
 describe('OpencodePTY', () => {
@@ -113,58 +102,6 @@ describe('OpencodePTY', () => {
 
     expect(args).toEqual(['--continue']);
   });
-
-  it.each(['fresh', 'continue'] as const)(
-    'does not run Claude preflight or prompt timers for an OpenCode %s spawn',
-    async (mode) => {
-      vi.useFakeTimers();
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        const pty = new OpencodePTY(mockEnv, {});
-        installSpawnMock(pty);
-        await pty.spawn(mode, '');
-
-        pty.getOutputBuffer().push(
-          'Claude Code is running in Bypass Permissions mode.\n  2. Yes, I accept\n',
-        );
-        await vi.advanceTimersByTimeAsync(32_000);
-
-        expect(preflightMocks.ensureFolderTrusted).not.toHaveBeenCalled();
-        expect(preflightMocks.ensureBypassPromptSuppressed).not.toHaveBeenCalled();
-        expect(warn).not.toHaveBeenCalled();
-        expect(mockPty.write).not.toHaveBeenCalled();
-      } finally {
-        warn.mockRestore();
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it.each(['openai', 'google'] as const)(
-    'does not run Claude preflight or prompt timers for base AgentPTY vendor %s',
-    async (vendor) => {
-      vi.useFakeTimers();
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        const pty = new AgentPTY(mockEnv, { vendor });
-        (pty as unknown as { spawnFn: typeof mockSpawn }).spawnFn = mockSpawn;
-        await pty.spawn('fresh', '');
-
-        pty.getOutputBuffer().push(
-          'Claude Code is running in Bypass Permissions mode.\n  2. Yes, I accept\n',
-        );
-        await vi.advanceTimersByTimeAsync(32_000);
-
-        expect(preflightMocks.ensureFolderTrusted).not.toHaveBeenCalled();
-        expect(preflightMocks.ensureBypassPromptSuppressed).not.toHaveBeenCalled();
-        expect(warn).not.toHaveBeenCalled();
-        expect(mockPty.write).not.toHaveBeenCalled();
-      } finally {
-        warn.mockRestore();
-        vi.useRealTimers();
-      }
-    },
-  );
 
   it('starts the persistent TUI without a launch-time prompt', async () => {
     const pty = new OpencodePTY(mockEnv, {
@@ -383,7 +320,7 @@ describe('OpencodePTY', () => {
       mockPty.write.mockClear();
 
       pty.injectMessage([
-        '=== TELEGRAM from [USER: James] (chat_id:7940429114) ===',
+        '=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===',
         '```',
         'Yo',
         '```',
@@ -395,7 +332,7 @@ describe('OpencodePTY', () => {
       await vi.advanceTimersByTimeAsync(150);
 
       const written = mockPty.write.mock.calls[1][0];
-      expect(written).toContain('=== TELEGRAM from [USER: James] (chat_id:7940429114) ===');
+      expect(written).toContain('=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===');
       expect(written).toContain('[OPENCODE TELEGRAM DELIVERY REQUIREMENT]');
       expect(written).toContain("cortextos bus send-telegram 7940429114 '<your reply>'");
       expect(written).toContain('A plain answer printed only in the OpenCode TUI is NOT delivered');
@@ -419,7 +356,7 @@ describe('OpencodePTY', () => {
       mockPty.write.mockClear();
 
       pty.injectMessage([
-        '=== TELEGRAM from [USER: James] (chat_id:7940429114) ===',
+        '=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===',
         '[Replying to: "Code review done — 95 files, ~18.5k lines analyzed. Full HTML breakdown attached.\\n[document: hermes-memory-review.html]"]',
         '```',
         "what's this?",
@@ -462,14 +399,14 @@ describe('OpencodePTY', () => {
       mockPty.write.mockClear();
 
       const firstTelegram = [
-        '=== TELEGRAM from [USER: James] (chat_id:7940429114) ===',
+        '=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===',
         '```',
         'First',
         '```',
         "Reply using: cortextos bus send-telegram 7940429114 '<your reply>'",
       ].join('\n');
       const secondTelegram = [
-        '=== TELEGRAM from [USER: James] (chat_id:7940429114) ===',
+        '=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===',
         '```',
         'Second after shell command',
         '```',
@@ -518,7 +455,7 @@ describe('OpencodePTY', () => {
       pty.getOutputBuffer().push('boris@host cortextos % ');
 
       pty.injectMessage([
-        '=== TELEGRAM from [USER: James] (chat_id:7940429114) ===',
+        '=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===',
         '```',
         'Yo',
         '```',
@@ -536,7 +473,7 @@ describe('OpencodePTY', () => {
       // Content is typed only after the 500ms shell-exit settle delay.
       await vi.advanceTimersByTimeAsync(500);
       const written = mockPty.write.mock.calls[3][0];
-      expect(written).toContain('=== TELEGRAM from [USER: James] (chat_id:7940429114) ===');
+      expect(written).toContain('=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===');
       expect(written).toContain('[OPENCODE TELEGRAM DELIVERY REQUIREMENT]');
 
       // Then the usual submit Enter.

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 
@@ -57,6 +57,9 @@ beforeEach(() => {
   // the gate would treat 'target-agent' as unknown and block the allow-cases.
   const fwRoot = join(tempCtx, 'framework');
   mkdirSync(join(fwRoot, 'orgs', 'testorg', 'agents', 'target-agent'), { recursive: true });
+  const agentDir = join(fwRoot, 'orgs', 'testorg', 'agents', 'test-agent');
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, '.env'), 'BOT_TOKEN=fake-token\n', 'utf-8');
 
   originalCtxRoot = process.env.CTX_ROOT;
   originalAgentName = process.env.CTX_AGENT_NAME;
@@ -144,10 +147,10 @@ describe('outbound comms lint', () => {
     }
   });
 
-  it('logs a blocked base-lint event with matched phrase, rule class, and target type', async () => {
+  it('logs a blocked human base-lint event with matched phrase, rule class, and target type', async () => {
     await expect(
       busCommand.parseAsync(
-        ['send-message', 'target-agent', 'normal', 'waiting for feedback'],
+        ['send-mobile-reply', 'test-agent', 'waiting for feedback'],
         { from: 'user' },
       ),
     ).rejects.toThrow();
@@ -162,7 +165,7 @@ describe('outbound comms lint', () => {
       expect.objectContaining({
         matched_phrase: 'waiting',
         rule_class: 'passive',
-        target_type: 'agent',
+        target_type: 'mobile',
       }),
     );
   });
@@ -255,12 +258,11 @@ describe('outbound comms lint', () => {
 
     await expect(
       busCommand.parseAsync(
-        ['send-message', 'target-agent', 'normal', 'waiting for feedback'],
+        ['send-mobile-reply', 'test-agent', 'waiting for feedback'],
         { from: 'user' },
       ),
     ).rejects.toThrow();
 
-    expect(sendMessageSpy).not.toHaveBeenCalled();
     expect(errorSpy.mock.calls.flat().join('\n')).toContain('blocked by comms-lint');
     errorSpy.mockRestore();
   });
@@ -280,11 +282,12 @@ describe('outbound comms lint', () => {
     expect(telegramSendSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('blocks send-message on passive waiting posture with no active context', async () => {
-    await expect(
-      busCommand.parseAsync(['send-message', 'target-agent', 'normal', 'waiting for feedback'], { from: 'user' })
-    ).rejects.toThrow();
-    expect(sendMessageSpy).not.toHaveBeenCalled();
+  it('allows technical agent-to-agent posture language', async () => {
+    await busCommand.parseAsync(
+      ['send-message', 'target-agent', 'normal', 'waiting for feedback'],
+      { from: 'user' },
+    );
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
   it('allows send-message when waiting includes specific next-signal context', async () => {
@@ -308,14 +311,12 @@ describe('outbound comms lint', () => {
     expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('blocks a bare holding posture report with no active or next-signal context', async () => {
-    await expect(
-      busCommand.parseAsync(
-        ['send-message', 'target-agent', 'normal', 'holding here'],
-        { from: 'user' },
-      ),
-    ).rejects.toThrow();
-    expect(sendMessageSpy).not.toHaveBeenCalled();
+  it('allows bare operational posture language between agents', async () => {
+    await busCommand.parseAsync(
+      ['send-message', 'target-agent', 'normal', 'holding here'],
+      { from: 'user' },
+    );
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
   it('blocks send-mobile-reply on banned posture phrase', async () => {
@@ -392,7 +393,7 @@ describe('outbound comms lint', () => {
     );
   });
 
-  // ─── Telegram-only plain-talk lint (C5 dispatch 2026-05-22 by Dane) ──────
+  // ─── Telegram-only plain-talk lint (an internal dispatch) ──────
 
   it('blocks send-telegram when message contains a PR number', async () => {
     await expect(
@@ -412,7 +413,7 @@ describe('outbound comms lint', () => {
     // SHA regex must require at least one hex letter; plain numeric IDs
     // (phone numbers, dollar amounts, ticket numbers) must NOT block.
     await busCommand.parseAsync(
-      ['send-telegram', '12345', 'Call back at 423555' + '0144 about ticket 9876543'],
+      ['send-telegram', '12345', 'Call back at 4235550100 about ticket 9876543'],
       { from: 'user' },
     );
     expect(telegramSendSpy).toHaveBeenCalledTimes(1);
@@ -425,19 +426,16 @@ describe('outbound comms lint', () => {
     expect(telegramSendSpy).not.toHaveBeenCalled();
   });
 
-  it('blocks send-telegram by default (fail-safe floor: caller own name, no roster) ', async () => {
-    // Config-drive: agent-name lint is roster-driven, NOT a hardcoded set. The FAIL-SAFE
-    // floor is the calling agent's OWN identity (CTX_AGENT_NAME='test-agent') — so even
-    // with zero org roster configured, an agent can never leak its own name.
+  it('blocks send-telegram by default when message contains an agent name', async () => {
     await expect(
-      busCommand.parseAsync(['send-telegram', '12345', 'test-agent just shipped the work'], { from: 'user' })
+      busCommand.parseAsync(['send-telegram', '12345', 'sample-agent just shipped the work'], { from: 'user' })
     ).rejects.toThrow();
     expect(telegramSendSpy).not.toHaveBeenCalled();
   });
 
   it('allows send-telegram with --explicit-naming when agent name is intentional', async () => {
     await busCommand.parseAsync(
-      ['send-telegram', '12345', 'Builder just shipped the work', '--explicit-naming'],
+      ['send-telegram', '12345', 'sample-agent just shipped the work', '--explicit-naming'],
       { from: 'user' },
     );
     expect(telegramSendSpy).toHaveBeenCalledTimes(1);
@@ -445,7 +443,7 @@ describe('outbound comms lint', () => {
 
   it('does NOT apply Telegram patterns to send-message (agent-to-agent stays technical)', async () => {
     await busCommand.parseAsync(
-      ['send-message', 'target-agent', 'normal', 'Builder shipped PR #45 commit 9c9f1c65 on cortextos repo'],
+      ['send-message', 'target-agent', 'normal', 'sample-agent shipped PR #45 commit 9c9f1c65 on cortextos repo'],
       { from: 'user' },
     );
     expect(sendMessageSpy).toHaveBeenCalledTimes(1);

@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
+import { retrySessionRevocation, sessionQuarantineReason } from './session-revocation-quarantine.js';
 import { join, relative } from 'path';
 import type { AgentConfig, AgentStatus, CtxEnv, BusPaths, WorkerStatus, TelegramMessage, TeamMember } from '../types/index.js';
 import { AgentProcess, type AgentInjectionOptions, type AgentInjectionResult } from './agent-process.js';
@@ -19,10 +20,12 @@ import { logEvent } from '../bus/event.js';
 import { sendMessage } from '../bus/message.js';
 import { recordInboundTelegram, cacheLastSent, logOutboundMessage, buildRecentHistory } from '../telegram/logging.js';
 import { collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
-import { stripControlChars } from '../utils/validate.js';
+import { rawDaemonBody, rawDaemonInjection, renderDaemonInjection, stripControlChars, structuralDaemonInjection } from '../utils/validate.js';
+import type { DaemonInjection } from '../utils/validate.js';
 import { processMediaMessage } from '../telegram/media.js';
 import { evaluateShift } from './shift.js';
 import { stripBom } from '../utils/strip-bom.js';
+import { configuredOrHostTimezone, configuredTimezone } from '../utils/timezone.js';
 import { normalizeAllowedUser } from './allowed-user.js';
 import { confirmSupportAccessOnFirstContact } from '../cli/support-access-notify.js';
 import {
@@ -39,9 +42,26 @@ import {
   clearObservedSlot,
   type SideRunPending,
 } from './cron-side-run-runner.js';
+import type { DeferredAgentLifecycle } from './deferred-agent-lifecycle.js';
+import type {
+  ChildBinding, DeferredEffect, DeferredRecord, ReconstructionObservation, RequestResult,
+} from './deferred-start-machine.js';
 
 type LogFn = (msg: string) => void;
-type AgentStartOptions = { partOfFleetStart?: boolean };
+
+export function buildCronInjection(firedAt: string, cronName: string, prompt: string): DaemonInjection {
+  return structuralDaemonInjection('CRON FIRED', `${firedAt} ${cronName}`, rawDaemonBody(prompt));
+}
+type AgentStartOptions = {
+  partOfFleetStart?: boolean;
+  deferredBeforeOnline?: (pid: number) => Promise<void>;
+};
+type DeferredSpawnContext = {
+  agentDir: string;
+  config?: AgentConfig;
+  org?: string;
+  options: AgentStartOptions;
+};
 type PendingRestartCause = 'post-crash' | 'in-flight-duplicate';
 type PendingRestartEntry = {
   cause: PendingRestartCause;
@@ -89,8 +109,10 @@ export function cronWakesForEmergencyClass(
   return allowed.some((a) => typeof a === 'string' && a.trim().toLowerCase() === want);
 }
 
+type AgentEntry = { process: AgentProcess; checker: FastChecker; stopped?: boolean; poller?: TelegramPoller; activityPoller?: TelegramPoller; slackListener?: SlackSocketListener; telegramRejectCount?: number; telegramLastRejectAlertAt?: number };
+
 export class AgentManager {
-  private agents: Map<string, { process: AgentProcess; checker: FastChecker; poller?: TelegramPoller; activityPoller?: TelegramPoller; slackListener?: SlackSocketListener; telegramRejectCount?: number; telegramLastRejectAlertAt?: number }> = new Map();
+  private agents: Map<string, AgentEntry> = new Map();
   private workers: Map<string, WorkerProcess> = new Map();
   /** Daemon-level cron scheduler registry: one CronScheduler per enabled agent. */
   private cronSchedulers: Map<string, CronScheduler> = new Map();
@@ -122,6 +144,16 @@ export class AgentManager {
   private frameworkRoot: string;
   private org: string;
   private fleetStartBatch: FleetStartBatch | null = null;
+  private deferredLifecycle?: DeferredAgentLifecycle;
+  private deferredSpawnContexts = new Map<string, DeferredSpawnContext>();
+  private deferredSubscriberSequence = 0;
+  private observeDeferredChildIdentity?: (pid: number) => string;
+  private reconstructedDeferredAgents = new Set<string>();
+  private deferredBootAgents: readonly string[] = [];
+  private deferredHistoricalTerminalAgents = new Set<string>();
+  private deferredRecoveryNeedsFreshAdmission = new Set<string>();
+  private deferredBootReconstruction?: Promise<void>;
+  private deferredBootAdmissions = new Set<string>();
 
   // Set true at construction time if any agent in state/ has a stale
   // .daemon-crashed marker, meaning the previous daemon process died
@@ -173,6 +205,341 @@ export class AgentManager {
     });
   }
 
+  private stillMapped(name: string, entry: AgentEntry): boolean {
+    return this.agents.get(name) === entry;
+  }
+
+  configureDeferredLifecycle(lifecycle: DeferredAgentLifecycle, observeChildIdentity: (pid: number) => string): void {
+    if (this.deferredLifecycle) throw new Error('deferred lifecycle already configured');
+    this.deferredLifecycle = lifecycle;
+    this.observeDeferredChildIdentity = observeChildIdentity;
+    // Reconstruction is an eager boot phase, never a side effect of first admission.
+    this.deferredBootAgents = lifecycle.persistedAgents();
+    this.deferredHistoricalTerminalAgents = new Set(
+      this.deferredBootAgents.filter(agent => {
+        const record = lifecycle.persistedRecord(agent);
+        return record?.state === 'completed-for-accounting' || record?.outcome !== undefined;
+      }),
+    );
+  }
+
+  async admitStartAgent(
+    name: string,
+    agentDir: string,
+    config?: AgentConfig,
+    org?: string,
+    options: AgentStartOptions = {},
+  ): Promise<RequestResult | undefined> {
+    if (!this.deferredLifecycle) {
+      await this.startAgent(name, agentDir, config, org, options);
+      return undefined;
+    }
+    await this.ensureDeferredBootReconstruction();
+    this.reconstructDeferredAgent(name);
+    const bootResult = await this.consumeDeferredBootAdmission(name, { agentDir, config, org });
+    if (bootResult) return bootResult;
+    const result = this.deferredLifecycle.request({
+      agent: name,
+      operation: 'start',
+      operationContext: {
+        agentDir, config, org, partOfFleetStart: options.partOfFleetStart,
+      },
+      subscriber: {
+        id: `${options.partOfFleetStart ? 'fleet' : 'individual'}:${name}:${++this.deferredSubscriberSequence}`,
+        kind: options.partOfFleetStart ? 'fleet' : 'individual',
+      },
+    });
+    if (result.status === 'refused') return result;
+    this.bindDeferredOperationContext(result);
+    return result;
+  }
+
+  async admitRestartAgent(name: string, options: AgentRestartOptions = {}): Promise<RequestResult | undefined> {
+    if (options.partOfFleetStart && options.fleetTotal && options.fleetTotal > 0 && !this.fleetStartBatch) {
+      this.beginFleetStartBatch(options.fleetTotal, 'restart-all');
+    }
+    if (!this.deferredLifecycle) {
+      await this.restartAgent(name, options);
+      return undefined;
+    }
+    await this.ensureDeferredBootReconstruction();
+    this.reconstructDeferredAgent(name);
+    const bootResult = await this.consumeDeferredBootAdmission(name);
+    if (bootResult) return bootResult;
+    const status = this.getAgentStatus(name);
+    const pid = status?.pid;
+    const result = this.deferredLifecycle.request({
+      agent: name,
+      operation: 'restart',
+      oldProcessIdentity: pid ? this.measureDeferredIdentity(pid) : undefined,
+      operationContext: { agentDir: '', partOfFleetStart: options.partOfFleetStart },
+      subscriber: {
+        id: `${options.partOfFleetStart ? 'fleet' : 'individual'}:${name}:${++this.deferredSubscriberSequence}`,
+        kind: options.partOfFleetStart ? 'fleet' : 'individual',
+      },
+    });
+    if (result.status === 'refused') return result;
+    this.bindDeferredOperationContext(result);
+    return result;
+  }
+
+  async executeDeferredStop(name: string, expectedIdentity: string): Promise<void> {
+    const status = this.getAgentStatus(name);
+    if (!status?.pid || this.measureDeferredIdentity(status.pid) !== expectedIdentity) {
+      throw new Error(`old process identity changed for ${name}`);
+    }
+    await this.stopAgent(name, false, true);
+  }
+
+  async executeDeferredSpawn(name: string, token: string, generation: number): Promise<ChildBinding> {
+    const contextKey = this.deferredContextKey(name, generation);
+    const context = this.deferredSpawnContexts.get(contextKey) ?? { agentDir: '', options: {} };
+    this.deferredSpawnContexts.delete(contextKey);
+    let durableBinding: ChildBinding | undefined;
+    await this.startAgent(name, context.agentDir, context.config, context.org, {
+      ...context.options,
+      deferredBeforeOnline: async (pid) => {
+        const binding = { token, pid, kernelIdentity: this.measureDeferredIdentity(pid) };
+        if (!this.deferredLifecycle) throw new Error('deferred lifecycle unavailable');
+        this.deferredLifecycle.bindChildBeforeOnline(name, binding, generation);
+        durableBinding = binding;
+      },
+    });
+    const status = this.getAgentStatus(name);
+    if (!status?.pid || status.status !== 'running') throw new Error(`spawn did not publish a running child for ${name}`);
+    if (!durableBinding || durableBinding.pid !== status.pid) {
+      throw new Error(`spawn reached running without its durable child binding for ${name}`);
+    }
+    return durableBinding;
+  }
+
+  async reapDeferredChild(name: string, binding: ChildBinding): Promise<void> {
+    const observation = await this.reapReceiptBoundChild(name, binding);
+    if (observation === 'unknown') {
+      throw new Error(`deferred child identity unknown; refusing reap for ${name}`);
+    }
+    // `absent` and `conflict` are proven non-matches for the durable binding.
+    // Never signal a reused PID merely because its number matches the receipt.
+  }
+
+  async completeDeferredSubscriber(effect: Extract<DeferredEffect, { type: 'deliver' }>): Promise<void> {
+    if (effect.subscriber.kind === 'fleet') {
+      this.recordFleetStartAgent(effect.agent);
+      this.finishFleetStartBatch();
+    } else {
+      console.log(`[agent-manager] Deferred ${effect.agent} operation completed: ${effect.outcome}`);
+    }
+  }
+
+  isAgentEnabledForDeferred(name: string): boolean {
+    const configEntry = this.readInstanceEnableList()[name];
+    if (configEntry?.enabled === false) return false;
+    const record = this.deferredLifecycle?.observe(name);
+    const persistedDir = record?.operationContext?.agentDir;
+    if (persistedDir && existsSync(persistedDir)) {
+      const sourceConfig = loadSourceAgentConfig(persistedDir);
+      if (sourceConfig.enabled === false) return false;
+    }
+    const generation = record?.recordGeneration;
+    const context = generation === undefined
+      ? undefined
+      : this.deferredSpawnContexts.get(this.deferredContextKey(name, generation));
+    return context?.config?.enabled !== false;
+  }
+
+  private reconstructDeferredAgent(name: string): void {
+    if (!this.deferredLifecycle || this.reconstructedDeferredAgents.has(name)) return;
+    const persisted = this.deferredLifecycle.persistedRecord(name);
+    const observation = this.measureDeferredReconstruction(name);
+    if (persisted?.state === 'spawning' && observation.replacementIdentity === 'absent') {
+      this.deferredRecoveryNeedsFreshAdmission.add(name);
+    }
+    this.deferredLifecycle.reconstruct(name, observation);
+    this.reconstructedDeferredAgents.add(name);
+  }
+
+  private ensureDeferredBootReconstruction(): Promise<void> {
+    if (!this.deferredLifecycle) return Promise.resolve();
+    if (!this.deferredBootReconstruction) {
+      for (const name of this.deferredBootAgents) this.reconstructDeferredAgent(name);
+      this.deferredBootAdmissions = new Set(this.deferredBootAgents);
+      const attempt = Promise.all(
+        this.deferredBootAgents.map(name => this.deferredLifecycle!.settled(name)),
+      ).then(() => undefined);
+      const guarded = attempt.catch(error => {
+        // Keep boot fail-closed, but do not memoize one rejected drain for the
+        // daemon lifetime. The next admission reconstructs the durable rows
+        // through fresh per-agent scheduling tails.
+        if (this.deferredBootReconstruction === guarded) this.deferredBootReconstruction = undefined;
+        for (const name of this.deferredBootAgents) this.reconstructedDeferredAgents.delete(name);
+        throw error;
+      });
+      this.deferredBootReconstruction = guarded;
+    }
+    return this.deferredBootReconstruction;
+  }
+
+  private measureDeferredIdentity(pid: number): string {
+    if (!this.observeDeferredChildIdentity) throw new Error('process identity observer unavailable');
+    return this.observeDeferredChildIdentity(pid);
+  }
+
+  private async consumeDeferredBootAdmission(
+    name: string,
+    context?: { agentDir: string; config?: AgentConfig; org?: string },
+  ): Promise<RequestResult | undefined> {
+    if (!this.deferredBootAdmissions.delete(name) || !this.deferredLifecycle) return undefined;
+    // A record that was already terminal when boot began is history, not
+    // satisfaction of today's enabled admission. Reconstruction outcomes that
+    // become terminal during this boot still return their truthful verdict.
+    const record = this.deferredLifecycle.observe(name);
+    if (!record) return undefined;
+    if (this.deferredRecoveryNeedsFreshAdmission.delete(name)) {
+      if (record.childBinding) {
+        const reconciled = await this.reconcileRecoveredChild(name, record, context);
+        if (reconciled === 'refused') return { status: 'refused', reason: 'UNKNOWN_GUARD' };
+      }
+      return undefined;
+    }
+    if (this.deferredHistoricalTerminalAgents.delete(name)) {
+      if (record.childBinding) {
+        const reconciled = await this.reconcileRecoveredChild(name, record, context);
+        if (reconciled === 'refused') return { status: 'refused', reason: 'UNKNOWN_GUARD' };
+      }
+      return undefined;
+    }
+    if (record.state === 'deferred-with-owner') {
+      return { status: 'deferred', receiptId: record.receiptId, record };
+    }
+    if (record.outcome && record.outcome !== 'spawned') {
+      // A row that terminalized during this boot (for example on conflicting
+      // measured identity) is a current fail-closed verdict, not historical.
+      return { status: 'cancelled', receiptId: record.receiptId, record };
+    }
+    if (record.outcome === 'spawned') {
+      if (record.childBinding) {
+        const reconciled = await this.reconcileRecoveredChild(name, record, context);
+        if (reconciled === 'refused') return { status: 'refused', reason: 'UNKNOWN_GUARD' };
+      }
+      // PTY-backed runtimes cannot adopt a child after daemon loss: the PTY,
+      // message injection and poller ownership died with the old manager. A
+      // measured survivor is reaped above; a vanished child needs a fresh
+      // operation. In both cases this historical outcome cannot consume boot.
+      return undefined;
+    }
+    return { status: 'accepted', receiptId: record.receiptId, record };
+  }
+
+  private async reconcileRecoveredChild(
+    name: string,
+    record: DeferredRecord,
+    context?: { agentDir: string; config?: AgentConfig; org?: string },
+  ): Promise<'accounted' | 'refused'> {
+    this.deferredLifecycle!.beginRecoveredChildReplacement(name, record.recordGeneration);
+    const result = await this.reapReceiptBoundChild(name, record.childBinding!, context);
+    if (result === 'conflict' || result === 'unknown') return 'refused';
+    this.deferredLifecycle!.completeRecoveredChildReap(name, record.recordGeneration);
+    return 'accounted';
+  }
+
+  private async reapReceiptBoundChild(
+    name: string,
+    binding: ChildBinding,
+    context?: { agentDir: string; config?: AgentConfig; org?: string },
+  ): Promise<'reaped' | 'absent' | 'conflict' | 'unknown'> {
+    let measured: string;
+    try {
+      measured = this.measureDeferredIdentity(binding.pid);
+    } catch (error) {
+      if (String(error).includes('vanished')) return 'absent';
+      return 'unknown';
+    }
+    if (measured !== binding.kernelIdentity) return 'conflict';
+    const resolvedOrg = this.resolveAgentOrg(name, context?.org);
+    const agentDir = context?.agentDir || join(this.frameworkRoot, 'orgs', resolvedOrg, 'agents', name);
+    const config = context?.config ?? (existsSync(agentDir) ? loadSourceAgentConfig(agentDir) : {} as AgentConfig);
+    const env: CtxEnv = {
+      instanceId: this.instanceId,
+      ctxRoot: this.ctxRoot,
+      frameworkRoot: this.frameworkRoot,
+      agentName: name,
+      agentDir,
+      org: resolvedOrg,
+      projectRoot: this.frameworkRoot,
+    };
+    const processEntry = new AgentProcess(name, env, config, msg => console.log(`[${name}] ${msg}`));
+    processEntry.adoptExternalProcess(binding, pid => this.measureDeferredIdentity(pid));
+    await processEntry.stop();
+    return 'reaped';
+  }
+
+  private bindDeferredOperationContext(result: RequestResult): void {
+    if (result.status === 'refused') return;
+    const context = result.record.operationContext;
+    const key = this.deferredContextKey(result.record.agent, result.record.recordGeneration);
+    if (!context || this.deferredSpawnContexts.has(key)) return;
+    this.deferredSpawnContexts.set(key, {
+      agentDir: context.agentDir,
+      config: context.config as AgentConfig | undefined,
+      org: context.org,
+      options: { partOfFleetStart: context.partOfFleetStart },
+    });
+  }
+
+  private deferredContextKey(agent: string, generation: number): string {
+    return `${agent}:${generation}`;
+  }
+
+  private measureDeferredReconstruction(name: string): ReconstructionObservation {
+    if (!this.deferredLifecycle) throw new Error('deferred lifecycle unavailable');
+    const persisted = this.deferredLifecycle.persistedRecord(name);
+    const status = this.getAgentStatus(name);
+    const durableChild = persisted?.childBinding;
+    const candidatePid = status?.pid ?? durableChild?.pid;
+    let measuredIdentity: string | undefined;
+    let observationUnknown = false;
+    let observationVanished = false;
+    if (candidatePid) {
+      try {
+        measuredIdentity = this.measureDeferredIdentity(candidatePid);
+      } catch (error) {
+        if (String(error).includes('vanished')) observationVanished = true;
+        else observationUnknown = true;
+      }
+    }
+    const observedPid = observationVanished ? undefined : candidatePid;
+
+    const afterOldProcess = persisted?.state === 'start-pending' || persisted?.state === 'spawning';
+    const oldIdentity: ReconstructionObservation['oldIdentity'] = afterOldProcess
+      ? 'absent'
+      : observationUnknown
+        ? 'unknown'
+        : !observedPid
+          ? 'absent'
+          : persisted?.oldProcessIdentity === measuredIdentity ? 'exact' : 'conflict';
+
+    const reportedBinding = status && (status as AgentStatus & { deferredChildBinding?: ChildBinding })
+      .deferredChildBinding;
+    const bound = reportedBinding ?? durableChild;
+    const replacementIdentity: ReconstructionObservation['replacementIdentity'] = observationUnknown
+      ? 'unknown'
+      : !observedPid
+        ? observationVanished ? 'absent' : persisted?.intendedChildToken ? 'unknown' : 'absent'
+        : bound
+          && bound.pid === observedPid
+          && bound.kernelIdentity === measuredIdentity
+          && bound.token === persisted?.intendedChildToken
+          ? 'exact'
+          : bound ? 'conflict' : 'unknown';
+
+    return {
+      oldIdentity,
+      replacementIdentity,
+      custodyBlocked: this.deferredLifecycle.custodyBlocked(name),
+      child: replacementIdentity === 'exact' ? bound : undefined,
+    };
+  }
+
   private async handleAgentCronFire(
     agentName: string,
     cron: CronDefinition,
@@ -180,7 +547,7 @@ export class AgentManager {
   ): Promise<void> {
     const prompt = cron.prompt ?? `[cron] ${cron.name} fired`;
 
-    // Shift gate (RFC your org internal docs §4).
+    // Shift gate (RFC internal design docs §4).
     const suppression = this.evaluateCronShiftSuppression(agentName, cron);
     if (suppression) {
       console.log(`[daemon] cron suppressed off-shift for ${agentName}: ${cron.name} (mode=${suppression.mode})`);
@@ -200,7 +567,7 @@ export class AgentManager {
     }
 
     const firedAt = context.firedAt;
-    const injection = `[CRON FIRED ${firedAt}] ${cron.name}: ${prompt}`;
+    const injection = buildCronInjection(firedAt, cron.name, prompt);
     const injected = this.injectCronAgent(agentName, cron, injection, firedAt);
     if (!injected) {
       throw new Error(`injectAgent returned false for agent "${agentName}" — agent may not be running`);
@@ -317,6 +684,7 @@ export class AgentManager {
    * Discover and start all enabled agents.
    */
   async discoverAndStart(): Promise<void> {
+    await this.ensureDeferredBootReconstruction();
     const agentDirs = this.discoverAgents();
     const startCandidates: Array<{ name: string; dir: string; org: string; config: AgentConfig }> = [];
 
@@ -353,14 +721,23 @@ export class AgentManager {
       // and startAgent re-throws after cleanup; we log + continue here so
       // the rest of the fleet still comes online.
       try {
-        await this.startAgent(name, dir, config, org, { partOfFleetStart: true });
+        const persistedBootAdmission = this.deferredBootAdmissions.has(name);
+        const admission = await this.admitStartAgent(name, dir, config, org, { partOfFleetStart: true });
+        if (admission?.status === 'refused') {
+          this.recordFleetStartRejection(name, startCandidates.length);
+        } else if (persistedBootAdmission && admission) {
+          // This verdict belongs to a subscriber persisted before this boot, so
+          // no current fleet delivery will ever account today's enabled member.
+          this.recordFleetStartAgent(name);
+          this.finishFleetStartBatch();
+        }
       } catch (err) {
         console.error(`[agent-manager] Failed to start ${name}: ${err}`);
       } finally {
-        this.recordFleetStartAgent(name);
+        if (!this.deferredLifecycle) this.recordFleetStartAgent(name);
       }
     }
-    this.finishFleetStartBatch(true);
+    if (!this.deferredLifecycle) this.finishFleetStartBatch(true);
 
     // Successful startup pass — clear .daemon-crashed markers from disk
     // AND clear the in-memory daemonJustCrashed flag. After this point,
@@ -658,6 +1035,18 @@ export class AgentManager {
   }
 
   async startAgent(name: string, agentDir: string, config?: AgentConfig, org?: string, options: AgentStartOptions = {}): Promise<void> {
+    // Scoped fail-closed on an unknown session revocation. Boot could not clear
+    // this agent's stale heartbeat session records, and a record that survives is
+    // still a VALID credential — starting a new generation would leave two live
+    // sessions for this agent, so a detached descendant of the dead one could keep
+    // refreshing its heartbeat. Retry the revoke first: repairing the directory
+    // permission is all an operator should have to do.
+    if (!retrySessionRevocation(this.ctxRoot, name)) {
+      const reason = sessionQuarantineReason(name);
+      console.error(`[agent-manager] REFUSING TO START ${name}: ${reason}`);
+      throw new Error(`${name} cannot start: ${reason}`);
+    }
+
     if (this.agents.has(name)) {
       const mapped = this.agents.get(name)!;
       const mappedStatus = typeof mapped.process.getStatus === 'function'
@@ -871,6 +1260,9 @@ export class AgentManager {
         }
       | undefined;
     let slackSocketConfig: { channel: string; botToken: string; appToken: string } | undefined;
+    // D1 routing config, loaded ONCE and shared by BOTH inbound consumers
+    // (socket listener AND poll fallback) — hoisted so the listener
+    // construction below reuses the same load instead of re-reading the file.
     if (config.slack_watch?.channel) {
       let slackBotToken = '';
       let slackAppToken = '';
@@ -965,15 +1357,19 @@ export class AgentManager {
       prevStatusForReset = status.status;
     });
 
-    const entry = { process: agentProcess, checker };
-    this.agents.set(name, entry);
+    const ownEntry: AgentEntry = { process: agentProcess, checker };
+    const entry = ownEntry;
+    this.agents.set(name, ownEntry);
 
     // Start agent. If start() throws, AgentProcess has already flipped status
     // to 'crashed' (it now re-throws so callers can react). Tear down the
     // map entry before re-throwing so we don't leave a half-registered
     // zombie that blocks future startAgent() retries.
     try {
-      await agentProcess.start({ partOfFleetStart: options.partOfFleetStart });
+      await agentProcess.start({
+        partOfFleetStart: options.partOfFleetStart,
+        beforeOnline: options.deferredBeforeOnline,
+      });
     } catch (err) {
       // Only delete if we are still the canonical entry — a concurrent
       // stop+start could have replaced the map entry while we were awaiting.
@@ -1043,6 +1439,8 @@ export class AgentManager {
     // configured. Stored on the registry entry so stopAgent() closes the WSS
     // cleanly. When active, the legacy poll is dormant (slackWatchOption unset).
     if (slackSocketConfig) {
+      // SHARED-APP DETECTION (PR313 Codex P1): Slack distributes an app's
+      // event envelopes across its open Socket Mode connections — each event
       const slackListener = new SlackSocketListener({
         appToken: slackSocketConfig.appToken,
         botToken: slackSocketConfig.botToken,
@@ -1173,7 +1571,7 @@ export class AgentManager {
               log('Media processing returned null - falling back to text format');
               const text = stripControlChars(msg.caption || '');
               const formatted = FastChecker.formatTelegramTextMessage(from, effectiveChatId, text, this.frameworkRoot, replyToText);
-              if (!checker.isDuplicate(formatted)) checker.queueTelegramMessage(formatted);
+              if (!checker.isDuplicate(renderDaemonInjection(formatted))) checker.queueTelegramMessage(formatted);
               return;
             }
 
@@ -1188,7 +1586,7 @@ export class AgentManager {
             const relFilePath = toRel(media.file_path);
 
             log(`[DEBUG] media.type=${media.type} image_path=${JSON.stringify(relImagePath)} file_path=${JSON.stringify(relFilePath)}`);
-            let formatted: string;
+            let formatted: DaemonInjection;
             if (media.type === 'photo') {
               formatted = FastChecker.formatTelegramPhotoMessage(from, effectiveChatId, media.text, relImagePath, replyToText);
             } else if (media.type === 'document') {
@@ -1200,7 +1598,7 @@ export class AgentManager {
               formatted = FastChecker.formatTelegramVideoMessage(from, effectiveChatId, media.text, relFilePath, media.file_name || '', media.duration, replyToText);
             }
 
-            if (checker.isDuplicate(formatted)) {
+            if (checker.isDuplicate(renderDaemonInjection(formatted))) {
               log('Duplicate Telegram media message suppressed');
               return;
             }
@@ -1210,7 +1608,7 @@ export class AgentManager {
             log(`Media processing error: ${err} - falling back to text format`);
             const text = stripControlChars(msg.caption || '');
             const formatted = FastChecker.formatTelegramTextMessage(from, effectiveChatId, text, this.frameworkRoot, replyToText);
-            if (!checker.isDuplicate(formatted)) checker.queueTelegramMessage(formatted);
+            if (!checker.isDuplicate(renderDaemonInjection(formatted))) checker.queueTelegramMessage(formatted);
           });
           return;
         }
@@ -1230,7 +1628,7 @@ export class AgentManager {
           recentHistory,
         );
 
-        if (checker.isDuplicate(formatted)) {
+        if (checker.isDuplicate(renderDaemonInjection(formatted))) {
           log('Duplicate Telegram message suppressed');
           return;
         }
@@ -1285,7 +1683,7 @@ export class AgentManager {
           reaction.old_reaction ?? [],
           reaction.new_reaction ?? [],
         );
-        if (checker.isDuplicate(formatted)) {
+        if (checker.isDuplicate(renderDaemonInjection(formatted))) {
           log('Duplicate Telegram reaction suppressed');
           return;
         }
@@ -1376,7 +1774,9 @@ export class AgentManager {
       // is always non-empty.
       await this.maybeStartActivityChannelPoller(name, resolvedOrg, agentDir, log);
     }
+
   }
+
 
   /**
    * If this agent is the org's orchestrator AND the org has an
@@ -1503,7 +1903,8 @@ export class AgentManager {
   /**
    * Stop a specific agent.
    */
-  async stopAgent(name: string, userInitiated = false): Promise<void> {
+  async stopAgent(name: string, userInitiated = false, lifecycleInternal = false): Promise<void> {
+    if (userInitiated && !lifecycleInternal) this.deferredLifecycle?.stop(name);
     const entry = this.agents.get(name);
     if (!entry) {
       console.log(`[agent-manager] Agent ${name} not found`);
@@ -1516,7 +1917,8 @@ export class AgentManager {
     this.cronNoopDetector.cancelAgentVerifications(name);
     entry.checker.stop();
     await entry.process.stop();
-    this.agents.delete(name);
+    entry.stopped = true;
+    if (this.stillMapped(name, entry)) this.agents.delete(name);
 
     // Stop and remove the agent's cron scheduler (if one was wired)
     const scheduler = this.cronSchedulers.get(name);
@@ -1563,7 +1965,7 @@ export class AgentManager {
       }
       this.pendingRestarts.delete(name);
       console.log(`[agent-manager] Honoring queued restart for ${name}`);
-      this.startAgent(name, '').catch(err =>
+      this.admitStartAgent(name, '').catch(err =>
         console.error(`[agent-manager] Queued restart failed for ${name}:`, err),
       );
     }
@@ -1628,6 +2030,14 @@ export class AgentManager {
    * time `pty.kill()` runs, every agent already has its marker on disk.
    */
   async stopAll(): Promise<void> {
+    try {
+      await this.deferredLifecycle?.shutdown();
+    } catch (err) {
+      // Deferred cleanup is best-effort at daemon shutdown. Continue through
+      // marker publication and every ordinary agent stop so one failed reap
+      // cannot orphan the entire fleet or manufacture crash alerts.
+      console.error('[agent-manager] Deferred shutdown cleanup failed:', err);
+    }
     const names = [...this.agents.keys()];
 
     for (const name of names) {
@@ -1699,8 +2109,27 @@ export class AgentManager {
    * Spawn an ephemeral worker session for a parallelized task.
    */
   async spawnWorker(name: string, dir: string, prompt: string, parent?: string, model?: string): Promise<void> {
-    if (this.workers.has(name)) {
-      throw new Error(`Worker "${name}" is already running`);
+    // Worker admission has two independent retained-credential gates and BOTH
+    // must clear. The in-process tombstone owns the exact nonce/generation from
+    // this daemon and lifts only when that exact revoke succeeds. After restart,
+    // boot quarantine owns any durable records it could not revoke and lifts only
+    // when the name-wide boot retry succeeds. Either source may exist alone; a
+    // success from one never overrides a refusal from the other.
+    const existing = this.workers.get(name);
+    if (existing) {
+      if (existing.getStatus().status !== 'revoke-failed') {
+        throw new Error(`Worker "${name}" is already running`);
+      }
+      if (!existing.retryRetainedSessionRevocation()) {
+        throw new Error(`Worker "${name}" cannot start: SESSION REVOCATION UNKNOWN`);
+      }
+      this.workers.delete(name);
+    }
+    // A daemon restart loses the in-memory tombstone, but boot reconstructs the
+    // same name-level gate as a session quarantine when its durable record cannot
+    // be revoked. Repairing the storage condition makes this retry self-lifting.
+    if (!retrySessionRevocation(this.ctxRoot, name)) {
+      throw new Error(`Worker "${name}" cannot start: ${sessionQuarantineReason(name)}`);
     }
     if (this.agents.has(name)) {
       throw new Error(`"${name}" is already a registered agent name`);
@@ -1734,7 +2163,8 @@ export class AgentManager {
       // Auto-remove finished workers after a short delay so list-workers
       // can still show the final status briefly before cleanup
       setTimeout(() => {
-        if (this.workers.get(workerName)?.isFinished()) {
+        const current = this.workers.get(workerName);
+        if (current?.isFinished() && current.getStatus().status !== 'revoke-failed') {
           this.workers.delete(workerName);
         }
       }, 30_000); // keep for 30s after exit
@@ -1752,7 +2182,9 @@ export class AgentManager {
       throw new Error(`Worker "${name}" not found`);
     }
     await worker.terminate();
-    this.workers.delete(name);
+    if (worker.getStatus().status !== 'revoke-failed') {
+      this.workers.delete(name);
+    }
   }
 
   /**
@@ -1769,8 +2201,8 @@ export class AgentManager {
    * Used by `cortextos bus test-cron-fire` to fire a cron immediately for testing.
    * Returns true if the agent is running and the inject succeeded; false otherwise.
    */
-  injectAgent(agentName: string, text: string): boolean {
-    return this.injectAgentDetailed(agentName, text).ok;
+  injectAgent(agentName: string, input: string | DaemonInjection): boolean {
+    return this.injectAgentDetailed(agentName, input).ok;
   }
 
   /**
@@ -1784,14 +2216,17 @@ export class AgentManager {
    */
   injectAgentDetailed(
     agentName: string,
-    text: string,
+    input: string | DaemonInjection,
     options?: AgentInjectionOptions,
   ): AgentInjectionResult | { ok: false; code: 'NOT_FOUND'; message: string } {
     const entry = this.agents.get(agentName);
     if (!entry) {
       return { ok: false, code: 'NOT_FOUND', message: `agent "${agentName}" not in registry` };
     }
-    return entry.process.injectMessageDetailed(text, options);
+    return entry.process.injectMessageDetailed(
+      typeof input === 'string' ? rawDaemonInjection(input) : input,
+      options,
+    );
   }
 
   /**
@@ -1880,7 +2315,7 @@ export class AgentManager {
   injectCronAgent(
     agentName: string,
     cron: Pick<CronDefinition, 'name' | 'prompt'>,
-    text: string,
+    input: string | DaemonInjection,
     firedAt = new Date().toISOString(),
   ): boolean {
     const entry = this.agents.get(agentName);
@@ -1944,7 +2379,7 @@ export class AgentManager {
           agent: agentName,
           admittedAtMs: Date.parse(firedAt) || Date.now(),
           deadlineMs: sidePlan.deadlineMs,
-          cronPrompt: cron.prompt ?? text,
+          cronPrompt: cron.prompt ?? (typeof input === 'string' ? input : cron.prompt ?? ''),
           sideRunPrompt: sidePlan.prompt,
           continuationPrompt: sidePlan.continuationPrompt,
         };
@@ -1980,7 +2415,9 @@ export class AgentManager {
     const dedupIdentity = `daemon-cron:${cron.name}:${firedAt}`;
     const result = this.injectAgentDetailed(
       agentName,
-      plan?.preflightPrompt ?? text,
+      plan?.preflightPrompt !== undefined
+        ? rawDaemonInjection(plan.preflightPrompt)
+        : (typeof input === 'string' ? rawDaemonInjection(input) : input),
       plan ? {
         codexRouting: plan.routing,
         codexContinuation: plan.continuationPrompt,
@@ -2092,8 +2529,10 @@ export class AgentManager {
     const onFire = (cron: CronDefinition, context: CronFireContext) =>
       this.handleAgentCronFire(agentName, cron, context);
 
+    const config = entry.process.getConfig();
     const scheduler = new CronScheduler({
       agentName,
+      timezone: configuredTimezone(config.timezone),
       onFire,
       // Rides the existing 30s tick so side-run outcomes are re-checked without
       // a new timer and without blocking a fire slot.
@@ -2144,7 +2583,7 @@ export class AgentManager {
     // configuration the author already wrote actually govern behaviour.
     if (cronWakesForEmergencyClass(cron, agentConfig)) return null;
 
-    const tz = agentConfig.timezone || 'America/New_York';
+    const tz = configuredOrHostTimezone(agentConfig.timezone);
     const ev = evaluateShift(new Date(), agentConfig.shift_schedule, tz);
     if (ev.off_shift_no_wake) return { mode: 'no_wake' };
     if (ev.off_shift_emergency_only) return { mode: 'emergency_only_no_tag' };

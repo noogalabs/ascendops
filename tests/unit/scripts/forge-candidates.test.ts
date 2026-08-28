@@ -3,15 +3,35 @@ import { execFileSync } from 'child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { pathToFileURL } from 'url';
 
 const repoRoot = join(__dirname, '../../..');
 const scriptPath = join(repoRoot, 'scripts', 'forge-candidates.mjs');
 
-function run(args: string[]) {
+function run(args: string[], fixedNow?: string) {
+  let env = process.env;
+  if (fixedNow) {
+    // Vitest fake timers do not cross execFileSync, so preload a clock into the child.
+    const clockPath = join(tmp, 'fixed-clock.mjs');
+    writeFileSync(clockPath, `
+const NativeDate = Date;
+const fixedNow = NativeDate.parse(${JSON.stringify(fixedNow)});
+globalThis.Date = class extends NativeDate {
+  constructor(...args) { super(...(args.length ? args : [fixedNow])); }
+  static now() { return fixedNow; }
+};
+`, 'utf-8');
+    const clockImport = `--import=${pathToFileURL(clockPath).href}`;
+    env = {
+      ...process.env,
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, clockImport].filter(Boolean).join(' '),
+    };
+  }
   try {
     const stdout = execFileSync(process.execPath, [scriptPath, ...args], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      env,
     });
     return { status: 0, stdout, stderr: '' };
   } catch (err: any) {
@@ -30,8 +50,8 @@ let eventsRoot: string;
 // Real observed shapes from the live store (2026-06-07 rich shape and
 // 2026-06-08 slim shape) — the queue reader must tolerate both.
 const RICH_EVENT = {
-  id: '1780842855-dane-4l11r',
-  agent: 'dane',
+  id: '1780842855-rex-4l11r',
+  agent: 'rex',
   org: 'ascendops',
   timestamp: '2026-06-07T14:34:15Z',
   category: 'action',
@@ -47,8 +67,8 @@ const RICH_EVENT = {
 };
 
 const SLIM_EVENT = {
-  id: '1780959877-dane-rbx62',
-  agent: 'dane',
+  id: '1780959877-rex-rbx62',
+  agent: 'rex',
   org: 'ascendops',
   timestamp: '2026-06-08T23:04:37Z',
   category: 'action',
@@ -102,8 +122,8 @@ describe('forge-candidates', () => {
   });
 
   it('queue merges both event metadata shapes with run-log entries and groups by verdict', () => {
-    seedEvents('dane', '2026-06-07', [RICH_EVENT]);
-    seedEvents('dane', '2026-06-08', [SLIM_EVENT]);
+    seedEvents('rex', '2026-06-07', [RICH_EVENT]);
+    seedEvents('rex', '2026-06-08', [SLIM_EVENT]);
     run([
       'emit', '--runs-dir', runsDir, '--no-event',
       '--skill', 'fleet-consistency-sweep', '--verdict', 'create-new',
@@ -120,7 +140,7 @@ describe('forge-candidates', () => {
   });
 
   it('queue dedupes an event already recorded in the run log by event_id', () => {
-    seedEvents('dane', '2026-06-07', [RICH_EVENT]);
+    seedEvents('rex', '2026-06-07', [RICH_EVENT]);
     mkdirSync(runsDir, { recursive: true });
     writeFileSync(join(runsDir, 'candidates.md'), `# q\n\n## Pending\n\n### fc-1-aaaaa\n- date: 2026-06-07\n- skill: meld-intake-triage\n- verdict: edit-existing\n- incident: THNRV7CB\n- event_id: ${RICH_EVENT.id}\n\n`, 'utf-8');
     const res = run(['queue', '--runs-dir', runsDir, '--events-root', eventsRoot, '--since', '2026-06-01', '--format', 'json']);
@@ -136,9 +156,9 @@ describe('forge-candidates', () => {
     // dedupe must match on the shared fc-id, not event_id, or every emitted
     // candidate is counted twice in the weekly build.
     const FC_ID = 'fc-1780842999-zzzaa';
-    seedEvents('dane', '2026-06-07', [{
-      id: '1780842999-dane-busid',
-      agent: 'dane',
+    seedEvents('rex', '2026-06-07', [{
+      id: '1780842999-rex-busid',
+      agent: 'rex',
       org: 'ascendops',
       timestamp: '2026-06-07T14:36:39Z',
       category: 'action',
@@ -165,7 +185,7 @@ describe('forge-candidates', () => {
   });
 
   it('consume archives pending entries, resets the queue, and advances the marker', () => {
-    seedEvents('dane', '2026-06-07', [RICH_EVENT]);
+    seedEvents('rex', '2026-06-07', [RICH_EVENT]);
     run([
       'emit', '--runs-dir', runsDir, '--no-event',
       '--skill', 'x', '--verdict', 'create-new', '--slippage', 's', '--incident', 'PR #1 2026-06-09',
@@ -195,9 +215,9 @@ describe('forge-candidates', () => {
     // before 08:00 UTC → the candidate is excluded → "Consumed 0" → this test
     // flaked by time-of-day. A relative-past stamp is robust at every hour.
     const pastTs = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    seedEvents('dane', today, [{
+    seedEvents('rex', today, [{
       id: 'busid-evonly',
-      agent: 'dane',
+      agent: 'rex',
       org: 'ascendops',
       timestamp: pastTs,
       category: 'action',
@@ -217,20 +237,22 @@ describe('forge-candidates', () => {
   });
 
   it('snapshot-binds consume to build-start: a candidate emitted AFTER the queue-read survives the next build (TOCTOU)', () => {
-    const today = new Date().toISOString().split('T')[0];
-    // T1 must sit BEFORE the build-read cutoff (≈ now). A hardcoded `${today}T01:00:00Z`
-    // is in the FUTURE when the suite runs between 00:00–01:00 UTC, so the pre-read upper
-    // bound excludes it → q1.total flakes to 0. A relative-past stamp is robust at every
-    // hour (same fix already applied to the event-only sibling test above).
-    const t1Ts = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const buildStart = '2026-08-01T00:30:00.000Z';
+    const afterRace = '2026-08-01T00:30:00.010Z';
+    const today = buildStart.split('T')[0];
+    const t1Timestamp = new Date(Date.parse(buildStart) - 60 * 60 * 1000).toISOString();
+    const t1Date = t1Timestamp.split('T')[0];
     const t1Event = {
-      id: 'ev-t1', agent: 'dane', org: 'ascendops', timestamp: t1Ts,
+      id: 'ev-t1', agent: 'rex', org: 'ascendops', timestamp: t1Timestamp,
       category: 'action', event: 'forge_candidate', severity: 'info',
-      metadata: { id: 'fc-t1', skill: 'built-a', slippage: 's', verdict: 'create-new', incident: `PR #1 ${today}`, confidence: 'high' },
+      metadata: { id: 'fc-t1', skill: 'built-a', slippage: 's', verdict: 'create-new', incident: `PR #1 ${t1Date}`, confidence: 'high' },
     };
     // At build-read time only the T1 candidate exists.
-    seedEvents('dane', today, [t1Event]);
-    const q1 = JSON.parse(run(['queue', '--runs-dir', runsDir, '--events-root', eventsRoot, '--format', 'json']).stdout);
+    seedEvents('rex', t1Date, [t1Event]);
+    const q1 = JSON.parse(run(
+      ['queue', '--runs-dir', runsDir, '--events-root', eventsRoot, '--format', 'json'],
+      buildStart,
+    ).stdout);
     expect(q1.total).toBe(1); // queue (no --since) wrote the build-start snapshot
 
     // The snapshot's build_start_ts is the SAME authoritative pre-read cutoff
@@ -244,20 +266,26 @@ describe('forge-candidates', () => {
     // excluded from THIS build and survive into the next.
     const raceTs = new Date(Date.parse(q1.cutoffTs) + 1).toISOString();
     const raceEvent = {
-      id: 'ev-race', agent: 'dane', org: 'ascendops', timestamp: raceTs,
+      id: 'ev-race', agent: 'rex', org: 'ascendops', timestamp: raceTs,
       category: 'action', event: 'forge_candidate', severity: 'info',
       metadata: { id: 'fc-race', skill: 'racing-b', slippage: 'landed mid-build', verdict: 'create-new', incident: `PR #2 ${today}`, confidence: 'high' },
     };
-    seedEvents('dane', today, [t1Event, raceEvent]);
+    seedEvents('rex', today, [raceEvent]);
 
     // consume archives EXACTLY the snapshot (the T1 candidate), watermark = build-start.
-    expect(run(['consume', '--runs-dir', runsDir, '--events-root', eventsRoot, '--build-id', 'build-toctou']).status).toBe(0);
+    expect(run(
+      ['consume', '--runs-dir', runsDir, '--events-root', eventsRoot, '--build-id', 'build-toctou'],
+      afterRace,
+    ).status).toBe(0);
     const archive = readFileSync(join(runsDir, 'runs', 'build-toctou.md'), 'utf-8');
-    expect(archive).toContain(`PR #1 ${today}`);     // built candidate archived
+    expect(archive).toContain(`PR #1 ${t1Date}`);    // built candidate archived
     expect(archive).not.toContain(`PR #2 ${today}`); // racing candidate NOT swept in
 
     // The racing candidate must SURVIVE into the next build (not silently dropped).
-    const q2 = JSON.parse(run(['queue', '--runs-dir', runsDir, '--events-root', eventsRoot, '--format', 'json']).stdout);
+    const q2 = JSON.parse(run(
+      ['queue', '--runs-dir', runsDir, '--events-root', eventsRoot, '--format', 'json'],
+      afterRace,
+    ).stdout);
     const surviving = [...q2.groups['create-new'], ...q2.groups['edit-existing'], ...q2.groups['needs-verdict']].map((e: any) => e.skill);
     expect(q2.total).toBe(1);
     expect(surviving).toContain('racing-b');
@@ -268,9 +296,9 @@ describe('forge-candidates', () => {
     // read boundary belongs to the NEXT build, not this one — it must not be in
     // the queue (so it cannot be archived-as-consumed by a same-run consume).
     const today = new Date().toISOString().split('T')[0];
-    seedEvents('dane', today, [
-      { id: 'ev-now', agent: 'dane', org: 'ascendops', timestamp: `${today}T00:00:01Z`, category: 'action', event: 'forge_candidate', severity: 'info', metadata: { id: 'fc-now', skill: 'present', slippage: 's', verdict: 'create-new', incident: `PR #1 ${today}`, confidence: 'high' } },
-      { id: 'ev-future', agent: 'dane', org: 'ascendops', timestamp: '2999-01-01T00:00:00Z', category: 'action', event: 'forge_candidate', severity: 'info', metadata: { id: 'fc-future', skill: 'future', slippage: 's', verdict: 'create-new', incident: `PR #2 ${today}`, confidence: 'high' } },
+    seedEvents('rex', today, [
+      { id: 'ev-now', agent: 'rex', org: 'ascendops', timestamp: `${today}T00:00:01Z`, category: 'action', event: 'forge_candidate', severity: 'info', metadata: { id: 'fc-now', skill: 'present', slippage: 's', verdict: 'create-new', incident: `PR #1 ${today}`, confidence: 'high' } },
+      { id: 'ev-future', agent: 'rex', org: 'ascendops', timestamp: '2999-01-01T00:00:00Z', category: 'action', event: 'forge_candidate', severity: 'info', metadata: { id: 'fc-future', skill: 'future', slippage: 's', verdict: 'create-new', incident: `PR #2 ${today}`, confidence: 'high' } },
     ]);
     const q = JSON.parse(run(['queue', '--runs-dir', runsDir, '--events-root', eventsRoot, '--format', 'json']).stdout);
     const skills = [...q.groups['create-new'], ...q.groups['edit-existing'], ...q.groups['needs-verdict']].map((e: any) => e.skill);
@@ -311,9 +339,9 @@ describe('forge-candidates', () => {
     // passes only because its events are PAST-dated, never same-day.)
     const today = new Date().toISOString().split('T')[0];
     const earlyToday = `${today}T00:00:01Z`; // strictly before the consume moment
-    seedEvents('dane', today, [{
+    seedEvents('rex', today, [{
       id: 'busid-sameday',
-      agent: 'dane',
+      agent: 'rex',
       org: 'ascendops',
       timestamp: earlyToday,
       category: 'action',
@@ -460,8 +488,8 @@ describe('forge-candidates', () => {
     // the bus ts (the old bug) would wrongly pull it in and split it from its
     // fileEntry partner across builds.
     const today = new Date().toISOString().split('T')[0];
-    seedEvents('dane', today, [{
-      id: 'ev-strad', agent: 'dane', org: 'ascendops', timestamp: `${today}T00:00:01Z`,
+    seedEvents('rex', today, [{
+      id: 'ev-strad', agent: 'rex', org: 'ascendops', timestamp: `${today}T00:00:01Z`,
       category: 'action', event: 'forge_candidate', severity: 'info',
       metadata: { id: 'fc-strad', emitted_at: '2999-01-01T00:00:00Z', skill: 'straddle', slippage: 's', verdict: 'create-new', incident: `PR #1 ${today}`, confidence: 'high' },
     }]);
@@ -476,8 +504,8 @@ describe('forge-candidates', () => {
     // (early today, both <= cutoff). They must resolve TOGETHER: deduped to one in
     // this build, consumed, and NOT re-queued next build (no straddle duplicate).
     const today = new Date().toISOString().split('T')[0];
-    seedEvents('dane', today, [{
-      id: 'ev-dup', agent: 'dane', org: 'ascendops', timestamp: `${today}T00:00:02Z`,
+    seedEvents('rex', today, [{
+      id: 'ev-dup', agent: 'rex', org: 'ascendops', timestamp: `${today}T00:00:02Z`,
       category: 'action', event: 'forge_candidate', severity: 'info',
       metadata: { id: 'fc-dup', emitted_at: `${today}T00:00:01Z`, skill: 'dual-store', slippage: 's', verdict: 'create-new', incident: `PR #1 ${today}`, confidence: 'high' },
     }]);
@@ -501,8 +529,8 @@ describe('forge-candidates', () => {
     // original emit), so it can never land > cutoff and split from its fileEntry
     // twin — the back-compat path cannot reintroduce the straddle.
     const today = new Date().toISOString().split('T')[0];
-    seedEvents('dane', today, [{
-      id: 'ev-leg', agent: 'dane', org: 'ascendops', timestamp: `${today}T00:00:01Z`,
+    seedEvents('rex', today, [{
+      id: 'ev-leg', agent: 'rex', org: 'ascendops', timestamp: `${today}T00:00:01Z`,
       category: 'action', event: 'forge_candidate', severity: 'info',
       metadata: { id: 'fc-leg', skill: 'legacy-dual', slippage: 's', verdict: 'create-new', incident: `PR #1 ${today}`, confidence: 'high' }, // no emitted_at
     }]);

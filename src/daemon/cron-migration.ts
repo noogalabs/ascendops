@@ -187,11 +187,11 @@ function convertEntry(
   // switched off. Those two fields do not contradict each other from a writer's
   // point of view, and the reader honoured only one of them.
   //
-  // 2026-08-12: an agent hardened cash's config with `enabled: false` on five
+  // 2026-08-12: the orchestrator hardened a worker's config with `enabled: false` on five
   // proactive crons precisely so a fleet restart could not re-arm them. This
   // function discarded the field and wrote `enabled: true`, and since #125
   // reconciles config.json -> crons.json on EVERY AGENT BOOT, all five came back
-  // armed. Zero prohibited fires only because cash noticed and re-disabled them
+  // armed. Zero prohibited fires only because the worker noticed and re-disabled them
   // ~25 minutes before the 12:00Z window. The hardening was correct and
   // unreachable — defeated by the mechanism that reads it.
   //
@@ -744,7 +744,7 @@ export function reloadCronsForAgent(
           // Without this the merge writes a changed reason to disk while
           // reloadCronsForAgent reports it unchanged — the bytes are right and the
           // REPORT is wrong, which is worse for CLI/JSON callers that use
-          // ReloadResult to decide whether anything moved. Found by an agent's
+          // ReloadResult to decide whether anything moved. Found by an operator's
           // from-zero review of e74192aa, 2026-08-13.
           (newDef.disabled_reason !== undefined &&
             existing.disabled_reason !== newDef.disabled_reason);

@@ -26,6 +26,8 @@ import type { CronDefinition, CronExecutionLogEntry } from '../../../src/types/i
 
 let tmpRoot: string;
 const originalCtxRoot = process.env.CTX_ROOT;
+const originalFrameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+const originalTz = process.env.TZ;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'ipc-list-crons-test-'));
@@ -34,11 +36,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   if (originalCtxRoot !== undefined) {
     process.env.CTX_ROOT = originalCtxRoot;
   } else {
     delete process.env.CTX_ROOT;
   }
+  if (originalFrameworkRoot !== undefined) process.env.CTX_FRAMEWORK_ROOT = originalFrameworkRoot;
+  else delete process.env.CTX_FRAMEWORK_ROOT;
+  if (originalTz !== undefined) process.env.TZ = originalTz;
+  else delete process.env.TZ;
   try { rmSync(tmpRoot, { recursive: true }); } catch { /* ignore */ }
 });
 
@@ -68,6 +75,12 @@ function writeEnabledAgents(agents: Record<string, { enabled?: boolean; org?: st
   const configDir = join(tmpRoot, 'config');
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, 'enabled-agents.json'), JSON.stringify(agents, null, 2));
+}
+
+function writeAgentConfig(org: string, agentName: string, timezone: unknown): void {
+  const agentDir = join(tmpRoot, 'orgs', org, 'agents', agentName);
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, 'config.json'), JSON.stringify({ timezone }));
 }
 
 function makeCron(overrides: Partial<CronDefinition> = {}): CronDefinition {
@@ -182,6 +195,36 @@ describe('computeNextFire', () => {
 // ---------------------------------------------------------------------------
 
 describe('listAllCrons (via computeNextFire + readCrons + getExecutionLog)', () => {
+  it('NAMED IPC BLANK TIMEZONE: prediction preserves host-local scheduling', async () => {
+    process.env.CTX_FRAMEWORK_ROOT = tmpRoot;
+    process.env.TZ = 'America/Los_Angeles';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-15T09:00:00Z'));
+    writeEnabledAgents({ boris: { enabled: true, org: 'lifeos' } });
+    writeAgentConfig('lifeos', 'boris', '');
+    writeCronsJson('boris', [makeCron({ schedule: '0 6 * * *' })]);
+
+    const { listAllCrons } = await import('../../../src/daemon/ipc-server.js');
+    expect(listAllCrons()[0].nextFire).toBe('2026-01-15T14:00:00.000Z');
+  });
+
+  it('NAMED IPC EXPLICIT TIMEZONE + DST: prediction honors configured zone', async () => {
+    process.env.CTX_FRAMEWORK_ROOT = tmpRoot;
+    process.env.TZ = 'UTC';
+    vi.useFakeTimers();
+    writeEnabledAgents({ boris: { enabled: true, org: 'lifeos' } });
+    writeAgentConfig('lifeos', 'boris', 'America/New_York');
+    writeCronsJson('boris', [makeCron({ schedule: '30 2 * * *' })]);
+
+    const { listAllCrons } = await import('../../../src/daemon/ipc-server.js');
+    vi.setSystemTime(new Date('2026-03-08T00:00:00Z'));
+    expect(listAllCrons()[0].nextFire).toBe('2026-03-09T06:30:00.000Z');
+
+    writeCronsJson('boris', [makeCron({ schedule: '30 1 * * *' })]);
+    vi.setSystemTime(new Date('2026-11-01T00:00:00Z'));
+    expect(listAllCrons()[0].nextFire).toBe('2026-11-01T05:30:00.000Z');
+  });
+
   it('returns empty array when no enabled agents file', async () => {
     const { computeNextFire } = await import('../../../src/daemon/ipc-server.js');
     // No enabled-agents.json written — just verify the import succeeded

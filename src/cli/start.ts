@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { stripSessionCredentialFromEnv } from '../utils/env.js';
 import { existsSync, readFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform } from 'os';
@@ -48,8 +49,11 @@ export const startCommand = new Command('start')
         } catch { /* ignore */ }
       }
 
+      // The daemon is NOT an agent session. If this CLI was invoked from an agent
+      // PTY, process.env carries the session credential; copying it here would
+      // hand every daemon subprocess a liveness claim it did not earn.
       const daemonEnv = {
-        ...process.env,
+        ...stripSessionCredentialFromEnv(process.env),
         CTX_INSTANCE_ID: options.instance,
         CTX_ROOT: ctxRoot,
         CTX_FRAMEWORK_ROOT: projectRoot,
@@ -81,10 +85,15 @@ export const startCommand = new Command('start')
         // PM2 available — use ecosystem or direct pm2 start
         const ecosystemPath = join(projectRoot, 'ecosystem.config.js');
         if (existsSync(ecosystemPath)) {
+          // pm2 inherits the calling shell's env by design, so a daemon started from
+          // an agent PTY would hand every PM2-managed process the session credential —
+          // and the dashboard's completeTask path would then refresh a wedged agent's
+          // heartbeat. There is no env option by default here, so inheritance is
+          // IMPLICIT, which is why the census could not see these sites at all.
           console.log('Starting cortextOS daemon via PM2...');
           try {
-            execSync('pm2 start ecosystem.config.js', { stdio: 'inherit', cwd: projectRoot });
-            execSync('pm2 save', { stdio: 'inherit', cwd: projectRoot });
+            execSync('pm2 start ecosystem.config.js', { stdio: 'inherit', cwd: projectRoot, env: stripSessionCredentialFromEnv(process.env) });
+            execSync('pm2 save', { stdio: 'inherit', cwd: projectRoot, env: stripSessionCredentialFromEnv(process.env) });
             console.log('\nDaemon started. Use `cortextos status` to check agents.');
             if (IS_WINDOWS) {
               console.log('\nFor auto-start on Windows boot:');
@@ -102,8 +111,8 @@ export const startCommand = new Command('start')
               cwd: projectRoot,
               env: daemonEnv,
             });
-            execSync('pm2 start ecosystem.config.js', { stdio: 'inherit', cwd: projectRoot });
-            execSync('pm2 save', { stdio: 'inherit', cwd: projectRoot });
+            execSync('pm2 start ecosystem.config.js', { stdio: 'inherit', cwd: projectRoot, env: stripSessionCredentialFromEnv(process.env) });
+            execSync('pm2 save', { stdio: 'inherit', cwd: projectRoot, env: stripSessionCredentialFromEnv(process.env) });
             console.log('\nDaemon started. Use `cortextos status` to check agents.');
             if (IS_WINDOWS) {
               console.log('\nFor auto-start on Windows boot:');

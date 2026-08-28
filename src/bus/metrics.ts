@@ -92,6 +92,14 @@ export interface UpstreamResult {
   hint?: string;
 }
 
+export interface UpstreamOwnershipContext {
+  ctxRoot: string;
+  org: string;
+  agentName: string;
+  orchestrator: string;
+  invocation: 'cron' | 'manual';
+}
+
 export interface RegisterCommandsResult {
   status: string;
   count: number;
@@ -589,6 +597,73 @@ export function checkUpstream(
     changes,
     ...(catalog_additions.length > 0 ? { catalog_additions } : {}),
   };
+}
+
+/**
+ * Elect the single agent allowed to touch the shared canonical repository for
+ * an upstream check. The runtime-provided orchestrator wins only while it is
+ * enabled for this org; otherwise the enabled population elects its
+ * lexicographically-first member. There is deliberately no environment
+ * override: a specialist must not be able to promote itself into this role.
+ */
+export function resolveUpstreamCheckOwner(
+  ctxRoot: string,
+  org: string,
+  orchestrator: string,
+): { owner?: string; error?: string } {
+  const enabledPath = join(ctxRoot, 'config', 'enabled-agents.json');
+  let registry: Record<string, { enabled?: boolean; org?: string }>;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(enabledPath, 'utf-8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { error: `enabled agent registry is not an object: ${enabledPath}` };
+    }
+    registry = parsed as Record<string, { enabled?: boolean; org?: string }>;
+  } catch (err) {
+    return {
+      error: `cannot read enabled agent registry ${enabledPath}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const enabled = Object.entries(registry)
+    .filter(([, entry]) => entry?.enabled === true && entry.org === org)
+    .map(([name]) => name)
+    .sort();
+  if (enabled.length === 0) {
+    return { error: `no enabled agents found for org ${org}` };
+  }
+  return { owner: orchestrator && enabled.includes(orchestrator) ? orchestrator : enabled[0] };
+}
+
+/**
+ * Production ownership gate for `check-upstream --owner-only`. A non-owner
+ * cron returns a clean skip and a non-owner manual run fails loudly. In both
+ * cases the injected check function is never called, which means zero git
+ * invocations occur before ownership is proven.
+ */
+export function checkUpstreamAsOwner(
+  frameworkRoot: string,
+  context: UpstreamOwnershipContext,
+  options: { apply?: boolean } = {},
+  checkFn: typeof checkUpstream = checkUpstream,
+): UpstreamResult {
+  const election = resolveUpstreamCheckOwner(context.ctxRoot, context.org, context.orchestrator);
+  if (!election.owner) {
+    return { status: 'error', error: `Upstream ownership unavailable: ${election.error}` };
+  }
+  if (context.agentName !== election.owner) {
+    if (context.invocation === 'cron') {
+      return {
+        status: 'skipped',
+        message: `Upstream check skipped: ${election.owner} owns the shared canonical repository check.`,
+      };
+    }
+    return {
+      status: 'error',
+      error: `Upstream check refused for non-owner ${context.agentName}. Ask ${election.owner} to run it.`,
+    };
+  }
+  return checkFn(frameworkRoot, options);
 }
 
 // --- registerTelegramCommands ---

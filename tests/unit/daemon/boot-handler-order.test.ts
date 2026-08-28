@@ -45,7 +45,16 @@ describe('F2: daemon boot order — handlers before boot work', () => {
   });
 
   it('registers all handlers before the IPC server starts', () => {
-    const ipcStart = idx('.ipcServer.start()');
+    // Anchored on the SEQUENCER call, which is where the instance is bound now.
+    // The old anchor was the literal '.ipcServer.start()'; that call moved inside a
+    // closure (`() => this.ipcServer!.start()`) and the added `!` broke a string
+    // search while the guarantee it protects was untouched. The guarantee is
+    // 'handlers registered before the daemon binds the instance', so the anchor is
+    // the bind, not one spelling of it.
+    // 'this.' pins the CALL SITE. Without it, idx() finds the method DEFINITION,
+    // which sits earlier in the file — first-textual-occurrence again, inside ten
+    // minutes of writing the convention about it.
+    const ipcStart = idx('bindInstanceAndReconcileSessionRecords({');
     expect(idx("process.on('SIGINT'")).toBeLessThan(ipcStart);
     expect(idx("process.on('SIGTERM'")).toBeLessThan(ipcStart);
     expect(idx("process.on('uncaughtException'")).toBeLessThan(ipcStart);

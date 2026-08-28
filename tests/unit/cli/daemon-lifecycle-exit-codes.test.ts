@@ -17,7 +17,7 @@
  * .env preconditions before reaching the IPC branch, which is impractical to
  * drive in a pure unit test. The enable else-branch is the SAME one-line
  * `process.exitCode = 1` pattern proven here for start; it is additionally
- * covered by the daemon-lifecycle consumer-scan gated on deploy (Aussie).
+ * covered by the daemon-lifecycle consumer-scan gated on deploy (Nova).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

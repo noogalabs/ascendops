@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentProcess, type AgentInjectionOptions } from '../../../src/daemon/agent-process.js';
 import { CodexAppServerPTY, type CodexTurnRouting } from '../../../src/pty/codex-app-server-pty.js';
 import { MessageDedup } from '../../../src/pty/inject.js';
+import { rawDaemonInjection, renderDaemonInjection } from '../../../src/utils/validate.js';
 
 function runningProcess() {
   const process = Object.create(AgentProcess.prototype) as AgentProcess;
@@ -38,13 +39,13 @@ describe('AgentProcess structured injection dedup identity', () => {
       codexFallback: 'configured-Sol fallback',
     };
 
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toEqual({
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toEqual({
       ok: false,
       code: 'ADMISSION_FAILED',
       message: 'inject for "alpha" failed before admission: queue admission failed',
     });
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toEqual({ ok: true });
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toMatchObject({
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toMatchObject({
       ok: false,
       code: 'DEDUPED',
     });
@@ -71,19 +72,19 @@ describe('AgentProcess structured injection dedup identity', () => {
     const first: AgentInjectionOptions = { ...common, dedupIdentity: 'daemon-cron:heartbeat:fire-1' };
     const second: AgentInjectionOptions = { ...common, dedupIdentity: 'daemon-cron:heartbeat:fire-2' };
 
-    expect(process.injectMessageDetailed('exact reviewed preflight', first)).toEqual({ ok: true });
-    expect(process.injectMessageDetailed('exact reviewed preflight', second)).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), first)).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), second)).toEqual({ ok: true });
     expect(injectCronSequence).toHaveBeenCalledTimes(2);
     expect(injectCronSequence).toHaveBeenNthCalledWith(
       1,
-      'exact reviewed preflight',
+      renderDaemonInjection(rawDaemonInjection('exact reviewed preflight')),
       routing,
       'configured-Sol continuation',
       'configured-Sol fallback',
     );
     expect(injectCronSequence).toHaveBeenNthCalledWith(
       2,
-      'exact reviewed preflight',
+      renderDaemonInjection(rawDaemonInjection('exact reviewed preflight')),
       routing,
       'configured-Sol continuation',
       'configured-Sol fallback',
@@ -94,8 +95,8 @@ describe('AgentProcess structured injection dedup identity', () => {
     const { process, injectMessage } = runningProcess();
     const options: AgentInjectionOptions = { dedupIdentity: 'daemon-cron:heartbeat:fire-1' };
 
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toEqual({ ok: true });
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toMatchObject({
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toMatchObject({
       ok: false,
       code: 'DEDUPED',
     });
@@ -105,8 +106,8 @@ describe('AgentProcess structured injection dedup identity', () => {
   it('continues to dedupe identical ordinary message content', () => {
     const { process, injectMessage } = runningProcess();
 
-    expect(process.injectMessageDetailed('ordinary message')).toEqual({ ok: true });
-    expect(process.injectMessageDetailed('ordinary message')).toMatchObject({
+    expect(process.injectMessageDetailed(rawDaemonInjection('ordinary message'))).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('ordinary message'))).toMatchObject({
       ok: false,
       code: 'DEDUPED',
     });
@@ -136,9 +137,9 @@ describe('AgentProcess structured injection dedup identity', () => {
       codexFallback: 'configured-Sol fallback',
     };
 
-    expect(process.injectMessageDetailed(identity)).toEqual({ ok: true });
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toEqual({ ok: true });
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toMatchObject({
+    expect(process.injectMessageDetailed(rawDaemonInjection(identity))).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toMatchObject({
       ok: false,
       code: 'DEDUPED',
       dedupIdentity: identity,
@@ -170,11 +171,11 @@ describe('AgentProcess structured injection dedup identity', () => {
       codexFallback: 'configured-Sol fallback',
     };
 
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toEqual({ ok: true });
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toEqual({ ok: true });
     for (let i = 0; i < 100; i += 1) {
-      expect(process.injectMessageDetailed(`ordinary-${i}`)).toEqual({ ok: true });
+      expect(process.injectMessageDetailed(rawDaemonInjection(`ordinary-${i}`))).toEqual({ ok: true });
     }
-    expect(process.injectMessageDetailed('exact reviewed preflight', options)).toMatchObject({
+    expect(process.injectMessageDetailed(rawDaemonInjection('exact reviewed preflight'), options)).toMatchObject({
       ok: false,
       code: 'DEDUPED',
       dedupIdentity: identity,

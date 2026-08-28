@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 let capturedOnExit: ((exitCode: number, signal?: number) => void) | null = null;
 
 const mockPty = {
+  sessionNonce: vi.fn().mockReturnValue(null),
   spawn: vi.fn().mockResolvedValue(undefined),
   kill: vi.fn(),
   write: vi.fn(),
@@ -180,7 +181,7 @@ describe('AgentProcess - Hermes runtime: shouldContinue', () => {
     // exact session the marker existed to escape. That is the hazard the
     // recovery note and .rate-limited are already protected from; this pins the
     // same protection for .force-fresh.
-    // FALSE-SECURE BEFORE (reviewer, and it was my own named weakest claim): this
+    // FALSE-SECURE BEFORE (nova, and it was my own named weakest claim): this
     // mocked existsSync but NOT statSync, so the probe returned null, the launch
     // was CONTINUE, and no marker was ever exercised. The assertion passed
     // because nothing had been consumed — not because preservation worked.
@@ -247,7 +248,7 @@ describe('AgentProcess - Hermes runtime: shouldContinue', () => {
   });
 
   it('TIMING: does NOT consume a marker that arrived AFTER the mode decision', async () => {
-    // reviewer's casualty on 2965894c, wider than the stat/unlink residual I
+    // nova's casualty on 2965894c, wider than the stat/unlink residual I
     // disclosed. The mode-decision probe and the identity-capture probe used to
     // be two independent reads: a marker created between them was invisible to
     // the decision and visible to the capture, so the launch went CONTINUE and

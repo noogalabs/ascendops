@@ -1,0 +1,98 @@
+{
+  "$id": "cortext.status.error/v1",
+  "$ref": "#/definitions/LifecycleStatusErrorEnvelope",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "LifecycleStatusErrorCode": {
+      "enum": [
+        "CORTEXT_STATUS_INVALID_INSTANCE",
+        "CORTEXT_STATUS_INSTANCE_NOT_FOUND",
+        "CORTEXT_STATUS_INSTANCE_AMBIGUOUS",
+        "CORTEXT_STATUS_INVALID_OPTION_COMBINATION",
+        "CORTEXT_STATUS_CONTRACT_REQUIRES_JSON",
+        "CORTEXT_STATUS_CONTRACT_MODE_MISMATCH",
+        "CORTEXT_STATUS_UNSUPPORTED_CONTRACT",
+        "CORTEXT_STATUS_UNSUPPORTED_CHECK_POLICY",
+        "CORTEXT_STATUS_COLLECTION_FAILED"
+      ],
+      "type": "string"
+    },
+    "LifecycleStatusErrorDetails": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "detail_code": {
+              "enum": [
+                "INVALID_INSTANCE",
+                "INSTANCE_NOT_FOUND",
+                "REDACT_WITH_PATHS",
+                "CONTRACT_WITHOUT_JSON",
+                "CONTRACT_MODE_MISMATCH",
+                "UNSUPPORTED_CONTRACT",
+                "UNSUPPORTED_CHECK_POLICY",
+                "COLLECTION_FAILED"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "detail_code"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "candidate_count": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "candidate_count"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LifecycleStatusErrorEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/definitions/LifecycleStatusErrorCode"
+            },
+            "details": {
+              "$ref": "#/definitions/LifecycleStatusErrorDetails"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "details"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "const": false,
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "cortext.status.error/v1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "ok",
+        "error"
+      ],
+      "type": "object"
+    }
+  }
+}

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { buildReplyContext } from '../../../src/daemon/agent-manager.js';
+import { nextFireFromCron } from '../../../src/daemon/cron-scheduler.js';
 
 const telegramSendMessageMock = vi.hoisted(() => vi.fn().mockResolvedValue({ ok: true }));
 const agentStatusCallbacks = vi.hoisted(() => new Map<string, (status: any) => void>());
@@ -195,7 +196,7 @@ describe('AgentManager.discoverAndStart - BUG-043 fix (multi-org support)', () =
     frameworkRoot = join(testDir, 'framework');
     mkdirSync(join(ctxRoot, 'config'), { recursive: true });
     // Two orgs with agents in each — simulates a multi-org install
-    // (e.g. James's lifeos + cointally + testorg setup)
+    // (e.g. Owen's lifeos + cointally + testorg setup)
     mkdirSync(join(frameworkRoot, 'orgs', 'acme', 'agents', 'alice'), { recursive: true });
     mkdirSync(join(frameworkRoot, 'orgs', 'acme', 'agents', 'bob'), { recursive: true });
     mkdirSync(join(frameworkRoot, 'orgs', 'widgetco', 'agents', 'carol'), { recursive: true });
@@ -366,6 +367,74 @@ describe('AgentManager.restartAgent - BUG-007 fix (rebuild Telegram poller)', ()
 
     expect(stopSpy).not.toHaveBeenCalled();
     expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses successor admission until the mapped predecessor is authoritatively contained', async () => {
+    const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
+    const deathUnconfirmed = new Error(
+      'Agent alice still alive after SIGKILL deadline; refusing successor admission',
+    );
+    const predecessor = {
+      stopped: false,
+      process: {
+        stop: vi.fn()
+          .mockRejectedValueOnce(deathUnconfirmed)
+          .mockResolvedValueOnce(undefined),
+      },
+      checker: { stop: vi.fn() },
+      poller: { stop: vi.fn() },
+    };
+    (am as any).agents.set('alice', predecessor);
+    const startSpy = vi.spyOn(am, 'startAgent').mockResolvedValue();
+
+    await expect(am.restartAgent('alice')).rejects.toBe(deathUnconfirmed);
+
+    expect((am as any).agents.get('alice')).toBe(predecessor);
+    expect(startSpy).not.toHaveBeenCalled();
+
+    await am.restartAgent('alice');
+
+    expect(predecessor.process.stop).toHaveBeenCalledTimes(2);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledWith('alice', '', undefined, undefined, { partOfFleetStart: undefined });
+    expect((am as any).agents.has('alice')).toBe(false);
+  });
+});
+
+describe('AgentManager map-entry identity containment', () => {
+  it('stale teardown cannot delete a replacement identity', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'cortextos-am-identity-test-'));
+    const ctxRoot = join(testDir, 'instance');
+    const frameworkRoot = join(testDir, 'framework');
+    mkdirSync(join(ctxRoot, 'config'), { recursive: true });
+
+    try {
+      const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
+      let releaseStop!: () => void;
+      const oldStop = new Promise<void>((resolve) => { releaseStop = resolve; });
+      const oldEntry = {
+        stopped: false,
+        process: { stop: vi.fn(() => oldStop) },
+        checker: { stop: vi.fn() },
+      };
+      const replacement = {
+        stopped: false,
+        process: { stop: vi.fn() },
+        checker: { stop: vi.fn() },
+      };
+      (am as any).agents.set('alice', oldEntry);
+
+      const teardown = am.stopAgent('alice');
+      await Promise.resolve();
+      (am as any).agents.set('alice', replacement);
+      releaseStop();
+      await teardown;
+
+      expect((am as any).agents.get('alice')).toBe(replacement);
+      expect(replacement.process.stop).not.toHaveBeenCalled();
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -610,7 +679,8 @@ describe('AgentManager.reloadCrons - silent-success bug fix (iter 7)', () => {
   it('lazy-creates scheduler when non-Hermes agent has no scheduler wired', () => {
     // Simulate the start-window gap: agent registered, no scheduler yet.
     const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
-    const fakeProcess = { config: { runtime: undefined } } as any;
+    const fakeConfig = { runtime: undefined, timezone: '' };
+    const fakeProcess = { config: fakeConfig, getConfig: () => fakeConfig } as any;
     (am as any).agents.set('alice', { process: fakeProcess, checker: {} });
 
     expect((am as any).cronSchedulers.has('alice')).toBe(false);
@@ -626,9 +696,65 @@ describe('AgentManager.reloadCrons - silent-success bug fix (iter 7)', () => {
     (am as any).cronSchedulers.get('alice').stop();
   });
 
+  it('NAMED EMPTY TIMEZONE: blank agent timezone preserves host-local cron scheduling', () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
+      const fakeConfig = { runtime: undefined, timezone: '' };
+      const fakeProcess = { config: fakeConfig, getConfig: () => fakeConfig } as any;
+      (am as any).agents.set('alice', { process: fakeProcess, checker: {} });
+
+      expect(am.reloadCrons('alice')).toBe(true);
+      const scheduler = (am as any).cronSchedulers.get('alice');
+      expect(scheduler.timezone).toBeUndefined();
+
+      const next = nextFireFromCron(
+        '0 6 * * *',
+        Date.parse('2026-08-24T09:55:00Z'),
+        scheduler.timezone,
+      );
+      expect(new Date(next).toISOString()).toBe('2026-08-24T10:00:00.000Z');
+      scheduler.stop();
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
+  it('NAMED EXPLICIT TIMEZONE + DST: scheduler honors configured zone across transitions', () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
+      const fakeConfig = { runtime: undefined, timezone: 'America/New_York' };
+      const fakeProcess = { config: fakeConfig, getConfig: () => fakeConfig } as any;
+      (am as any).agents.set('alice', { process: fakeProcess, checker: {} });
+
+      expect(am.reloadCrons('alice')).toBe(true);
+      const scheduler = (am as any).cronSchedulers.get('alice');
+      expect(scheduler.timezone).toBe('America/New_York');
+      expect(new Date(nextFireFromCron(
+        '30 2 * * *',
+        Date.parse('2026-03-08T00:00:00Z'),
+        scheduler.timezone,
+      )).toISOString()).toBe('2026-03-09T06:30:00.000Z');
+      expect(new Date(nextFireFromCron(
+        '30 1 * * *',
+        Date.parse('2026-11-01T00:00:00Z'),
+        scheduler.timezone,
+      )).toISOString()).toBe('2026-11-01T05:30:00.000Z');
+      scheduler.stop();
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
   it('returns true without creating a scheduler for Hermes agents (no-op preserved)', () => {
     const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
-    const fakeProcess = { config: { runtime: 'hermes' } } as any;
+    const fakeConfig = { runtime: 'hermes', timezone: '' };
+    const fakeProcess = { config: fakeConfig, getConfig: () => fakeConfig } as any;
     (am as any).agents.set('alice', { process: fakeProcess, checker: {} });
 
     const result = am.reloadCrons('alice');
@@ -639,7 +765,8 @@ describe('AgentManager.reloadCrons - silent-success bug fix (iter 7)', () => {
 
   it('reuses existing scheduler when one is already wired', () => {
     const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
-    const fakeProcess = { config: { runtime: undefined } } as any;
+    const fakeConfig = { runtime: undefined, timezone: '' };
+    const fakeProcess = { config: fakeConfig, getConfig: () => fakeConfig } as any;
     (am as any).agents.set('alice', { process: fakeProcess, checker: {} });
 
     // Pre-wire a scheduler with a spy on reload()
@@ -692,11 +819,11 @@ describe('AgentManager.evaluateCronShiftSuppression - wake_on_fire bypass', () =
     created_at: '2026-05-12T00:00:00.000Z',
   };
 
-  function makeManager(shift_schedule: any): any {
+  function makeManager(shift_schedule: any, timezone = 'UTC'): any {
     // Use a UTC timezone so 11:00 UTC test time maps directly to 11:00 wall-clock
     // — independent of the daemon host's local timezone.
     const am = new AgentManager('test-instance', '/tmp/x', '/tmp/x', 'acme');
-    const fakeProcess = { config: { shift_schedule, timezone: 'UTC' } } as any;
+    const fakeProcess = { config: { shift_schedule, timezone } } as any;
     (am as any).agents.set('alice', { process: fakeProcess, checker: {} });
     return am;
   }
@@ -737,6 +864,33 @@ describe('AgentManager.evaluateCronShiftSuppression - wake_on_fire bypass', () =
     const am = makeManager(undefined);
     const result = (am as any).evaluateCronShiftSuppression('alice', baseCron);
     expect(result).toBeNull();
+  });
+
+  it('NAMED SHIFT BLANK TIMEZONE: empty config uses daemon host-local timezone', () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      vi.setSystemTime(new Date('2026-05-12T15:30:00Z')); // 08:30 PDT, before shift
+      const am = makeManager(offShiftSchedule, '');
+      expect((am as any).evaluateCronShiftSuppression('alice', baseCron))
+        .toEqual({ mode: 'no_wake' });
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
+  it('NAMED SHIFT EXPLICIT TIMEZONE: configured timezone overrides host', () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      vi.setSystemTime(new Date('2026-05-12T15:30:00Z')); // 11:30 EDT, inside shift
+      const am = makeManager(offShiftSchedule, 'America/New_York');
+      expect((am as any).evaluateCronShiftSuppression('alice', baseCron)).toBeNull();
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
   });
 });
 

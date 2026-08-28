@@ -147,6 +147,43 @@ export function validateTrustLevel(level: string): asserts level is TrustLevel {
   }
 }
 
+export const DAEMON_STRUCTURAL_HEADERS = [
+  'AGENT MESSAGE', 'TELEGRAM', 'REACTION', 'URGENT SIGNAL', 'CRON FIRED',
+  'CONTEXT', 'CONTEXT HANDOFF REQUIRED',
+] as const;
+
+export type DaemonStructuralHeader = typeof DAEMON_STRUCTURAL_HEADERS[number];
+export type DaemonInjectionReply =
+  | { kind: 'agent'; from: string; messageId: string }
+  | { kind: 'telegram'; chatId: string | number };
+export type DaemonInjectionBody = { kind: 'raw'; content: string };
+export type DaemonInjection =
+  | { kind: 'raw'; content: string }
+  | { kind: 'structural'; header: DaemonStructuralHeader; details?: string; body?: DaemonInjectionBody; reply?: DaemonInjectionReply };
+
+export const rawDaemonInjection = (content: string): DaemonInjection => ({ kind: 'raw', content });
+export const rawDaemonBody = (content: string): DaemonInjectionBody => ({ kind: 'raw', content });
+export function structuralDaemonInjection(
+  header: DaemonStructuralHeader,
+  details = '',
+  body?: DaemonInjectionBody,
+  reply?: DaemonInjectionReply,
+): DaemonInjection {
+  return { kind: 'structural', header, details, body, reply };
+}
+
+export function createDaemonStructuralHeader(header: DaemonStructuralHeader, details = ''): string {
+  if (!(DAEMON_STRUCTURAL_HEADERS as readonly string[]).includes(header)) {
+    throw new Error(`Unregistered daemon structural header: ${String(header)}`);
+  }
+  if (/(?:^|[\r\n])\s*===/.test(details)) {
+    throw new Error('Daemon structural header details must not contain an unneutralized header');
+  }
+  return `=== ${header}${details ? ` ${details}` : ''} ===`;
+}
+
+const DAEMON_STRUCTURAL_HEADER_PATTERN = DAEMON_STRUCTURAL_HEADERS.join('|');
+
 /**
  * Wrap untrusted text as a code-fenced block that the body CANNOT escape, with
  * zero mutation of the body itself (legit code blocks survive byte-exact).
@@ -206,7 +243,39 @@ export function sanitizeForPtyInjection(input: string): string {
     .replace(/\r\n?/g, '\n')
     .replace(/`{3,}/g, '``')
     .replace(
-      /^([ \t\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]*)(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/gim,
+      new RegExp(`^([ \\t\\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000\\uFEFF]*)(={3,}\\s*(?:${DAEMON_STRUCTURAL_HEADER_PATTERN})\\b|Reply using:\\s*cortextos\\s+bus)`, 'gim'),
       '$1[quoted] $2',
     );
+}
+
+export function renderDaemonInjection(input: DaemonInjection): string {
+  if (!input || typeof input !== 'object' || !('kind' in input)) throw new Error('Malformed daemon injection');
+  if (input.kind === 'raw') {
+    if (typeof input.content !== 'string') throw new Error('Malformed raw daemon injection');
+    return wrapFenceSafe(input.content);
+  }
+  if (input.kind !== 'structural') throw new Error(`Unknown daemon injection variant: ${String((input as { kind?: unknown }).kind)}`);
+  if (!(DAEMON_STRUCTURAL_HEADERS as readonly unknown[]).includes(input.header)) {
+    throw new Error(`Unregistered daemon structural header: ${String(input.header)}`);
+  }
+  if (input.details !== undefined && typeof input.details !== 'string') throw new Error('Malformed daemon structural details');
+  if (input.body !== undefined && (!input.body || input.body.kind !== 'raw' || typeof input.body.content !== 'string')) {
+    throw new Error('Malformed daemon structural body');
+  }
+  const details = sanitizeForPtyInjection(input.details ?? '').replace(/\n+/g, ' ').trim();
+  const header = createDaemonStructuralHeader(input.header, details);
+  const body = input.body ? `\n${wrapFenceSafe(input.body.content)}` : '';
+  let reply = '';
+  if (input.reply?.kind === 'agent') {
+    if (typeof input.reply.from !== 'string' || typeof input.reply.messageId !== 'string') throw new Error('Malformed agent reply directive');
+    const from = sanitizeForPtyInjection(input.reply.from).replace(/\n+/g, ' ').trim();
+    const messageId = sanitizeForPtyInjection(input.reply.messageId).replace(/\n+/g, '').trim();
+    reply = `\nReply using: cortextos bus send-message ${from} normal '<your reply>' ${messageId}`;
+  } else if (input.reply?.kind === 'telegram') {
+    if (!['string', 'number'].includes(typeof input.reply.chatId)) throw new Error('Malformed Telegram reply directive');
+    reply = `\nReply using: cortextos bus send-telegram ${input.reply.chatId} '<your reply>'`;
+  } else if (input.reply !== undefined) {
+    throw new Error('Unknown daemon reply directive');
+  }
+  return `${header}${body}${reply}\n\n`;
 }

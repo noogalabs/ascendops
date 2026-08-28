@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { rawDaemonInjection } from '../src/utils/validate.js';
 
 type TelegramMessageHandler = (msg: {
   from?: { id?: number; first_name?: string; username?: string };
@@ -22,9 +23,11 @@ const pollerInstances: Array<{
 vi.mock('../src/daemon/agent-process.js', () => ({
   AgentProcess: class {
     private name: string;
+    private config: Record<string, unknown>;
 
-    constructor(name: string) {
+    constructor(name: string, _dir: unknown, config: Record<string, unknown> = {}) {
       this.name = name;
+      this.config = config;
     }
 
     setTelegramHandle() { /* no-op */ }
@@ -33,6 +36,7 @@ vi.mock('../src/daemon/agent-process.js', () => ({
     async start() { /* no-op */ }
     async stop() { /* no-op */ }
     getStatus() { return { name: this.name, status: 'running' }; }
+    getConfig() { return this.config; }
   },
 }));
 
@@ -47,7 +51,7 @@ vi.mock('../src/daemon/fast-checker.js', () => ({
     }
 
     static formatTelegramTextMessage(_from: string, _chatId: string | number, text: string) {
-      return text;
+      return rawDaemonInjection(text);
     }
 
     static readLastSent() {
@@ -58,8 +62,8 @@ vi.mock('../src/daemon/fast-checker.js', () => ({
       return false;
     }
 
-    queueTelegramMessage(formatted: string) {
-      this.queued.push(formatted);
+    queueTelegramMessage(formatted: { kind: 'raw'; content: string }) {
+      this.queued.push(formatted.content);
     }
 
     resetWatchdogState() { /* no-op */ }

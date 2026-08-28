@@ -56,7 +56,7 @@ function makeLayoutFor(name: string, opts: {
   agentEnv?: string | 'UNREADABLE';
 }): { env: Record<string, string>; agentDir: string } {
   const root = join(dir, name);
-  const agentDir = join(root, 'orgs', 'acme', 'agents', 'worker');
+  const agentDir = join(root, 'orgs', 'acme', 'agents', 'moss');
   mkdirSync(agentDir, { recursive: true });
 
   const orgPath = join(root, 'orgs', 'acme', 'secrets.env');
@@ -72,7 +72,7 @@ function makeLayoutFor(name: string, opts: {
       instanceId: 'test',
       ctxRoot: join(root, 'ctx'),
       frameworkRoot: root,
-      agentName: 'worker',
+      agentName: 'moss',
       agentDir,
       org: 'acme',
       projectRoot: root,
@@ -220,7 +220,7 @@ describe('resolveHermesHome agrees with the environment AgentPTY builds', () => 
   async function hermesHomeSeenByDaemon(layout: ReturnType<typeof makeLayoutFor>) {
     const { AgentProcess } = await import('../../src/daemon/agent-process.js');
     const proc = new AgentProcess(
-      'worker',
+      'moss',
       layout.env as never,
       { vendor: 'anthropic' } as never,
       () => {},
@@ -248,7 +248,7 @@ describe('resolveHermesHome agrees with the environment AgentPTY builds', () => 
   });
 
   it('an explicitly BLANK override agrees, and does not fall through to the daemon env', async () => {
-    // reviewer 2026-08-13. AgentPTY assigns whatever the file says, so `HERMES_HOME=`
+    // (per an internal incident) AgentPTY assigns whatever the file says, so `HERMES_HOME=`
     // puts an empty string in the child. A truthiness test in the daemon instead
     // falls through to process.env, so the daemon probes an inherited path while
     // the child runs with the blank — continue-vs-fresh decided from a DB the
@@ -278,7 +278,7 @@ describe('resolveHermesHome agrees with the environment AgentPTY builds', () => 
   });
 
   it('an ORG-level HERMES_HOME reaches the child and the daemon agrees', async () => {
-    // reviewer 2026-08-13. AgentPTY layers org secrets.env UNDER agent .env; the
+    // (per an internal incident) AgentPTY layers org secrets.env UNDER agent .env; the
     // daemon checked only the agent .env, so an org-level value reached the child
     // while the daemon fell through to its own process.env.
     await withDaemonHermesHome('/daemon/inherited-home', async () => {
@@ -340,7 +340,7 @@ describe('resolveHermesHome agrees with the environment AgentPTY builds', () => 
 });
 
 describe('CodexAppServerPTY actually loads env files into its child environment', () => {
-  // reviewer 2026-08-13. This file CLAIMED to pin both PTY layers but only ever
+  // (per an internal incident) This file CLAIMED to pin both PTY layers but only ever
   // drove AgentPTY. Deleting CodexAppServerPTY's env loading outright left this
   // file and the whole codex unit suite GREEN 129/129 — the original defect could
   // return on every Codex session with all committed tests passing. Precisely the

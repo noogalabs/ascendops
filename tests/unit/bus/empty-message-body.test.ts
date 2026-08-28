@@ -50,29 +50,29 @@ describe('empty message body is rejected at the primitive', () => {
     rmSync(ctxRoot, { recursive: true, force: true });
   });
 
-  // THE MOTIVATING FIXTURE (coordinator, 2026-08-03): a PR review verdict arrived with a
+  // THE MOTIVATING FIXTURE (rex, 2026-08-03): a PR review verdict arrived with a
   // zero-length body. It was signed, delivered and ACKable — indistinguishable from a
   // real message except that it said nothing. The reviewer believed the verdict was sent.
   it('refuses the verdict-loss shape: a review verdict sent with an empty body', () => {
-    const paths = pathsFor(ctxRoot, 'worker');
-    expect(() => sendMessage(paths, 'builder', 'worker', 'normal', '')).toThrow(/[Ee]mpty message body/);
+    const paths = pathsFor(ctxRoot, 'moss');
+    expect(() => sendMessage(paths, 'kit', 'moss', 'normal', '')).toThrow(/[Ee]mpty message body/);
   });
 
   it('produces NO side effects when it rejects — no inbox file, nothing to ACK', () => {
-    const paths = pathsFor(ctxRoot, 'worker');
-    expect(() => sendMessage(paths, 'builder', 'worker', 'normal', '')).toThrow();
+    const paths = pathsFor(ctxRoot, 'moss');
+    expect(() => sendMessage(paths, 'kit', 'moss', 'normal', '')).toThrow();
     // The whole point of failing before the write: a rejected send must not leave a
     // half-message that a receiver could pick up and ACK.
-    expect(inboxFileCount(ctxRoot, 'worker')).toBe(0);
+    expect(inboxFileCount(ctxRoot, 'moss')).toBe(0);
     expect(checkInbox(paths)).toHaveLength(0);
   });
 
   it('rejects whitespace-only bodies, which are equally silent on arrival', () => {
-    const paths = pathsFor(ctxRoot, 'worker');
+    const paths = pathsFor(ctxRoot, 'moss');
     for (const body of [' ', '   ', '\n', '\t', '\n\n  \t ']) {
-      expect(() => sendMessage(paths, 'builder', 'worker', 'normal', body)).toThrow(/[Ee]mpty message body/);
+      expect(() => sendMessage(paths, 'kit', 'moss', 'normal', body)).toThrow(/[Ee]mpty message body/);
     }
-    expect(inboxFileCount(ctxRoot, 'worker')).toBe(0);
+    expect(inboxFileCount(ctxRoot, 'moss')).toBe(0);
   });
 
   it('rejects an empty forward from each caller-supplied call site shape', () => {
@@ -80,16 +80,16 @@ describe('empty message body is rejected at the primitive', () => {
     // bus/agents.ts:324 and cli/bus.ts:2254 (urgent-signal message), and
     // daemon/agent-manager.ts:115 (notifyOrchestrator text). All three are 'urgent' or
     // 'normal' sends of a variable, which is exactly the shape that can arrive empty.
-    const paths = pathsFor(ctxRoot, 'coordinator');
-    expect(() => sendMessage(paths, 'worker', 'coordinator', 'urgent', '')).toThrow(/[Ee]mpty message body/);
-    expect(() => sendMessage(paths, 'daemon', 'coordinator', 'normal', '')).toThrow(/[Ee]mpty message body/);
+    const paths = pathsFor(ctxRoot, 'rex');
+    expect(() => sendMessage(paths, 'moss', 'rex', 'urgent', '')).toThrow(/[Ee]mpty message body/);
+    expect(() => sendMessage(paths, 'daemon', 'rex', 'normal', '')).toThrow(/[Ee]mpty message body/);
   });
 
   // Guard against over-correction. The fix must not break real traffic — the 8 call sites
   // that build template literals send bodies that are short, or whitespace-padded, or
   // punctuation-led, and every one of them must still go through.
   it('still sends legitimate bodies, including short and padded ones', () => {
-    const paths = pathsFor(ctxRoot, 'worker');
+    const paths = pathsFor(ctxRoot, 'moss');
     const legit = [
       'ok',
       '.',
@@ -99,17 +99,17 @@ describe('empty message body is rejected at the primitive', () => {
       'Task assigned: [normal] Fix the thing (id: task_1)',
     ];
     for (const body of legit) {
-      expect(() => sendMessage(paths, 'builder', 'worker', 'normal', body)).not.toThrow();
+      expect(() => sendMessage(paths, 'kit', 'moss', 'normal', body)).not.toThrow();
     }
-    expect(inboxFileCount(ctxRoot, 'worker')).toBe(legit.length);
+    expect(inboxFileCount(ctxRoot, 'moss')).toBe(legit.length);
   });
 
   it('preserves the body exactly — rejection must not become trimming', () => {
     // Rejecting empty is not licence to normalise non-empty input. A body that survives
     // the gate must arrive byte-identical, padding included.
-    const paths = pathsFor(ctxRoot, 'worker');
+    const paths = pathsFor(ctxRoot, 'moss');
     const body = '  padded body with edges  ';
-    sendMessage(paths, 'builder', 'worker', 'normal', body);
+    sendMessage(paths, 'kit', 'moss', 'normal', body);
     const [msg] = checkInbox(paths);
     expect(msg.text).toBe(body);
   });

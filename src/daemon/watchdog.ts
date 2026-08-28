@@ -36,6 +36,7 @@ import { join } from 'path';
 import { execFileSync } from 'child_process';
 import { atomicWriteSync } from '../utils/atomic.js';
 
+import { stripSessionCredentialFromEnv } from '../utils/env.js';
 /**
  * Timeout tiers for the watchdog's git subprocesses.
  *
@@ -98,7 +99,7 @@ export function runGit(
       cwd: opts.cwd,
       timeout: opts.timeoutMs,
       killSignal: 'SIGKILL',
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      env: { ...stripSessionCredentialFromEnv(process.env), GIT_TERMINAL_PROMPT: '0' },
       ...(opts.capture
         ? { encoding: 'utf-8' as const, stdio: ['pipe', 'pipe', 'pipe'] as const }
         : { stdio: 'pipe' as const }),
@@ -150,17 +151,15 @@ export interface RollbackPreflightContext {
   maxResets: number;
 }
 
-type RollbackPreflightHook = (context: RollbackPreflightContext) => void | Promise<void>;
-
 export interface RollbackOptions {
   /** Maximum cumulative destructive resets allowed on one branch. Defaults to 1. */
   maxResetsPerBranch?: number;
   /** Optional floor ref. Rollback target must not be older than this ref. */
   floorRef?: string;
   /** Called after preflight passes and before the first destructive git op. */
-  logEventBeforeRollback?: RollbackPreflightHook;
+  logEventBeforeRollback?: (context: RollbackPreflightContext) => void;
   /** Called after preflight passes and before the first destructive git op. */
-  notifyBeforeRollback?: RollbackPreflightHook;
+  notifyBeforeRollback?: (context: RollbackPreflightContext) => void;
 }
 
 export function isWatchdogRollbackEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -407,11 +406,11 @@ function targetRespectsFloor(repoRoot: string, target: string, floorRef: string)
  *   - Refuse to roll back to HEAD itself — a no-op that would still run the
  *     destructive stash+reset cycle for no benefit.
  */
-export async function performRollback(
+export function performRollback(
   stateDir: string,
   repoRoot: string,
   options: RollbackOptions = {},
-): Promise<RollbackResult> {
+): RollbackResult {
   const failedCommit = getCurrentCommit(repoRoot) ?? 'unknown';
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const branch = getCurrentBranch(repoRoot);
@@ -494,12 +493,12 @@ export async function performRollback(
     maxResets,
   };
   try {
-    await options.logEventBeforeRollback?.(preflightContext);
+    options.logEventBeforeRollback?.(preflightContext);
   } catch {
     // Best-effort audit hook — never let logging change daemon recovery flow.
   }
   try {
-    await options.notifyBeforeRollback?.(preflightContext);
+    options.notifyBeforeRollback?.(preflightContext);
   } catch {
     // Best-effort operator notification — rollback safety preflight already passed.
   }

@@ -70,7 +70,7 @@ describe('redactSSN — formatted', () => {
   });
 
   it('does NOT match a dotted phone / IP / version / decimal (dotted-FP guard)', () => {
-    for (const s of ['423.555.0142', '192.168.10.1', '255.255.255.255', 'v1.20.300', '3.14159 pi', '$1,234.56', '2024.05.16']) {
+    for (const s of ['423.555.0100', '192.168.10.1', '255.255.255.255', 'v1.20.300', '3.14159 pi', '$1,234.56', '2024.05.16']) {
       expect(redactSSN(s)).toBe(s);
     }
   });
@@ -152,11 +152,11 @@ describe('redactSSN — conservative vs aggressive', () => {
 
 describe('redactSSN — false-positive guards (0-FP requirement)', () => {
   it('does NOT redact a 10-digit phone XXX-XXX-XXXX', () => {
-    expect(redactSSN('Call Alex at 423-555-0142 anytime')).toBe('Call Alex at 423-555-0142 anytime');
+    expect(redactSSN('Call Alex at 423-555-0100 anytime')).toBe('Call Alex at 423-555-0100 anytime');
   });
 
   it('does NOT redact a dotted phone or dollar amounts', () => {
-    expect(redactSSN('423.555.0142 and $123,456.78')).toBe('423.555.0142 and $123,456.78');
+    expect(redactSSN('423.555.0100 and $123,456.78')).toBe('423.555.0100 and $123,456.78');
   });
 
   it('does NOT redact a street address or unit number', () => {
@@ -166,7 +166,7 @@ describe('redactSSN — false-positive guards (0-FP requirement)', () => {
 
   it('does NOT mistake a 10-digit phone for the XXX-XX-XXXX shape', () => {
     // The middle group of a phone is 3 digits; SSN needs 2. \b boundaries hold.
-    expect(detectSSN('423-555-0142')).toBe(false);
+    expect(detectSSN('423-555-0100')).toBe(false);
   });
 });
 
@@ -195,7 +195,7 @@ describe('detectSSN', () => {
     expect(detectSSN('SSN 987654321')).toBe(true);
   });
   it('false for clean text', () => {
-    expect(detectSSN('no secrets here, call 423-555-0142')).toBe(false);
+    expect(detectSSN('no secrets here, call 423-555-0100')).toBe(false);
   });
   it('false for a bare 9-digit ID (conservative)', () => {
     expect(detectSSN('id 987654321')).toBe(false);
@@ -296,7 +296,7 @@ describe('redactSecrets — inbound round-trip (Layer 1)', () => {
   });
 
   it('does not touch a phone number in PTY output', () => {
-    expect(redactSecrets('Call 423-555-0142')).toBe('Call 423-555-0142');
+    expect(redactSecrets('Call 423-555-0100')).toBe('Call 423-555-0100');
   });
 });
 

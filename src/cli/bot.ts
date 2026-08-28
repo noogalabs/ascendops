@@ -275,7 +275,9 @@ async function botCreate(agentName: string, opts: CreateOptions): Promise<void> 
     }
 
     const chatId = String(user.chatId);
-    const allowedUser = user.username || String(user.fromId);
+    // The daemon's authorization gate accepts numeric Telegram user IDs only.
+    // Keep the username for display, but never persist it as ALLOWED_USER.
+    const allowedUser = String(user.fromId);
     const displayName = user.firstName || user.username || `id ${user.fromId}`;
     console.log(`  Captured: chat_id=${chatId} allowed_user=${allowedUser} (${displayName})`);
 

@@ -67,6 +67,7 @@ beforeEach(() => {
   agentDir = join(orgDir, 'agents', 'test-agent');
   mkdirSync(join(orgDir, 'agents', 'target-agent'), { recursive: true });
   mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, '.env'), 'BOT_TOKEN=fake-token\n', 'utf-8');
 
   originalCtxRoot = process.env.CTX_ROOT;
   originalAgentName = process.env.CTX_AGENT_NAME;
@@ -308,7 +309,7 @@ describe('configurable comms lint', () => {
     expect(printed).toContain('reference the feature/fix by what it does');
   });
 
-  it('--suggest on a blocked send-message prints the phrase + hint and does NOT send', async () => {
+  it('--suggest on agent traffic reports pass for a human-only default and does NOT send', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await busCommand.parseAsync(
       ['send-message', 'target-agent', 'normal', 'standing by for the next task', '--suggest'],
@@ -317,8 +318,7 @@ describe('configurable comms lint', () => {
     expect(sendMessageSpy).not.toHaveBeenCalled();
     const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(printed).toContain('--suggest');
-    expect(printed).toContain('BLOCKED');
-    expect(printed.toLowerCase()).toContain('standing by');
+    expect(printed.toLowerCase()).toContain('would pass');
   });
 
   // §8 case 5: --suggest on a clean message → prints clean confirmation, does
@@ -354,15 +354,13 @@ describe('configurable comms lint', () => {
 
   // §8 case 6: malformed agent config.json → fail open to defaults (a default
   // banned phrase still BLOCKS; a clean message still SENDS).
-  it('falls open to defaults when agent config.json is malformed JSON (default phrase still blocks)', async () => {
+  it('falls open to audience defaults when agent config is malformed', async () => {
     writeRawAgentConfig('{ this is not valid json ');
-    await expect(
-      busCommand.parseAsync(
-        ['send-message', 'target-agent', 'normal', 'standing by for the next task'],
-        { from: 'user' },
-      ),
-    ).rejects.toThrow();
-    expect(sendMessageSpy).not.toHaveBeenCalled();
+    await busCommand.parseAsync(
+      ['send-message', 'target-agent', 'normal', 'standing by for the next task'],
+      { from: 'user' },
+    );
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
   it('falls open to defaults when agent config.json is malformed JSON (clean message still sends)', async () => {
@@ -376,7 +374,7 @@ describe('configurable comms lint', () => {
 
   // §8 case 7: invalid regex in config → that rule dropped, default rules still
   // enforce, no crash.
-  it('drops an invalid-regex custom rule but keeps default rules enforcing (no crash)', async () => {
+  it('drops an invalid-regex custom rule and keeps agent defaults permissive (no crash)', async () => {
     writeOrgConfig({
       banned: {
         add: [
@@ -385,14 +383,11 @@ describe('configurable comms lint', () => {
         ],
       },
     });
-    // The bad rule is dropped (no crash), and a DEFAULT banned phrase still blocks.
-    await expect(
-      busCommand.parseAsync(
-        ['send-message', 'target-agent', 'normal', 'standing by for the next task'],
-        { from: 'user' },
-      ),
-    ).rejects.toThrow();
-    expect(sendMessageSpy).not.toHaveBeenCalled();
+    await busCommand.parseAsync(
+      ['send-message', 'target-agent', 'normal', 'standing by for the next task'],
+      { from: 'user' },
+    );
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
   });
 
   it('still sends a clean message when config contains an invalid-regex rule', async () => {

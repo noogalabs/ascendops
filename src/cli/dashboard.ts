@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, platform } from 'os';
 import { randomBytes } from 'crypto';
 
+import { stripSessionCredentialFromEnv } from '../utils/env.js';
 const IS_WINDOWS = platform() === 'win32';
 
 function parseEnvFile(filePath: string): Record<string, string> {
@@ -98,7 +99,7 @@ export const dashboardCommand = new Command('dashboard')
       console.log('\nBuilding dashboard for production...');
       try {
         execSync('npm run build', { cwd: dashboardDir, stdio: 'inherit', timeout: 300000,
-          env: { ...process.env, AUTH_SECRET: authSecret, ADMIN_PASSWORD: adminPassword,
+          env: { ...stripSessionCredentialFromEnv(process.env), AUTH_SECRET: authSecret, ADMIN_PASSWORD: adminPassword,
                  ADMIN_USERNAME: adminUsername, CTX_ROOT: ctxRoot } });
       } catch (err) {
         console.error('Dashboard build failed:', err);
@@ -127,7 +128,7 @@ export const dashboardCommand = new Command('dashboard')
     // ─── Start server ─────────────────────────────────────────────────────────
 
     const dashEnv = {
-      ...process.env,
+      ...stripSessionCredentialFromEnv(process.env),
       PORT: options.port,
       AUTH_SECRET: authSecret,
       ADMIN_USERNAME: adminUsername,

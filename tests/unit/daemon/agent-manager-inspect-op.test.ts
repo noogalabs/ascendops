@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import type { CronFireContext } from '../../../src/daemon/cron-scheduler.js';
 import type { CronDefinition } from '../../../src/types/index.js';
+import { renderDaemonInjection, type DaemonInjection } from '../../../src/utils/validate.js';
 
 // Mock the PTY/Telegram layers — same shape as the existing
 // agent-manager.test.ts so we can construct AgentManager without spawning
@@ -309,7 +310,9 @@ describe('AgentManager.injectAgentDetailed — issue #346 (NOT_FOUND vs NOT_RUNN
       name: 'heartbeat',
       prompt: 'Read HEARTBEAT.md and follow its instructions. Update your heartbeat, check inbox, and work on your highest priority task.',
     }, '[CRON FIRED]')).toBe(true);
-    expect(injectMessageDetailed).toHaveBeenCalledWith(expect.stringContaining('[CRON PREFLIGHT] heartbeat'), {
+    const [preflightInput, preflightOptions] = injectMessageDetailed.mock.calls[0];
+    expect(renderDaemonInjection(preflightInput)).toContain('[CRON PREFLIGHT] heartbeat');
+    expect(preflightOptions).toEqual({
       codexRouting: expect.objectContaining({
         source: 'daemon-cron',
         cronName: 'heartbeat',
@@ -350,8 +353,8 @@ describe('AgentManager.injectAgentDetailed — issue #346 (NOT_FOUND vs NOT_RUNN
 
     const [firstContent, firstOptions] = injectMessageDetailed.mock.calls[0];
     const [secondContent, secondOptions] = injectMessageDetailed.mock.calls[1];
-    expect(secondContent).toBe(firstContent);
-    expect(firstContent).toContain('[CRON PREFLIGHT] heartbeat');
+    expect(secondContent).toStrictEqual(firstContent);
+    expect(renderDaemonInjection(firstContent)).toContain('[CRON PREFLIGHT] heartbeat');
     expect(firstOptions.dedupIdentity).toBe('daemon-cron:heartbeat:2026-08-05T01:00:00.000Z');
     expect(secondOptions.dedupIdentity).toBe('daemon-cron:heartbeat:2026-08-05T07:00:00.000Z');
   });
@@ -398,8 +401,8 @@ describe('AgentManager.injectAgentDetailed — issue #346 (NOT_FOUND vs NOT_RUNN
       const fakeEntry = {
         process: {
           getConfig: () => ({ runtime: 'codex-app-server', model: 'gpt-5.6-sol' }),
-          injectMessageDetailed: vi.fn((content: string, options: { dedupIdentity?: string; codexRouting?: { model: string } }) => {
-            if (dedup.isDuplicate(options.dedupIdentity ?? content, 'daemon-structured')) {
+          injectMessageDetailed: vi.fn((content: DaemonInjection, options: { dedupIdentity?: string; codexRouting?: { model: string } }) => {
+            if (dedup.isDuplicate(options.dedupIdentity ?? renderDaemonInjection(content), 'daemon-structured')) {
               return {
                 ok: false as const,
                 code: 'DEDUPED' as const,
@@ -408,7 +411,7 @@ describe('AgentManager.injectAgentDetailed — issue #346 (NOT_FOUND vs NOT_RUNN
               };
             }
             expect(options.codexRouting?.model).toBe('gpt-5.6-terra');
-            sequenceStarts.push(content);
+            sequenceStarts.push(renderDaemonInjection(content));
             if (failAfterFirstSequence) {
               failAfterFirstSequence = false;
               throw new Error('ambiguous failure after sequence admission');

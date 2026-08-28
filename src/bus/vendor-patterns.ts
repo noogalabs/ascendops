@@ -11,24 +11,24 @@ export interface VendorDocPattern {
 
 export const VENDOR_DOC_PATTERNS: VendorDocPattern[] = [
   {
-    vendor_name: 'Example Plumbing',
-    aliases: ['example plumbing', 'example plumber'],
+    vendor_name: 'Stubblefield',
+    aliases: ['stubblefield plumbing', 'stubblefield'],
     photos: 'off-system',
     notes: 'off-system',
     closeout_lag_minutes: 1440,
     notes_text: 'Full off-system. Photos and notes via text/email to manager, not PM. Verify by asking manager, not by PM doc check.',
   },
   {
-    vendor_name: 'Example Services',
-    aliases: ['example services', 'example vendor'],
+    vendor_name: 'ZJB',
+    aliases: ['zjb', 'zjb services'],
     photos: 'late',
     notes: 'manager-backfill',
     closeout_lag_minutes: 4320,
     notes_text: 'Late-upload pattern. Photos arrive in PM 1-3 days post-completion. Notes typically backfilled by manager from vendor verbal report.',
   },
   {
-    vendor_name: 'In-House Tech',
-    aliases: ['in-house tech', 'maintenance technician'],
+    vendor_name: 'Carlos',
+    aliases: ['carlos', 'carlos calel'],
     photos: 'off-system',
     notes: 'off-system',
     closeout_lag_minutes: 0,

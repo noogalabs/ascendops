@@ -191,7 +191,7 @@ describe('manual cp -r path: raw template copy + materialize yields the golden (
 });
 
 describe('step-2 item-1: re-runnable onboarding (no self-delete) + catalog-source unify', () => {
-  // David's model: onboarding is a RE-RUNNABLE skill, NEVER self-deleting, on ANY role.
+  // Avery's model: onboarding is a RE-RUNNABLE skill, NEVER self-deleting, on ANY role.
   it('no role output contains a self-delete (re-runnable for every role)', () => {
     for (const role of ['worker', 'orchestrator', 'analyst']) {
       const out = stripOnboardingRole(CANONICAL, role);

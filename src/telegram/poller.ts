@@ -8,6 +8,17 @@ export type MessageHandler = (msg: TelegramMessage) => void;
 export type CallbackHandler = (query: TelegramCallbackQuery) => void;
 export type ReactionHandler = (reaction: TelegramMessageReaction) => void;
 
+export const RETRY_AFTER_CEILING_MS = 300_000;
+
+export function computePollBackoffMs(message: string, attempt: number, baseMs: number, capMs: number): number {
+  const retryMatch = message.match(/retry after (\d+)/i);
+  if (retryMatch) {
+    const honored = Math.max(1, parseInt(retryMatch[1], 10)) * 1000;
+    return Math.min(RETRY_AFTER_CEILING_MS, honored);
+  }
+  return Math.min(capMs, baseMs * 2 ** (attempt - 1));
+}
+
 /**
  * Telegram polling loop. Replaces the Telegram portion of fast-checker.sh.
  * Polls getUpdates every 1 second and routes messages/callbacks to handlers.
@@ -34,6 +45,8 @@ export class TelegramPoller {
   private callbackHandlers: CallbackHandler[] = [];
   private reactionHandlers: ReactionHandler[] = [];
   private pollInterval: number;
+  private consecutiveErrors = 0;
+  private readonly backoffCapMs = 30_000;
   /** The currently active long-poll, cancelled by an explicit stop(). */
   private abortController: AbortController | null = null;
   /**
@@ -117,9 +130,12 @@ export class TelegramPoller {
   async start(): Promise<void> {
     this.running = true;
     this.lastExitReason = '';
+    this.consecutiveErrors = 0;
     while (this.running) {
       try {
         await this.pollOnce();
+        this.consecutiveErrors = 0;
+        await sleep(this.pollInterval);
       } catch (err) {
         if (!this.running) {
           this.lastExitReason = 'stopped-externally';
@@ -135,10 +151,12 @@ export class TelegramPoller {
           this.running = false;
           return;
         }
-        // Other errors are transient — log and continue polling.
-        console.error('[telegram-poller] Poll error:', err);
+        this.consecutiveErrors++;
+        const base = computePollBackoffMs(msg, this.consecutiveErrors, this.pollInterval, this.backoffCapMs);
+        const delay = base + Math.random() * this.pollInterval;
+        console.error(`[telegram-poller] Poll error (retry in ${Math.round(delay)}ms, attempt ${this.consecutiveErrors}):`, err);
+        await sleep(delay);
       }
-      await sleep(this.pollInterval);
     }
   }
 

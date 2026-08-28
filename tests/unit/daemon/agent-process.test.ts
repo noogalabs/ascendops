@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { rawDaemonInjection } from '../../../src/utils/validate.js';
 
 // Capture the PTY exit handler so tests can simulate exits at controlled times
 let capturedOnExit: ((exitCode: number, signal?: number) => void) | null = null;
 
 const mockPty = {
+  sessionNonce: vi.fn().mockReturnValue(null),
   spawn: vi.fn().mockResolvedValue(undefined),
   kill: vi.fn(),
   write: vi.fn(),
@@ -56,6 +58,8 @@ const fsMocks = {
   appendFileSync: vi.fn(),
   statSync: vi.fn(),
   unlinkSync: vi.fn(),
+  rmSync: vi.fn(),
+  readdirSync: vi.fn(),
 };
 
 vi.mock('fs', async () => {
@@ -85,10 +89,53 @@ vi.mock('fs', async () => {
     get appendFileSync() { return fsMocks.appendFileSync; },
     get statSync() { return fsMocks.statSync; },
     get unlinkSync() { return fsMocks.unlinkSync; },
+    get rmSync() { return fsMocks.rmSync; },
+    get readdirSync() { return fsMocks.readdirSync; },
   };
 });
 
+describe('AgentProcess explicit onboarding marker', () => {
+  it('does not infer onboarding completion from heartbeat presence', async () => {
+    fsMocks.existsSync.mockImplementation((path: string) => {
+      if (path.endsWith('/.force-fresh')) return false;
+      if (path.endsWith('/.onboarded')) return false;
+      if (path.endsWith('/heartbeat.json')) return true;
+      if (path.endsWith('/ONBOARDING.md')) return true;
+      return false;
+    });
+
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+
+    const prompt = mockPty.spawn.mock.calls[0]?.[1] ?? '';
+    expect(prompt).toContain('FIRST BOOT');
+    expect(fsMocks.writeFileSync).not.toHaveBeenCalledWith(
+      expect.stringContaining('/.onboarded'),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('suppresses first-boot routing only for an explicit marker', async () => {
+    fsMocks.existsSync.mockImplementation((path: string) => {
+      if (path.endsWith('/.force-fresh')) return false;
+      if (path.endsWith('/.onboarded')) return true;
+      if (path.endsWith('/heartbeat.json')) return true;
+      if (path.endsWith('/ONBOARDING.md')) return true;
+      return false;
+    });
+
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+    expect(mockPty.spawn.mock.calls[0]?.[1] ?? '').not.toContain('FIRST BOOT');
+  });
+});
+
 const { AgentProcess } = await import('../../../src/daemon/agent-process.js');
+const {
+  resetSessionQuarantines,
+  sessionQuarantineReason,
+} = await import('../../../src/daemon/session-revocation-quarantine.js');
 
 const mockEnv = {
   instanceId: 'test',
@@ -101,6 +148,7 @@ const mockEnv = {
 };
 
 beforeEach(() => {
+  resetSessionQuarantines();
   capturedOnExit = null;
   mockPty.spawn.mockClear();
   mockPty.kill.mockClear();
@@ -110,6 +158,7 @@ beforeEach(() => {
   mockPty.getOutputBuffer.mockClear();
   mockPty.getOutputBuffer.mockReturnValue({ hasRateLimitSignature: () => false });
   mockPty.onExit.mockClear();
+  mockPty.sessionNonce.mockReset().mockReturnValue(null);
   mockInjectMessage.mockClear();
   fsMocks.existsSync.mockReset().mockReturnValue(false);
   fsMocks.readFileSync.mockReset();
@@ -117,6 +166,8 @@ beforeEach(() => {
   fsMocks.appendFileSync.mockReset();
   fsMocks.statSync.mockReset();
   fsMocks.unlinkSync.mockReset();
+  fsMocks.rmSync.mockReset();
+  fsMocks.readdirSync.mockReset().mockReturnValue([]);
 });
 
 describe('AgentProcess disable-resurrection gate (#859)', () => {
@@ -138,18 +189,38 @@ describe('AgentProcess disable-resurrection gate (#859)', () => {
   });
 });
 
+describe('AgentProcess deferred child binding gate', () => {
+  it('binding-failure-reaps-the-exact-wrapper-child-before-online', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    const statuses: string[] = [];
+    ap.onStatusChanged(status => statuses.push(status.status));
+
+    await expect(ap.start({
+      beforeOnline: async (pid) => {
+        expect(pid).toBe(process.pid);
+        expect(ap.getStatus().status).toBe('starting');
+        throw new Error('durable binding failed');
+      },
+    })).rejects.toThrow('durable binding failed');
+
+    expect(mockPty.kill).toHaveBeenCalledOnce();
+    expect(statuses).not.toContain('running');
+    expect(ap.getStatus().status).toBe('crashed');
+  });
+});
+
 describe('AgentProcess - daemon injection timestamp', () => {
   it('updates only after a successful PTY injection', async () => {
     const ap = new AgentProcess('alice', mockEnv, {});
     expect(ap.getLastInjectedAt()).toBe(0);
-    expect(ap.injectMessageDetailed('before start').ok).toBe(false);
+    expect(ap.injectMessageDetailed(rawDaemonInjection('before start')).ok).toBe(false);
     expect(ap.getLastInjectedAt()).toBe(0);
 
     await ap.start();
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-16T18:00:00.000Z'));
-      expect(ap.injectMessageDetailed('open the turn')).toEqual({ ok: true });
+      expect(ap.injectMessageDetailed(rawDaemonInjection('open the turn'))).toEqual({ ok: true });
       expect(ap.getLastInjectedAt()).toBe(Date.now());
     } finally {
       vi.useRealTimers();
@@ -199,6 +270,29 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     expect(ap.getStatus().status).toBe('stopped');
   }, 10000);
 
+  it('fails closed when child death remains unconfirmed after SIGKILL deadline', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((() => true) as any);
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {});
+      await ap.start();
+
+      const stopPromise = ap.stop();
+      const rejection = expect(stopPromise).rejects.toThrow(
+        new RegExp(`death unconfirmed.*pid ${process.pid} still alive 5s after SIGKILL`),
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejection;
+
+      expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGKILL');
+      expect(ap.getStatus().status).not.toBe('stopped');
+      await expect(ap.stop()).rejects.toThrow(/death unconfirmed/);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('handleExit DOES trigger crash recovery on UNINTENTIONAL exit (regression check)', async () => {
     // Make sure we didn't accidentally break the real crash recovery path
     const ap = new AgentProcess('alice', mockEnv, {});
@@ -210,6 +304,128 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
 
     // The agent should be in 'crashed' state (crash recovery scheduled)
     expect(ap.getStatus().status).toBe('crashed');
+  });
+
+  it('session-record cleanup EACCES cannot abort PTY exit crash recovery or the daemon', async () => {
+    const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    mockPty.sessionNonce.mockReturnValue('nonce-owned-by-this-lifecycle');
+    fsMocks.rmSync.mockImplementation(() => { throw permissionError; });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const ap = new AgentProcess('alice', mockEnv, {});
+
+    await ap.start();
+    expect(() => capturedOnExit!(1, 0)).not.toThrow();
+
+    expect(ap.getStatus().status).toBe('crashed');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('exit cleanup EACCES quarantines the agent and prevents a second nonce generation', async () => {
+    vi.useFakeTimers();
+    try {
+      const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      mockPty.sessionNonce.mockReturnValue('nonce-owned-by-dead-generation');
+      fsMocks.existsSync.mockImplementation((path: unknown) =>
+        String(path).endsWith('/state/alice/heartbeat-sessions'));
+      fsMocks.readdirSync.mockReturnValue(['nonce-owned-by-dead-generation.json'] as never);
+      fsMocks.rmSync.mockImplementation(() => { throw permissionError; });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      errorSpy.mockClear();
+      const statusSpy = vi.fn();
+      const ap = new AgentProcess('alice', mockEnv, {});
+      ap.onStatusChanged(statusSpy);
+
+      await ap.start();
+      capturedOnExit!(1, 0);
+      expect((ap as unknown as {
+        mintedSession: { generation: number; nonce: string } | null;
+      }).mintedSession).toEqual({ generation: 1, nonce: 'nonce-owned-by-dead-generation' });
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(mockPty.spawn).toHaveBeenCalledTimes(1);
+      expect(sessionQuarantineReason('alice')).toMatch(/session record.*could not be revoked/i);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/SESSION REVOCATION UNKNOWN.*session record/i));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/REFUSING TO START.*session record/i));
+      expect(statusSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'crashed' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('quarantined crash-recovery refusal is error-level and alerts without restarting', async () => {
+    vi.useFakeTimers();
+    try {
+      const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      mockPty.sessionNonce.mockReturnValue('nonce-owned-by-quarantined-generation');
+      fsMocks.existsSync.mockImplementation((path: unknown) =>
+        String(path).endsWith('/state/alice/heartbeat-sessions'));
+      fsMocks.readdirSync.mockReturnValue(['nonce-owned-by-quarantined-generation.json'] as never);
+      fsMocks.rmSync.mockImplementation(() => { throw permissionError; });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      errorSpy.mockClear();
+      const statusSpy = vi.fn();
+      const ap = new AgentProcess('alice', mockEnv, {});
+      ap.onStatusChanged(statusSpy);
+
+      await ap.start();
+      capturedOnExit!(1, 0);
+      // Isolate the later refusal from the initial cleanup announcement. The
+      // recovery attempt has its own visibility contract regardless of caller.
+      errorSpy.mockClear();
+      statusSpy.mockClear();
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(mockPty.spawn).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/REFUSING TO START.*session record/i));
+      expect(statusSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'crashed' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('spawn-failure cleanup EACCES preserves the spawn error and still alerts crashed status', async () => {
+    const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const spawnError = new Error('PTY spawn root cause');
+    mockPty.sessionNonce.mockReturnValue('nonce-owned-by-failed-spawn');
+    mockPty.spawn.mockRejectedValueOnce(spawnError);
+    fsMocks.rmSync.mockImplementation(() => { throw permissionError; });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    errorSpy.mockClear();
+    const statusSpy = vi.fn();
+    const ap = new AgentProcess('alice', mockEnv, {});
+    ap.onStatusChanged(statusSpy);
+
+    await expect(ap.start()).rejects.toBe(spawnError);
+
+    expect(ap.getStatus().status).toBe('crashed');
+    expect(sessionQuarantineReason('alice')).toMatch(/session record.*could not be revoked/i);
+    expect(errorSpy).toHaveBeenCalled();
+    expect(statusSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'crashed' }));
+  });
+
+  it('clean exit cleanup preserves ordinary crash recovery and starts one replacement', async () => {
+    vi.useFakeTimers();
+    try {
+      mockPty.sessionNonce.mockReturnValue('nonce-cleanly-revoked-generation');
+      fsMocks.existsSync.mockImplementation((path: unknown) =>
+        String(path).endsWith('/state/alice/heartbeat-sessions'));
+      fsMocks.readdirSync.mockReturnValue(['nonce-cleanly-revoked-generation.json'] as never);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      errorSpy.mockClear();
+      const ap = new AgentProcess('alice', mockEnv, {});
+
+      await ap.start();
+      capturedOnExit!(1, 0);
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(mockPty.spawn).toHaveBeenCalledTimes(2);
+      expect(ap.getStatus().status).toBe('running');
+      expect(fsMocks.rmSync).toHaveBeenCalledTimes(1);
+      expect(sessionQuarantineReason('alice')).toBeNull();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('unexpected PTY exit persists a CRASH line to restarts.log', async () => {
@@ -873,5 +1089,76 @@ describe('AgentProcess - onboarding marker (do not auto-write .onboarded on hear
     const prompt = mockPty.spawn.mock.calls[0]?.[1] ?? '';
     expect(prompt).not.toContain('FIRST BOOT');
     expect(prompt).not.toContain('complete the onboarding protocol');
+  });
+});
+
+describe('AgentProcess - managed receipt-bound external child', () => {
+  it('treats ESRCH during the SIGKILL poll gap as an already-vanished child', async () => {
+    vi.useFakeTimers();
+    try {
+      const terminate = vi.fn((_pid: number, signal: 'SIGTERM' | 'SIGKILL') => {
+        if (signal === 'SIGKILL') {
+          const error = new Error('kill ESRCH') as NodeJS.ErrnoException;
+          error.code = 'ESRCH';
+          throw error;
+        }
+      });
+      const ap = new AgentProcess('alice', mockEnv, {});
+      ap.adoptExternalProcess(
+        { pid: 4242, kernelIdentity: 'kernel:4242' },
+        pid => `kernel:${pid}`,
+        terminate,
+      );
+      const stopping = ap.stop();
+      await vi.advanceTimersByTimeAsync(1_100);
+      await expect(stopping).resolves.toBeUndefined();
+      expect(ap.getStatus()).toMatchObject({ status: 'stopped', pid: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports and stops an adopted child only while its kernel identity remains exact', async () => {
+    const terminate = vi.fn();
+    let alive = true;
+    terminate.mockImplementation((_pid, signal) => { if (signal === 'SIGKILL') alive = false; });
+    const ap = new AgentProcess('alice', mockEnv, {});
+    ap.adoptExternalProcess(
+      { pid: 4242, kernelIdentity: 'kernel:4242' },
+      pid => { if (!alive) throw new Error('child identity vanished'); return `kernel:${pid}`; },
+      terminate,
+    );
+    expect(ap.getStatus()).toMatchObject({ status: 'running', pid: 4242 });
+    await ap.stop();
+    expect(terminate).toHaveBeenNthCalledWith(1, 4242, 'SIGTERM');
+    expect(terminate).toHaveBeenNthCalledWith(2, 4242, 'SIGKILL');
+    expect(ap.getStatus()).toMatchObject({ status: 'stopped', pid: undefined });
+  });
+
+  it('waits-two-seconds-after-forced-reap-without-reporting-stopped-early', async () => {
+    vi.useFakeTimers();
+    try {
+      let alive = true;
+      const terminate = vi.fn((_pid: number, signal: 'SIGTERM' | 'SIGKILL') => {
+        if (signal === 'SIGKILL') setTimeout(() => { alive = false; }, 2_000);
+      });
+      const ap = new AgentProcess('alice', mockEnv, {});
+      ap.adoptExternalProcess(
+        { pid: 4242, kernelIdentity: 'kernel:4242' },
+        pid => { if (!alive) throw new Error('child identity vanished'); return `kernel:${pid}`; },
+        terminate,
+      );
+      let settled = false;
+      const stopping = ap.stop().then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(terminate).toHaveBeenCalledWith(4242, 'SIGKILL');
+      expect(settled).toBe(false);
+      expect(ap.getStatus().status).toBe('running');
+      await vi.advanceTimersByTimeAsync(200);
+      await stopping;
+      expect(ap.getStatus().status).toBe('stopped');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

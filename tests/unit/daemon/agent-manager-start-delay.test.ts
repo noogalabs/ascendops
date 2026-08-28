@@ -20,6 +20,7 @@ vi.mock('../../../src/pty/agent-pty.js', () => ({
     getPid() { return process.pid; }
     isAlive() { return true; }
     getOutputBuffer() { return { hasRateLimitSignature: () => false }; }
+    sessionNonce() { return null; }
     write() { /* no-op */ }
     kill() {
       if (!this.spawned) return;

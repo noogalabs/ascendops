@@ -24,7 +24,7 @@ import { webhookFetchHandler } from '../../../src/bus/hook-handlers/webhook_fetc
 function makeEvent(overrides: Partial<Event> = {}): Event {
   return {
     id: 'evt-1',
-    agent: 'collie',
+    agent: 'moss',
     org: 'ascendops',
     timestamp: '2026-04-29T20:00:00Z',
     category: 'action',

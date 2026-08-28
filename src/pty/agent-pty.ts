@@ -1,17 +1,13 @@
-import { basename, join } from 'path';
+import { join } from 'path';
+import { agentSessionCredential, stripReservedSessionCredential, HEARTBEAT_SESSION_ENV } from '../utils/env.js';
+import { recordSessionNonce } from '../bus/heartbeat-session-store.js';
 import { existsSync, readFileSync } from 'fs';
 import { platform } from 'os';
 import type { AgentConfig, CtxEnv } from '../types/index.js';
 import { OutputBuffer } from './output-buffer.js';
 import { loadAdapter } from './adapters/base.js';
 import { injectMessage as injectMessageIntoPty } from './inject.js';
-import {
-  ensureBypassPromptSuppressed,
-  ensureFolderTrusted,
-  readUnattendedConsent,
-} from '../utils/claude-preflight.js';
 import { parseEnvFileStrict } from '../utils/env.js';
-import { prepareNodePtySpawn } from './node-pty-loader.js';
 
 // node-pty types
 interface IPty {
@@ -53,15 +49,15 @@ export class AgentPTY {
   protected config: AgentConfig;
   private onExitHandler: ((exitCode: number, signal?: number) => void) | null = null;
   private spawnFn: SpawnFn | null = null;
-  private prepareSpawnFn: (cachedSpawn: SpawnFn | null) => SpawnFn = prepareNodePtySpawn;
+  /** The nonce this PTY minted, so an owning lifecycle can revoke exactly its own. */
+  private mintedSessionNonce: string | null = null;
+  sessionNonce(): string | null { return this.mintedSessionNonce; }
   // Trust-prompt auto-accept timers. Stored so they can be cancelled when
   // the PTY exits or is killed — otherwise a timer from a previous spawn()
   // can fire against a RESPAWNED PTY on the same instance and write a stray
   // Enter into the new session (the callbacks only check `this.pty`, which
   // is truthy again after a respawn).
   private trustPromptTimers: ReturnType<typeof setTimeout>[] = [];
-  private promptAnswerSent = false;
-  private promptOutputCursor = 0;
   private bypassAnswerCount = 0;
 
   constructor(env: CtxEnv, config: AgentConfig, logPath?: string, bootstrapPattern?: string) {
@@ -86,16 +82,11 @@ export class AgentPTY {
     // previous child's ring and latch before admitting output from the next.
     this.outputBuffer.clear();
 
-    const explicitSkip = this.config.dangerously_skip_permissions;
-    let effectiveSkip = explicitSkip;
-    if (explicitSkip === undefined && this.isClaudeCodeRuntime()) {
-      // Derived state must never be written into the store that distinguishes explicit from absent.
-      effectiveSkip = readUnattendedConsent(this.env.frameworkRoot);
+    // Lazy-load node-pty (native addon)
+    if (!this.spawnFn) {
+      const nodePty = require('node-pty');
+      this.spawnFn = nodePty.spawn;
     }
-
-    // Repair the installed helper at every spawn boundary. npm can replace the
-    // package after this instance has cached node-pty's spawn function.
-    this.spawnFn = this.prepareSpawnFn(this.spawnFn);
 
     const configuredCwd = this.config.working_directory;
     if (configuredCwd !== undefined && configuredCwd !== '') {
@@ -143,7 +134,7 @@ export class AgentPTY {
     if (this.env.org && this.env.projectRoot) {
       const orgEnvFile = join(this.env.projectRoot, 'orgs', this.env.org, 'secrets.env');
       if (existsSync(orgEnvFile)) {
-        Object.assign(ptyEnv, parseEnvFileStrict(orgEnvFile, { stripInlineComments: false }));
+        Object.assign(ptyEnv, stripReservedSessionCredential(orgEnvFile, parseEnvFileStrict(orgEnvFile, { stripInlineComments: false })));
       }
     }
 
@@ -152,7 +143,7 @@ export class AgentPTY {
     // Strict for the same reason as above.
     const agentEnvFile = join(this.env.agentDir, '.env');
     if (existsSync(agentEnvFile)) {
-      Object.assign(ptyEnv, parseEnvFileStrict(agentEnvFile, { stripInlineComments: false }));
+      Object.assign(ptyEnv, stripReservedSessionCredential(agentEnvFile, parseEnvFileStrict(agentEnvFile, { stripInlineComments: false })));
     }
 
     // Add convenience CTX_* aliases used throughout agent templates.
@@ -183,14 +174,25 @@ export class AgentPTY {
 
     this.customizeEnv(ptyEnv);
 
+    // MINT THE SESSION CREDENTIAL LAST. Every earlier writer — org secrets.env,
+    // agent .env, and customizeEnv() — Object.assigns over this env, so minting
+    // it at construction time let any of them clobber it. Codex found the env-file
+    // case; the customizeEnv case is the same family. Being the final write is
+    // what makes "minted only at the PTY boundary" true rather than aspirational.
+    // Record the nonce as the live session BEFORE the child environment exists.
+    // A credential whose nonce is not in daemon-owned state is a forgery, and the
+    // window where the child could exist while the record does not must be empty.
+    const credential = agentSessionCredential(this.env.agentName);
+    const mintedNonce = credential[HEARTBEAT_SESSION_ENV].split(':').slice(1).join(':');
+    this.mintedSessionNonce = mintedNonce;
+    recordSessionNonce(this.env.ctxRoot, this.env.agentName, mintedNonce);
+    Object.assign(ptyEnv, credential);
+
     // Spawn the agent binary directly (no shell wrapper) — cross-platform, no shell escaping needed.
     // env is passed natively via node-pty options; no bash export commands required.
     // On Windows, npm global installs create .cmd wrappers, not .exe binaries.
     // node-pty's CreateProcess requires the exact wrapper name to resolve correctly.
-    const effectiveConfig = effectiveSkip === undefined
-      ? this.config
-      : { ...this.config, dangerously_skip_permissions: effectiveSkip };
-    const claudeArgs = this.buildClaudeArgs(mode, prompt, effectiveConfig);
+    const claudeArgs = this.buildClaudeArgs(mode, prompt);
     const claudeCmd = this.getBinaryName();
 
     // Apply vendor adapter's env filter — strips CLAUDE_* env vars before
@@ -199,22 +201,6 @@ export class AgentPTY {
     // no-op pass-through. HermesPTY uses default config.vendor (anthropic),
     // so its env is unchanged.
     const filteredEnv = loadAdapter(this.config.vendor).envFilter(ptyEnv);
-
-    const handlesClaudeTrustPrompts = this.isClaudeCodeRuntime();
-    if (handlesClaudeTrustPrompts) {
-      try {
-        ensureFolderTrusted(cwd);
-      } catch (error) {
-        console.warn(`[claude-preflight] unexpected folder trust failure; spawn will continue: ${String(error)}`);
-      }
-      if (effectiveSkip !== false) {
-        try {
-          ensureBypassPromptSuppressed();
-        } catch (error) {
-          console.warn(`[claude-preflight] unexpected bypass suppression failure; spawn will continue: ${String(error)}`);
-        }
-      }
-    }
 
     this.pty = this.spawnFn!(claudeCmd, claudeArgs, {
       name: 'xterm-256color',
@@ -247,33 +233,40 @@ export class AgentPTY {
       }
     });
 
-    // Claude Code can show two startup gates:
-    //   1. Folder trust defaults to accept, so Enter confirms it.
-    //   2. Bypass Permissions defaults to "No, exit", so bare Enter kills the process.
-    // Retry through 32s while a gate remains visible, with a hard answer cap.
-    this.promptAnswerSent = false;
-    this.promptOutputCursor = this.outputBuffer.createSafeCursor();
+    // Claude Code shows first-run gates that block the session until answered:
+    //   1. "trust this folder?": default highlight is accept, so Enter confirms.
+    //   2. "--dangerously-skip-permissions" Bypass Permissions warning: default
+    //      highlight is "No, exit", so a bare Enter EXITS the process (crash loop).
+    //      We must move the selection down to "Yes, I accept" before confirming.
+    // The prompt can render slowly; retry through 32s while the gate remains
+    // visible, with a hard cap on answers to bound stray input.
+    // Skipped for runtimes that never show these prompts (Hermes overrides
+    // needsTrustPromptAutoAccept). The loose substring match would otherwise
+    // fire stray input on unrelated output.
     this.bypassAnswerCount = 0;
-    if (handlesClaudeTrustPrompts) {
+    if (this.needsTrustPromptAutoAccept()) {
       for (const delayMs of [5000, 8000, 11000, 14000, 20000, 26000, 32000]) {
         const timer = setTimeout(() => {
+          // Once the real session has bootstrapped, old dialog text may still
+          // remain in the ring buffer. Never let a delayed prompt timer turn
+          // that stale text into a keystroke in the live session.
           if (!this.pty || this.outputBuffer.isBootstrapped()) return;
-          const candidate = this.promptAnswerSent
-            ? this.outputBuffer.getSafeTailSince(this.promptOutputCursor, 4096)
-            : this.outputBuffer.getRecentTail(4096);
-          const tail = stripAnsi(candidate);
+          const tail = stripAnsi(this.outputBuffer.getRecentTail(4096));
           const lower = tail.toLowerCase();
           try {
+            // A restored session whose final 4KB still contains an old bypass
+            // dialog may receive Down+Enter at an empty prompt. That keystroke is
+            // harmless; the predicate order below excludes lethal bare Enter.
             const bypassGateVisible =
-              tail.includes('Yes, I accept')
-              || tail.includes('running in Bypass Permissions mode');
-            if (bypassGateVisible && effectiveSkip !== false) {
+              lower.includes('no, exit') &&
+              (lower.includes('dangerously') || lower.includes('bypass permissions'));
+            if (bypassGateVisible) {
               if (this.bypassAnswerCount >= 3) return;
-              // Bypass Permissions defaults to exit. Move to accept, then confirm.
+              // The bypass gate defaults to "No, exit", so Down+Enter is required.
+              // This branch runs before folder trust detection, making bare Enter
+              // structurally unreachable while any bypass marker is visible.
               this.pty.write('\x1b[B\r');
               this.bypassAnswerCount += 1;
-              this.promptAnswerSent = true;
-              this.promptOutputCursor = this.outputBuffer.createSafeCursor();
               return;
             }
             const trustGateVisible =
@@ -284,8 +277,6 @@ export class AgentPTY {
             if (trustGateVisible) {
               // Folder trust defaults to accept. Down+Enter would select exit here.
               this.pty.write('\r');
-              this.promptAnswerSent = true;
-              this.promptOutputCursor = this.outputBuffer.createSafeCursor();
             }
           } catch {
             // PTY torn down between the alive check and the write. Ignore it.
@@ -313,22 +304,12 @@ export class AgentPTY {
   }
 
   /**
-   * Whether the binary this PTY will spawn is Claude Code. Derived from
-   * getBinaryName() -- the same value that decides what actually spawns -- so
-   * runtimes that override the binary (Hermes -> 'hermes', OpenCode ->
-   * 'opencode') and vendor adapters that spawn codex/gemini are excluded
-   * automatically, with no per-subclass opt-out to forget.
-   *
-   * Gates BOTH Claude-only spawn behaviors:
-   *   1. the claude-preflight config writes (~/.claude.json folder trust,
-   *      ~/.claude/settings.json bypass-prompt suppression), and
-   *   2. the trust/bypass prompt auto-accept timers, whose loose substring
-   *      match must never fire a stray keypress into a non-Claude TUI
-   *      (the hazard HermesPTY previously opted out of by override).
+   * Whether this runtime shows a "trust this folder?" prompt that the
+   * daemon should auto-accept. Claude Code does; Hermes does not
+   * (HermesPTY overrides this to return false).
    */
-  protected isClaudeCodeRuntime(): boolean {
-    const binary = basename(this.getBinaryName()).toLowerCase();
-    return binary === 'claude' || binary === 'claude.cmd' || binary === 'claude.exe';
+  protected needsTrustPromptAutoAccept(): boolean {
+    return true;
   }
 
   private clearTrustPromptTimers(): void {
@@ -378,13 +359,9 @@ export class AgentPTY {
    * Protected so HermesPTY can override this for its own spawn args.
    * Default delegates to the configured vendor adapter (anthropic by default).
    */
-  protected buildClaudeArgs(
-    mode: 'fresh' | 'continue',
-    prompt: string,
-    config: AgentConfig = this.config,
-  ): string[] {
-    const adapter = loadAdapter(config.vendor);
-    return adapter.buildArgs(mode, prompt, { config, env: this.env });
+  protected buildClaudeArgs(mode: 'fresh' | 'continue', prompt: string): string[] {
+    const adapter = loadAdapter(this.config.vendor);
+    return adapter.buildArgs(mode, prompt, { config: this.config, env: this.env });
   }
 
   /**

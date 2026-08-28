@@ -117,7 +117,7 @@ describe('AgentManager pending restart instrumentation', () => {
     await manager.stopAgent('alice');
 
     expect(startSpy).toHaveBeenCalledTimes(1);
-    expect(startSpy).toHaveBeenCalledWith('alice', '');
+    expect(startSpy).toHaveBeenCalledWith('alice', '', undefined, undefined, {});
     expect((manager as any).pendingRestarts.has('alice')).toBe(false);
     expect(eventMeta('pending_restart_consumed')).toMatchObject({
       agent: 'alice',

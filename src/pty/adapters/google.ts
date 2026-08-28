@@ -1,5 +1,5 @@
 // Gemini CLI vendor adapter — migration step #3 of multi-model adapter MVP.
-// Sources: your org internal docs §4 + CAO
+// Sources: internal design docs §4 + CAO
 // gemini_cli.py reference (~/cortextos-reference/cli-agent-orchestrator).
 //
 // Constants per delta doc §4 + CAO patterns:

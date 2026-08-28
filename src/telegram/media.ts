@@ -37,7 +37,15 @@ export function sanitizeFilename(name: string | null | undefined): string {
   // Ensure non-empty
   if (!sanitized) return 'unnamed_file';
   // Limit length
-  return sanitized.slice(0, 200);
+  sanitized = sanitized.slice(0, 200);
+  if (
+    /^(?:claude|agents)(?:\.local)?\.md$/i.test(sanitized) ||
+    /^settings(?:\.local)?\.json$/i.test(sanitized) ||
+    /\.mdc$/i.test(sanitized)
+  ) {
+    return `incoming_${sanitized}.txt`;
+  }
+  return sanitized;
 }
 
 /**

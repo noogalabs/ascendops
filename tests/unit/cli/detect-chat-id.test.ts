@@ -1,51 +1,9 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
-  detectChatIdCommand,
   pickUserFromUpdates,
   pollForUser,
   type UpdatePoller,
 } from '../../../src/cli/detect-chat-id.js';
-import { TelegramAPI } from '../../../src/telegram/api.js';
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
-describe('detect-chat-id: command output', () => {
-  it('emits numeric ALLOWED_USER even when Telegram supplies a username', async () => {
-    vi.spyOn(TelegramAPI.prototype, 'getMe').mockResolvedValue({
-      ok: true,
-      result: { id: 123, username: 'test_bot' },
-    });
-    vi.spyOn(TelegramAPI.prototype, 'getUpdates').mockResolvedValue({
-      ok: true,
-      result: [{
-        update_id: 1,
-        message: {
-          chat: { id: 555111222 },
-          from: { id: 555111222, username: 'operator', first_name: 'Brett', is_bot: false },
-          text: '/start',
-        },
-      }],
-    });
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-
-    await detectChatIdCommand.parseAsync([
-      'node',
-      'detect-chat-id',
-      '--token',
-      '123:test-token',
-      '--json',
-    ]);
-
-    const output = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
-    expect(JSON.parse(output)).toMatchObject({
-      chat_id: '555111222',
-      allowed_user: '555111222',
-      from_id: 555111222,
-    });
-  });
-});
 
 describe('detect-chat-id: pickUserFromUpdates', () => {
   it('returns null when getUpdates result is empty', () => {

@@ -139,7 +139,7 @@ function makeActivationFixture(kind: 'ordinary' | 'shared-symlink' | 'cross-agen
   }, null, 2));
   execFileSync('git', ['-C', frameworkRoot, 'add', source, registry]);
   execFileSync('git', [
-    '-C', frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture.invalid',
+    '-C', frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
     'commit', '-qm', 'fixture source and registry',
   ]);
   if (kind === 'ordinary') {
@@ -168,7 +168,7 @@ function makeActivationFixture(kind: 'ordinary' | 'shared-symlink' | 'cross-agen
 function activate(fixture: ActivationFixture, extraArgs: string[] = [], runtime = fixture.alphaRuntime) {
   return run([
     'activate', '--from', fixture.source, '--runtime', runtime,
-    '--gate-approved-by', 'coordinator', '--registry', fixture.registry,
+    '--gate-approved-by', 'rex', '--registry', fixture.registry,
     '--root', fixture.orgRoot, '--population', 'acme.agents', ...extraArgs,
   ]);
 }
@@ -299,7 +299,7 @@ describe('forge-register activate fanout safety', () => {
     writeFileSync(fixture.registry, JSON.stringify(parsed, null, 2));
     execFileSync('git', ['-C', fixture.frameworkRoot, 'add', fixture.registry]);
     execFileSync('git', [
-      '-C', fixture.frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture.invalid',
+      '-C', fixture.frameworkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
       'commit', '-qm', 'reviewed registry count drift',
     ]);
     const before = readFileSync(join(fixture.alphaRuntime, 'stage-test-skill', 'SKILL.md'), 'utf8');
@@ -318,7 +318,7 @@ describe('forge-register activate fanout safety', () => {
     const before = readFileSync(join(fixture.alphaRuntime, 'stage-test-skill', 'SKILL.md'), 'utf8');
     const result = run([
       'activate', '--from', fixture.source, '--runtime', fixture.alphaRuntime,
-      '--gate-approved-by', 'coordinator',
+      '--gate-approved-by', 'rex',
     ]);
 
     expect(result.status).toBe(1);
@@ -334,7 +334,7 @@ describe('forge-register activate fanout safety', () => {
     const before = readFileSync(target, 'utf8');
     const result = run([
       'activate', '--from', fixture.source, '--runtime', runtimeAlias,
-      '--gate-approved-by', 'coordinator',
+      '--gate-approved-by', 'rex',
     ]);
 
     expect(result.status).toBe(1);
@@ -407,7 +407,7 @@ describe('forge-register activate fanout safety', () => {
     execFileSync('git', ['init', '-q', outsideRepo]);
     execFileSync('git', ['-C', outsideRepo, 'add', '.']);
     execFileSync('git', [
-      '-C', outsideRepo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture.invalid',
+      '-C', outsideRepo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
       'commit', '-qm', 'outside reviewed source',
     ]);
     rmSync(fixture.source, { recursive: true });

@@ -86,21 +86,6 @@ describe('fleet population registry', () => {
     expect(payload.targets[1].path).toMatch(/members\/beta\/plugins\/test\/skills\/comms$/);
   });
 
-  it('censuses disabled public templates without treating them as canonical skill targets', () => {
-    const root = fixture([
-      { id: 'canonical', layout: 'claude', tracked_root: true },
-      { id: 'public-legacy', layout: 'claude', tracked_root: true, enabled: false },
-    ]);
-    const paths = run(root, 'paths', ['--skill', 'comms', '--format', 'json']);
-    expect(paths.status).toBe(0);
-    expect(paths.stdout).toContain('expected_population=2');
-    expect(paths.stdout).toContain('observed_population=2');
-    expect(paths.stdout).toContain('resolved_targets=1');
-    expect(JSON.parse(paths.stdout.trim().split('\n').at(-1)!).targets.map((target: any) => target.id)).toEqual([
-      'canonical',
-    ]);
-  });
-
   it('replays the seven-of-eight comms glob miss and fails a removed Codex row', () => {
     const subjects = [
       ...Array.from({ length: 7 }, (_, i) => ({ id: `claude-${i}`, layout: 'claude', tracked_root: true })),

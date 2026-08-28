@@ -93,6 +93,21 @@ OPERATOR_USER_HASHES = {
     "9340b5cf49befaf0830f1e2522026800f5f1e5a7508291e8ff8a9d8306c923b6",
 }
 ALLOWED_LINE_HASHES = {
+    # Member-refresh 2026-08-28 refinements (proven-legitimate framework content):
+    # SKILL_PR_TARGET_GIT_KEY is a git-config KEY NAME ("cortextos.skillPrTarget"),
+    # not a credential value — the "credential assignment" heuristic false-positives
+    # on the *_KEY suffix.
+    "scripts/install-skill-pr-target.mjs": {
+        "13a5d1e56785f3243f07509e06622ed53bcb47457e39295ee39a9469d7222022",
+    },
+    "src/bus/skill-pr-target.ts": {
+        "13a5d1e56785f3243f07509e06622ed53bcb47457e39295ee39a9469d7222022",
+    },
+    # SECRET_VALUE_CANARY is the redaction-test canary that PROVES the redactor
+    # strips api_key values; it is a fixture literal, never a real secret.
+    "tests/unit/lifecycle/legacy-status.test.ts": {
+        "ee6c410fb40e4b16c7b9060638bddfc4182312dd4bf82f1c7cceae37a917db31",
+    },
     # Synthetic operator-path fixtures. Exact-line hashes prevent broader
     # allowlisting from hiding a real path elsewhere in the same file.
     "tests/sprint7-environment.test.ts": {
@@ -100,6 +115,11 @@ ALLOWED_LINE_HASHES = {
         "50da89263ffc4359719ef1dbb7a13a915b5d5a5ac4984066908b780be5649b42",
     },
     "tests/unit/cli/send-telegram-normalize.test.ts": {
+        # Member-refresh 2026-08-28: synthetic BOT_TOKEN values written to a
+        # temp .env to exercise env parsing; obviously non-secret fixtures.
+        "2553514deff6108203a58d9477b1dda01d890f65c5b1959f9a90716d8568f01d",
+        "a202d249561792d6415dd8ad1537cded760587366ead940171bda59e9c325a41",
+        "36a28e757b48eda803aaf8afffc78f9d9ce6c15a97a8ede9efa1eee17b6e30aa",
         "eaa65f4f4413302e9700dcd83b397fc49d717e76485401596a1c72b91a41d4fe",
         "00bb1357ce68a0ad0e852d76725d7fdcfc1c9c7895c904a43ad8758298f59921",
         "6ccae987323370a6f7099da7473071f8d0d3fa99a26814cc9705824457019b8d",
@@ -181,6 +201,12 @@ PUBLISHED_SUPPORT_IDENTIFIER_HASHES = {
 # value requires owner review and a reason in the change that introduced it.
 ALLOWED_PII_HASHES = {
     "email address": {
+        # Member-refresh 2026-08-28: legitimate test-fixture emails on the
+        # RFC-2606 reserved example.com domain (no real mailbox). Exact-value
+        # hashes so a real address cannot ride the same allowance.
+        "cf433b35f6f1e6d019b6f6ede66e64d47c54059d5aef3b6eb2564351840aae14",  # fixture@example.com
+        "8172a023f8733c1c6377deccd97aefc669393f2a8f077b5bee2d1682d9bc307e",  # private@example.com
+        "973dfe463ec85785f5f95af5ba3906eedb2d931c24e69824a89ea65dba4e813b",  # test@example.com
         "2ebf2e2f8386685e7506603bffba167ad7f3fe15b315abeed8bdb48039ff1206",
         "b5b6d07d472034a2c72c1ae6ca3fab6c2016930172ea8350171d6341b17e369d",
         "6b583232e99af45c3b436798f32800a4dd6f3524624ba6507ed8269b53ce82a3",

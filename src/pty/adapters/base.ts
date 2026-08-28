@@ -16,7 +16,7 @@ export interface VendorAdapter {
 
 import { anthropicAdapter } from './anthropic.js';
 import { openaiAdapter } from './openai.js';
-// added 2026-04-29 via internal dispatch — Task 2: Gemini skeleton wired into the factory
+// Task 2: Gemini skeleton wired into the factory
 import { googleAdapter } from './google.js';
 
 export function loadAdapter(vendor: string | undefined): VendorAdapter {

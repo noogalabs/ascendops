@@ -17,6 +17,7 @@ import { readFileSync, appendFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { loadEnv, readStdin } from './index.js';
 
+import { hookBootstrap } from './bootstrap.js';
 interface PreCompactPayload {
   session_id?: string;
   summary?: string;
@@ -70,6 +71,12 @@ export function extractKeywords(text: string): string[] {
 }
 
 async function main(): Promise<void> {
+  // PROCESS LINEAGE IS NOT INTENT — see bootstrap.ts.
+  // main() is invoked at module scope below, so importing a hook module runs
+  // hookBootstrap(). Shared validators live in skill-validators.ts specifically
+  // so bus code never imports a hook module merely to reuse its exports; that
+  // extraction, not main() placement, fixed the credential-loss regression.
+  hookBootstrap();
   const env = loadEnv();
 
   try {

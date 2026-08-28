@@ -21,11 +21,16 @@ const mockUpdateCron = vi.fn();
 // keep working.  Tests that need to assert the corruption path can override
 // with mockReadCronsWithStatus.mockReturnValueOnce({ crons: [...], corrupt: true }).
 const mockReadCronsWithStatus = vi.fn();
+// cronsFileMtimeMs backs the tick loop's durable-edit detection.  Existing
+// tests keep a constant mtime (set in beforeEach) so they never spuriously
+// reload; tick-reload tests drive this to simulate crons.json edits.
+const mockCronsFileMtimeMs = vi.fn();
 
 vi.mock('../../../src/bus/crons.js', () => ({
   readCrons:  (...args: unknown[]) => mockReadCrons(...args),
   readCronsWithStatus: (...args: unknown[]) => mockReadCronsWithStatus(...args),
   updateCron: (...args: unknown[]) => mockUpdateCron(...args),
+  cronsFileMtimeMs: (...args: unknown[]) => mockCronsFileMtimeMs(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -187,12 +192,16 @@ describe('CronScheduler', () => {
     mockReadCrons.mockReset();
     mockUpdateCron.mockReset();
     mockReadCronsWithStatus.mockReset();
+    mockCronsFileMtimeMs.mockReset();
     // Default: readCronsWithStatus reflects whatever readCrons returns
     // and reports the file as healthy (corrupt: false).
     mockReadCronsWithStatus.mockImplementation((agent: string) => ({
       crons: mockReadCrons(agent) ?? [],
       corrupt: false,
     }));
+    // Default: a stable crons.json mtime so existing tests never trigger the
+    // tick loop's durable-edit reload.
+    mockCronsFileMtimeMs.mockReturnValue(1000);
 
     scheduler = new CronScheduler({
       agentName: 'test-agent',
@@ -460,6 +469,70 @@ describe('CronScheduler', () => {
     const afterReload = scheduler.getNextFireTimes().find(e => e.name === 'stable');
     expect(afterReload).toBeDefined();
     expect(afterReload!.nextFireAt).toBe(beforeReload!.nextFireAt);
+  });
+
+  // -------------------------------------------------------------------------
+  // THE WEDGE: a mid-fire reload must not orphan the firing entry
+  //
+  // Written to FAIL against the previous guard order. `changeKeyFor` is
+  // `name|schedule` ONLY, so a PROMPT-only edit leaves the key unchanged and
+  // used to take the copy path before the firing guard was reached:
+  //
+  //   the copy path builds a NEW entry object and puts it in the map while the
+  //   in-flight fire holds a reference to the OLD one — so the fire's
+  //   `firing = false` at completion lands on an orphan, and the entry in the
+  //   map stays `firing: true` forever. `tick()` skips it from then on.
+  //
+  // The cron never fires again until the daemon restarts, and it fails SILENTLY:
+  // on a scheduler, a cron that stopped firing looks exactly like a cron with
+  // nothing to do.
+  // -------------------------------------------------------------------------
+
+  it('WEDGE: a prompt-only reload DURING a fire does not stop the cron firing again', async () => {
+    scheduler.stop();
+    let releaseFire: (() => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const fireStarted = new Promise<void>((r) => { markStarted = r; });
+
+    scheduler = new CronScheduler({
+      agentName: 'test-agent',
+      onFire: async (cron) => {
+        fired.push(cron);
+        markStarted?.();
+        // Hold the fire open so the reload lands while `firing === true`.
+        await new Promise<void>((r) => { releaseFire = r; });
+      },
+      logger: (msg) => { logs.push(msg); },
+    });
+
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'wedgeable', schedule: '1m', prompt: 'original' }),
+    ]);
+    scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    await fireStarted;
+    expect(fired).toHaveLength(1);
+
+    // PROMPT-ONLY edit: same name, same schedule, so the change key is IDENTICAL
+    // and the unchanged-key copy path is what would run first under the old order.
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'wedgeable', schedule: '1m', prompt: 'edited mid-fire' }),
+    ]);
+    scheduler.reload();
+
+    // Let the fire finish. Its `firing = false` must land on the entry that is
+    // actually in the map, not on a copy replaced underneath it.
+    releaseFire?.();
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    // THE ASSERTION THAT MATTERS: the cron is still alive. Under the previous
+    // ordering this stays at 1 forever.
+    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    expect(
+      fired.length,
+      'a prompt edit during a fire must not wedge the cron permanently',
+    ).toBeGreaterThan(1);
   });
 
   it('uses the latest cron prompt from crons.json at fire time without reload()', async () => {
@@ -883,13 +956,200 @@ describe('CronScheduler', () => {
     expect(names).toContain('b');
     expect(names).not.toContain('c'); // disabled, not scheduled
   });
+
+  // -------------------------------------------------------------------------
+  // Tick-loop crons.json mtime reload (fix/cron-scheduler-tick-reload)
+  //
+  // A durable crons.json edit must take effect even when the IPC reload-crons
+  // signal never arrives: the tick loop stats crons.json every 30s and reloads
+  // when the mtime differs from the last LOADED mtime.
+  // -------------------------------------------------------------------------
+
+  it('(a) durable crons.json edit with no IPC is picked up on the next tick', async () => {
+    mockReadCrons.mockReturnValue([makeCron({ name: 'base', schedule: '1h' })]);
+    mockCronsFileMtimeMs.mockReturnValue(1000);
+    scheduler.start();
+    expect(scheduler.getNextFireTimes().map(e => e.name)).not.toContain('added');
+
+    // Durable edit: a new cron appears in crons.json and the file mtime advances.
+    // No reload() is called — the tick loop must detect the mtime change itself.
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'base', schedule: '1h' }),
+      makeCron({ name: 'added', schedule: '1m' }),
+    ]);
+    mockCronsFileMtimeMs.mockReturnValue(2000);
+
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(scheduler.getNextFireTimes().map(e => e.name)).toContain('added');
+
+    // And the newly added cron actually fires once it becomes due.
+    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    expect(fired.map(c => c.name)).toContain('added');
+  });
+
+  it('(b) no reload when crons.json mtime is unchanged (no-fire case)', async () => {
+    // Scoped to the no-fire case: the cron never becomes due, so the only
+    // loadCrons call is start()'s.  The post-fire reload path is covered by (f).
+    mockReadCrons.mockReturnValue([makeCron({ name: 'idle', schedule: '1h' })]);
+    mockCronsFileMtimeMs.mockReturnValue(1000);
+    scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(5 * TICK);
+
+    expect(mockReadCronsWithStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('(c) mid-fire mtime reload does not double-fire', async () => {
+    let resolveFire: (() => void) | undefined;
+    const slowFire = vi.fn().mockImplementation(() => new Promise<void>((res) => { resolveFire = res; }));
+
+    const midScheduler = new CronScheduler({
+      agentName: 'test-agent',
+      onFire: slowFire,
+      logger: (msg) => logs.push(msg),
+    });
+
+    const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'racy', schedule: '10m', last_fired_at: tenMinAgo, fire_count: 1 }),
+    ]);
+    mockCronsFileMtimeMs.mockReturnValue(1000);
+
+    midScheduler.start();
+
+    // Catch-up fire begins, awaiting slowFire (firing === true).
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(slowFire).toHaveBeenCalledTimes(1);
+
+    // Durable edit lands mid-fire: mtime advances and the schedule changes.
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'racy', schedule: '1m', last_fired_at: tenMinAgo, fire_count: 1 }),
+    ]);
+    mockCronsFileMtimeMs.mockReturnValue(2000);
+
+    // Tick triggers the mtime reload; the reload-while-firing guard preserves
+    // the in-flight cron rather than rebuilding it from stale disk state.
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    // Resolve the fire and let further ticks run.
+    resolveFire!();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    expect(slowFire).toHaveBeenCalledTimes(1);
+    midScheduler.stop();
+  });
+
+  it('(d) crons.json absent / stat failure does not crash the tick and does not reload', async () => {
+    mockReadCrons.mockReturnValue([makeCron({ name: 'steady', schedule: '1m' })]);
+    mockCronsFileMtimeMs.mockReturnValue(1000);
+    scheduler.start();
+
+    // Stat now fails / file absent → null, treated as "no change".
+    mockCronsFileMtimeMs.mockReturnValue(null);
+
+    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+
+    // No mtime reload: start() loads once and the private fire-time refresh
+    // reads once immediately before dispatch.
+    expect(mockReadCronsWithStatus).toHaveBeenCalledTimes(2);
+    // The scheduled cron still behaves normally.
+    expect(fired.map(c => c.name)).toContain('steady');
+  });
+
+  it('(e) explicit IPC reload keeps the tracked mtime in sync (no redundant tick reload)', async () => {
+    mockReadCrons.mockReturnValue([makeCron({ name: 'one', schedule: '1h' })]);
+    mockCronsFileMtimeMs.mockReturnValue(1000);
+    scheduler.start();
+    expect(mockReadCronsWithStatus).toHaveBeenCalledTimes(1);
+
+    // Durable edit + explicit IPC reload (reload() → loadCrons updates the
+    // tracked mtime to the new value).
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'one', schedule: '1h' }),
+      makeCron({ name: 'two', schedule: '1h' }),
+    ]);
+    mockCronsFileMtimeMs.mockReturnValue(2000);
+    scheduler.reload();
+    expect(mockReadCronsWithStatus).toHaveBeenCalledTimes(2);
+
+    // Tick with mtime still 2000 must NOT trigger a second reload.
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(mockReadCronsWithStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('(f) post-fire reload happens once and does not double-fire', async () => {
+    const twoMinAgo = new Date(Date.now() - 2 * 60_000).toISOString();
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'job', schedule: '1m', last_fired_at: twoMinAgo, fire_count: 1 }),
+    ]);
+    mockCronsFileMtimeMs.mockReturnValue(1000);
+    scheduler.start();
+
+    // Catch-up fire on the first tick.
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(fired.filter(c => c.name === 'job')).toHaveLength(1);
+
+    const loadsBefore = mockReadCronsWithStatus.mock.calls.length;
+
+    // tick's own updateCron bookkeeping advanced the file mtime (updateCron is
+    // mocked and does not move the mocked mtime, so we simulate it). Contents
+    // are UNCHANGED.
+    mockCronsFileMtimeMs.mockReturnValue(2000);
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    // A reload happened...
+    expect(mockReadCronsWithStatus.mock.calls.length).toBe(loadsBefore + 1);
+    // ...but the cron did not double-fire (nextFireAt preserved for the
+    // unchanged changeKey).
+    expect(fired.filter(c => c.name === 'job')).toHaveLength(1);
+  });
+
+  it('(g) external edit across a fire is applied and logged (suppression never hides a real edit)', async () => {
+    const twoMinAgo = new Date(Date.now() - 2 * 60_000).toISOString();
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'job', schedule: '1m', last_fired_at: twoMinAgo, fire_count: 1 }),
+    ]);
+    mockCronsFileMtimeMs.mockReturnValue(1000);
+    scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(fired.filter(c => c.name === 'job')).toHaveLength(1);
+
+    const beforeReload = scheduler.getNextFireTimes().find(e => e.name === 'job');
+    expect(beforeReload).toBeDefined();
+    const logsBefore = logs.length;
+
+    // Same as (f) but the file contents genuinely change (schedule 1m → 5m):
+    // changeKey differs, so this is a REAL edit that must not be suppressed.
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'job', schedule: '5m' }),
+    ]);
+    mockCronsFileMtimeMs.mockReturnValue(2000);
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    // Modified schedule applied (nextFireAt recomputed for the new changeKey)...
+    const afterReload = scheduler.getNextFireTimes().find(e => e.name === 'job');
+    expect(afterReload).toBeDefined();
+    expect(afterReload!.nextFireAt).not.toBe(beforeReload!.nextFireAt);
+    // ...and the reload IS announced because the schedule changed.
+    const newLogs = logs.slice(logsBefore);
+    expect(newLogs.some(l => l.includes('reloaded') && l.includes('cron(s) active'))).toBe(true);
+  });
 });
 
-describe('getCronDefinition accessor', () => {
-  it('returns null rather than undefined for a missing cron', async () => {
+describe('getCronDefinition — the fallback lookup must actually resolve', () => {
+  it('returns the live definition for a scheduled cron, not undefined', async () => {
+    // Regression guard. The side-run fallback path originally looked for a
+    // `definition` field on getNextFireTimes() output, which does not have one.
+    // It resolved to null on every call, so the fallback would have injected
+    // nothing while logging itself as handled — a skipped check wearing a pass.
     const { CronScheduler } = await import('../../../src/daemon/cron-scheduler.js');
     const s = new CronScheduler({ agentName: '__no_such_agent__', onFire: () => {} });
+    // No crons loaded for a nonexistent agent, so the contract under test is
+    // that a miss returns null rather than throwing or returning undefined.
     expect(s.getCronDefinition('anything')).toBeNull();
+    // And the shape getNextFireTimes returns must NOT be mistaken for a definition.
     for (const row of s.getNextFireTimes()) {
       expect(row).not.toHaveProperty('definition');
     }
