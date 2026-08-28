@@ -36,6 +36,7 @@ import {
 } from './agent-discovery.js';
 import { resolveCodexCronRouting } from './cron-model-routing.js';
 import { resolveSideRunRouting, resolveSideRunResolution, buildEscalationInjection, type ELIGIBLE } from './cron-side-run.js';
+import { BuzzRelayClient, BuzzDispatcher, formatBuzzInboxMessage, loadBuzzConfig, type NostrEvent } from '../buzz/index.js';
 import {
   writePendingSlot,
   startSideRun,
@@ -110,7 +111,7 @@ export function cronWakesForEmergencyClass(
   return allowed.some((a) => typeof a === 'string' && a.trim().toLowerCase() === want);
 }
 
-type AgentEntry = { process: AgentProcess; checker: FastChecker; stopped?: boolean; poller?: TelegramPoller; activityPoller?: TelegramPoller; slackListener?: SlackSocketListener; telegramRejectCount?: number; telegramLastRejectAlertAt?: number };
+type AgentEntry = { process: AgentProcess; checker: FastChecker; stopped?: boolean; poller?: TelegramPoller; activityPoller?: TelegramPoller; slackListener?: SlackSocketListener; buzzOrg?: string; telegramRejectCount?: number; telegramLastRejectAlertAt?: number };
 
 export class AgentManager {
   private agents: Map<string, AgentEntry> = new Map();
@@ -119,6 +120,14 @@ export class AgentManager {
    * token silently LOSE messages — detected at listener start, warned loudly. */
   private slackAppTokenOwners: Map<string, string> = new Map();
   private workers: Map<string, WorkerProcess> = new Map();
+  private buzzClients = new Map<string, {
+    client: BuzzRelayClient;
+    dispatcher: BuzzDispatcher;
+    relayUrl: string;
+    /** Single injected org authentication identity; every agent must match it. */
+    authPubkey: string;
+    started: boolean;
+  }>();
   /** Daemon-level cron scheduler registry: one CronScheduler per enabled agent. */
   private cronSchedulers: Map<string, CronScheduler> = new Map();
   /** Post-fire verifier that confirms Claude cron prompts reached the REPL transcript. */
@@ -1121,6 +1130,12 @@ export class AgentManager {
         try { stale.poller?.stop(); } catch { /* best effort */ }
         try { stale.activityPoller?.stop(); } catch { /* best effort */ }
         try { stale.slackListener?.stop(); } catch { /* best effort */ }
+        // Mirror stopAgent's Buzz teardown (post-merge P1): eviction is the
+        // OTHER path an entry leaves the registry by, and a stale dispatcher
+        // registration would keep routing events for a dead agent.
+        try {
+          if (stale.buzzOrg) this.buzzClients.get(stale.buzzOrg)?.dispatcher.unregister(name);
+        } catch { /* best effort */ }
         this.cronNoopDetector.cancelAgentVerifications(name);
         try { stale.checker.stop(); } catch { /* best effort */ }
         try { await stale.process.stop(); } catch { /* best effort */ }
@@ -1808,8 +1823,60 @@ export class AgentManager {
       await this.maybeStartActivityChannelPoller(name, resolvedOrg, agentDir, log);
     }
 
+    try {
+      await this.maybeRegisterBuzzAgent(name, resolvedOrg, agentDir, log);
+    } catch (err) {
+      log(`Buzz registration failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
+  private async maybeRegisterBuzzAgent(name: string, org: string, agentDir: string, log: LogFn): Promise<void> {
+    const config = loadBuzzConfig(agentDir);
+    if (!config) return;
+    const relayUrl = config.relay_url || process.env.BUZZ_RELAY_URL;
+    if (!relayUrl) {
+      log('Buzz configured but no injected relay URL is available; skipping');
+      return;
+    }
+
+    let entry = this.buzzClients.get(org);
+    if (!entry) {
+      const dispatcher = new BuzzDispatcher();
+      const client = new BuzzRelayClient(relayUrl, config.secret_key, (message) => log(`[buzz] ${message}`));
+      client.onMessage(async (channelId: string, event: NostrEvent) => {
+        await dispatcher.deliver(channelId, event, (target) => {
+          const targetOrg = this.resolveAgentOrg(target.agentName, org);
+          const targetPaths = resolvePaths(target.agentName, this.instanceId, targetOrg);
+          return sendMessage(targetPaths, 'daemon', target.agentName, 'normal', formatBuzzInboxMessage(target));
+        }, (message) => log(`[buzz] ${message}`));
+      });
+      entry = {
+        client,
+        dispatcher,
+        relayUrl,
+        authPubkey: config.pubkey.toLowerCase(),
+        started: false,
+      };
+      this.buzzClients.set(org, entry);
+    } else if (entry.relayUrl !== relayUrl) {
+      throw new Error(`org ${org} Buzz relay URL conflicts with the existing shared connection`);
+    } else if (entry.authPubkey !== config.pubkey.toLowerCase()) {
+      throw new Error(`org ${org} Buzz auth identity conflicts with the existing shared connection`);
+    }
+
+    entry.dispatcher.register(name, config);
+    entry.client.subscribeChannels(entry.dispatcher.allChannels());
+    const agentEntry = this.agents.get(name);
+    if (agentEntry) agentEntry.buzzOrg = org;
+
+    if (!entry.started) {
+      entry.started = true;
+      entry.client.start().catch((err) => {
+        log(`Buzz relay client wrapper crashed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+    log(`Buzz registered for org ${org} (channels: ${config.channels.join(', ') || 'none'})`);
+  }
 
   /**
    * If this agent is the org's orchestrator AND the org has an
@@ -1947,6 +2014,7 @@ export class AgentManager {
     if (entry.poller) entry.poller.stop();
     if (entry.activityPoller) entry.activityPoller.stop();
     if (entry.slackListener) entry.slackListener.stop();
+    if (entry.buzzOrg) this.buzzClients.get(entry.buzzOrg)?.dispatcher.unregister(name);
     releaseSlackAppTokens(this.slackAppTokenOwners, name);
     this.cronNoopDetector.cancelAgentVerifications(name);
     entry.checker.stop();
@@ -2094,6 +2162,12 @@ export class AgentManager {
         console.error(`[agent-manager] Error stopping ${name}:`, err);
       }
     }
+    for (const [org, entry] of this.buzzClients) {
+      try { entry.client.stop(); } catch (err) {
+        console.error(`[agent-manager] Error stopping Buzz relay client for org ${org}:`, err);
+      }
+    }
+    this.buzzClients.clear();
   }
 
   /**
