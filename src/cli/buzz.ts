@@ -65,7 +65,7 @@ async function connectAndAuthenticate(relayUrl: string, secretKey: string): Prom
   // Fail loud with a clear runtime requirement rather than a bare
   // ReferenceError: native WebSocket is unavailable on older Node.
   if (typeof WebSocket === 'undefined') {
-    throw new Error('native WebSocket not available — Buzz requires Node 20.10+. Upgrade Node to use Buzz.');
+    throw new Error('native WebSocket not available — Buzz requires Node 22+. Upgrade Node to use Buzz.');
   }
   const ws = new WebSocket(relayUrl);
 

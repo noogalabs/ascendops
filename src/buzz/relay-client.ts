@@ -131,7 +131,7 @@ export class BuzzRelayClient {
     // on every attempt and reconnect forever with Buzz silently offline. Gate
     // here before the loop, matching the Slack transport's convention.
     if (typeof WebSocket === 'undefined') {
-      this.log('WARN: native WebSocket not available — Buzz requires Node 20.10+; adapter inactive.');
+      this.log('WARN: native WebSocket not available — Buzz requires Node 22+; adapter inactive.');
       this.lastExitReason = 'websocket-unavailable';
       return;
     }
