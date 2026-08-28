@@ -41,18 +41,18 @@ You'll also need the channel UUID(s) the agent should listen on — ask the
 channel owner, or use `cortextos buzz discover-channels` (step 6) once
 credentials are in place.
 
-## 4. Scaffold the agent
+## 4. Create the agent and its `buzz.json`
+
+Create the agent normally:
 
 ```bash
-cortextos add-agent <name> --org <org> --buzz-channel <channel-uuid>
+cortextos add-agent <name> --org <org>
 ```
 
-This writes `orgs/<org>/agents/<name>/buzz.json` with the channel
-pre-filled and `pubkey` / `allowed_pubkeys` left blank/empty
-(fail-closed — an agent with an empty `allowed_pubkeys` accepts messages
-from **no one** until you explicitly grant access).
-
-Fill in `buzz.json`:
+Buzz is configured by a `buzz.json` you author yourself, at
+`orgs/<org>/agents/<name>/buzz.json`. It is fail-closed: an agent whose
+`allowed_pubkeys` is empty accepts messages from **no one** until you
+explicitly grant access. Create it with:
 
 ```json
 {

@@ -95,6 +95,45 @@ describe('BuzzRelayClient', () => {
     client.stop();
   });
 
+  it('a socket close BEFORE the AUTH challenge rejects the waiter and RECONNECTS (P1: was a suspended-promise hang)', async () => {
+    // Casualty for the fix: rejectAllPending() used to clear the auth-wait timer
+    // without settling waitForAuthChallenge()'s promise, so connectAndRun() hung
+    // forever and the reconnect loop died. Prove the aborted state converges: a
+    // close before any AUTH challenge must produce a SECOND connection attempt.
+    vi.useFakeTimers();
+    const client = new BuzzRelayClient('wss://relay.test', secretKey);
+    const startPromise = client.start();
+    await Promise.resolve();
+    await Promise.resolve();
+    const ws1 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    ws1.triggerOpen();
+    await Promise.resolve();
+    // Close before AUTH — the waiter must reject, not suspend forever.
+    ws1.close();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Advance past the reconnect backoff (INITIAL_BACKOFF_MS = 1000ms).
+    await vi.advanceTimersByTimeAsync(1_100);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+    client.stop();
+    void startPromise;
+  });
+
+  it('gates loudly and does NOT enter the reconnect loop when native WebSocket is unavailable (P1)', async () => {
+    const saved = (globalThis as any).WebSocket;
+    delete (globalThis as any).WebSocket;
+    try {
+      const client = new BuzzRelayClient('wss://relay.test', secretKey);
+      // start() must RETURN promptly rather than throw-and-retry-forever.
+      await client.start();
+      expect(FakeWebSocket.instances.length).toBe(0);
+    } finally {
+      (globalThis as any).WebSocket = saved;
+    }
+  });
+
   it('issues a REQ subscription for each subscribed channel after authentication', async () => {
     const client = new BuzzRelayClient('wss://relay.test', secretKey);
     client.subscribeChannels(['chan-1', 'chan-2']);
