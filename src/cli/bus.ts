@@ -1652,10 +1652,93 @@ busCommand
     const { SlackAPI } = await import('../slack/api.js');
     const api = new SlackAPI(slackToken);
     try {
-      await api.postMessage(channel, message);
+      await api.postMessage(channel, message, await resolveSlackDisplayIdentity(env));
       console.log(`Slack message sent to ${channel}`);
     } catch (err) {
       console.error(`Failed to send Slack message: ${err}`);
+      process.exit(1);
+    }
+  });
+
+/** D4 display identity from the agent's slack.json, when present — GATED.
+ * The persona gate is structural: only gateSlackDisplayIdentity can produce a
+ * value postMessage accepts, and it permits nothing but the agent's plain
+ * functional name (custom names/icons loudly suppressed) until the
+ * brand/persona review exists as an authority. */
+async function resolveSlackDisplayIdentity(
+  env: ReturnType<typeof resolveEnv>,
+): Promise<import('../slack/slack-routing.js').GatedDisplayIdentity | undefined> {
+  if (!env.frameworkRoot || !env.org || !env.agentName) return undefined;
+  const { resolveGatedDisplayIdentity } = await import('../slack/slack-routing.js');
+  return resolveGatedDisplayIdentity(env.frameworkRoot, env.org, env.agentName, (line) =>
+    console.error(line),
+  );
+}
+
+/** Shared Slack token resolution: agent .env first, then process env — the
+ * same flow as send-slack so all three commands act as the same identity. */
+function resolveSlackBotToken(env: ReturnType<typeof resolveEnv>): string {
+  if (env.agentDir) {
+    const { readFileSync, existsSync } = require('fs');
+    const { join } = require('path');
+    const agentEnv = join(env.agentDir, '.env');
+    if (existsSync(agentEnv)) {
+      const content = readFileSync(agentEnv, 'utf-8') as string;
+      const match = content.match(/^SLACK_BOT_TOKEN=(.+)$/m);
+      if (match?.[1]?.trim()) return match[1].trim();
+    }
+  }
+  return process.env.SLACK_BOT_TOKEN ?? '';
+}
+
+busCommand
+  .command('slack-test-send')
+  .description('Post a test message to a Slack channel and print the outcome (config verification aid)')
+  .argument('<channel>', 'Slack channel ID (e.g. C1234567890)')
+  .argument('[message]', 'Test message text', 'cortextos slack test message')
+  .action(async (channel: string, message: string) => {
+    const env = resolveEnv();
+    const slackToken = resolveSlackBotToken(env);
+    if (!slackToken) {
+      console.error('Error: SLACK_BOT_TOKEN not set (agent .env or environment).');
+      process.exit(1);
+    }
+    const { SlackAPI } = await import('../slack/api.js');
+    try {
+      await new SlackAPI(slackToken)
+        .postMessage(channel, message, await resolveSlackDisplayIdentity(env));
+      console.log(`OK: test message posted to ${channel}`);
+    } catch (err) {
+      // Unlike send-slack's soft-skip, a TEST send failing is the answer the
+      // operator asked for — exit nonzero with the API's reason.
+      console.error(`FAIL: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('slack-discover-channels')
+  .description('List Slack channels the bot is a member of, with ids (slack.json authoring aid)')
+  .option('--all', 'Include channels the bot is NOT a member of', false)
+  .action(async (opts: { all?: boolean }) => {
+    const env = resolveEnv();
+    const slackToken = resolveSlackBotToken(env);
+    if (!slackToken) {
+      console.error('Error: SLACK_BOT_TOKEN not set (agent .env or environment).');
+      process.exit(1);
+    }
+    const { SlackAPI } = await import('../slack/api.js');
+    try {
+      const channels = await new SlackAPI(slackToken).listChannels(!opts.all);
+      if (channels.length === 0) {
+        console.log(opts.all ? 'No channels visible to this bot.' : 'Bot is not a member of any channel. Invite it, or use --all to list visible channels.');
+        return;
+      }
+      for (const c of channels) {
+        console.log(`${c.id}\t${c.name}${c.isMember ? '' : '\t(not a member)'}`);
+      }
+    } catch (err) {
+      console.error(`FAIL: ${err instanceof Error ? err.message : err}`);
       process.exit(1);
     }
   });

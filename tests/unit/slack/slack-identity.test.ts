@@ -9,53 +9,53 @@ import {
 import type { TeamMember } from '../../../src/types/index.js';
 
 const TEAM: TeamMember[] = [
-  { name: 'Morgan Reed', role: 'Operations Manager', slack_handle: 'morgan.reed', trust_level: 'manager' },
-  { name: 'David Owner', role: 'Owner', slack_handle: '@David.Owner', trust_level: 'owner' },
+  { name: 'Maren Ellis', role: 'Operations Manager', slack_handle: 'maren.ellis', trust_level: 'manager' },
+  { name: 'Avery Owner', role: 'Owner', slack_handle: '@Avery.Owner', trust_level: 'owner' },
 ];
 
 describe('resolveSlackIdentity', () => {
   it('cache miss calls fetch and populates the cache', async () => {
     const fetch: SlackUserInfoFetcher = vi
       .fn()
-      .mockResolvedValue({ handle: 'morgan.reed', displayName: 'Morgan Reed' });
+      .mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     const cache = new Map<string, { handle: string | null; displayName: string }>();
 
     const id = await resolveSlackIdentity('U1', fetch, TEAM, cache);
 
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(cache.get('U1')).toEqual({ handle: 'morgan.reed', displayName: 'Morgan Reed' });
+    expect(cache.get('U1')).toEqual({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     expect(id).toEqual({
       userId: 'U1',
-      handle: 'morgan.reed',
-      displayName: 'Morgan Reed',
+      handle: 'maren.ellis',
+      displayName: 'Maren Ellis',
       trustLevel: 'manager',
     });
   });
 
   it('cache hit does NOT call fetch', async () => {
     const fetch = vi.fn() as unknown as SlackUserInfoFetcher;
-    const cache = new Map([['U1', { handle: 'morgan.reed', displayName: 'Morgan Reed' }]]);
+    const cache = new Map([['U1', { handle: 'maren.ellis', displayName: 'Maren Ellis' }]]);
 
     const id = await resolveSlackIdentity('U1', fetch, TEAM, cache);
 
     expect(fetch).not.toHaveBeenCalled();
-    expect(id.handle).toBe('morgan.reed');
+    expect(id.handle).toBe('maren.ellis');
     expect(id.trustLevel).toBe('manager');
   });
 
   it('resolves trustLevel from team_members case-insensitively', async () => {
     const fetch: SlackUserInfoFetcher = vi
       .fn()
-      .mockResolvedValue({ handle: 'MORGAN.REED', displayName: 'Morgan Reed' });
+      .mockResolvedValue({ handle: 'MAREN.ELLIS', displayName: 'Maren Ellis' });
     const id = await resolveSlackIdentity('U1', fetch, TEAM, new Map());
     expect(id.trustLevel).toBe('manager');
   });
 
   it('resolves trustLevel tolerating a leading @ on either side', async () => {
-    // member stored as '@David.Owner', fetched handle has no @ and different case
+    // member stored as '@Avery.Owner', fetched handle has no @ and different case
     const fetch: SlackUserInfoFetcher = vi
       .fn()
-      .mockResolvedValue({ handle: 'david.owner', displayName: 'David Owner' });
+      .mockResolvedValue({ handle: 'avery.owner', displayName: 'Avery Owner' });
     const id = await resolveSlackIdentity('U2', fetch, TEAM, new Map());
     expect(id.trustLevel).toBe('owner');
   });
@@ -72,7 +72,7 @@ describe('resolveSlackIdentity', () => {
   it('teamMembers undefined -> trustLevel null', async () => {
     const fetch: SlackUserInfoFetcher = vi
       .fn()
-      .mockResolvedValue({ handle: 'morgan.reed', displayName: 'Morgan Reed' });
+      .mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     const id = await resolveSlackIdentity('U1', fetch, undefined, new Map());
     expect(id.trustLevel).toBeNull();
   });
@@ -113,34 +113,34 @@ describe('evaluateSlackTrust', () => {
   });
 
   it('configured + handle in list -> allowed, no warning', () => {
-    expect(evaluateSlackTrust('morgan.reed', ['morgan.reed'])).toEqual({
+    expect(evaluateSlackTrust('maren.ellis', ['maren.ellis'])).toEqual({
       allowed: true,
       openWarning: false,
     });
   });
 
   it('configured + handle NOT in list -> blocked (fail-closed)', () => {
-    expect(evaluateSlackTrust('stranger', ['morgan.reed'])).toEqual({
+    expect(evaluateSlackTrust('stranger', ['maren.ellis'])).toEqual({
       allowed: false,
       openWarning: false,
     });
   });
 
   it('configured + handle null -> blocked', () => {
-    expect(evaluateSlackTrust(null, ['morgan.reed'])).toEqual({
+    expect(evaluateSlackTrust(null, ['maren.ellis'])).toEqual({
       allowed: false,
       openWarning: false,
     });
   });
 
   it('matches case-insensitively', () => {
-    expect(evaluateSlackTrust('Morgan.Reed', ['morgan.reed']).allowed).toBe(true);
-    expect(evaluateSlackTrust('morgan.reed', ['MORGAN.REED']).allowed).toBe(true);
+    expect(evaluateSlackTrust('Maren.Ellis', ['maren.ellis']).allowed).toBe(true);
+    expect(evaluateSlackTrust('maren.ellis', ['MAREN.ELLIS']).allowed).toBe(true);
   });
 
   it('tolerates a leading @ on either side', () => {
-    expect(evaluateSlackTrust('@morgan.reed', ['morgan.reed']).allowed).toBe(true);
-    expect(evaluateSlackTrust('morgan.reed', ['@morgan.reed']).allowed).toBe(true);
+    expect(evaluateSlackTrust('@maren.ellis', ['maren.ellis']).allowed).toBe(true);
+    expect(evaluateSlackTrust('maren.ellis', ['@maren.ellis']).allowed).toBe(true);
   });
 });
 
@@ -148,11 +148,11 @@ describe('formatSlackOriginator', () => {
   it('handle + trustLevel -> "Name (@handle, trust)"', () => {
     const id: SlackIdentity = {
       userId: 'U1',
-      handle: 'morgan.reed',
-      displayName: 'Morgan Reed',
+      handle: 'maren.ellis',
+      displayName: 'Maren Ellis',
       trustLevel: 'manager',
     };
-    expect(formatSlackOriginator(id)).toBe('Morgan Reed (@morgan.reed, manager)');
+    expect(formatSlackOriginator(id)).toBe('Maren Ellis (@maren.ellis, manager)');
   });
 
   it('handle only (no trustLevel) -> "Name (@handle)"', () => {

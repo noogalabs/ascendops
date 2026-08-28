@@ -10,6 +10,8 @@ import {
   evaluateSlackTrust,
   formatSlackOriginator,
 } from '../slack/slack-identity.js';
+import { evaluateSlackRoute, type SlackRoutingConfig } from '../slack/slack-routing.js';
+import { slackDedupKey } from '../slack/slack-dispatcher.js';
 import type { BusPaths, TeamMember } from '../types/index.js';
 
 export interface SlackSocketListenerOptions {
@@ -22,6 +24,13 @@ export interface SlackSocketListenerOptions {
   signingSecret?: string;
   trustedSlackUsers?: string[];
   teamMembers?: TeamMember[];
+  /**
+   * Per-agent slack.json routing (D1). When present the listener watches
+   * routing.allowed_channels and applies the fail-closed ROUTE GATE
+   * (channel + team-scoped composite sender) BEFORE trust enrichment.
+   * Absent = legacy single-channel `.env` behavior, byte-for-byte.
+   */
+  routing?: SlackRoutingConfig;
   /**
    * Invoked once when the Socket Mode client hits a PERMANENT auth failure
    * (invalid/revoked token — reconnection stopped). The daemon wires this to
@@ -49,6 +58,16 @@ export class SlackSocketListener {
   private readonly client: SlackSocketClient;
   private readonly trustedSlackUsers?: string[];
   private readonly teamMembers?: TeamMember[];
+  // D1 routing config (absent = legacy behavior).
+  private readonly routing?: SlackRoutingConfig;
+  // Workspace team id, resolved alongside the own-bot-user id via auth.test.
+  // Needed for the composite team:user route-gate key. null = lookup failed.
+  private ownTeamId: string | null | undefined = undefined;
+  // Per-listener (event, agent) dedup window for socket redeliveries
+  // (reconnect replay, duplicate frames). Bounded FIFO — see recordDelivered.
+  private readonly deliveredKeys = new Set<string>();
+  private readonly deliveredOrder: string[] = [];
+  private static readonly DEDUP_WINDOW_MAX = 500;
   // userId -> resolved identity; populated by resolveSlackIdentity on cache miss
   // so repeat senders never re-hit users.info.
   private readonly identityCache = new Map<
@@ -87,12 +106,16 @@ export class SlackSocketListener {
     this.trustedSlackUsers = opts.trustedSlackUsers;
     this.teamMembers = opts.teamMembers;
     this.onFatalAuthErrorOpt = opts.onFatalAuthError;
+    this.routing = opts.routing;
     this.slackApi = new SlackAPI(opts.botToken);
     this.client = new SlackSocketClient(
       {
         appToken: opts.appToken,
         botToken: opts.botToken,
         channelId: opts.channel,
+        // Routing mode watches every allowed channel; legacy mode keeps the
+        // single-channel filter untouched.
+        channelIds: opts.routing?.allowed_channels,
         signingSecret: opts.signingSecret,
       },
       (event) => this.handleMessage(event),
@@ -168,7 +191,16 @@ export class SlackSocketListener {
    */
   private async resolveOwnBotUserId(): Promise<void> {
     if (!this.ownBotUserIdInFlight) {
-      this.ownBotUserIdInFlight = this.slackApi.getBotUserId();
+      // Routing mode needs BOTH identities from one auth.test: own user id
+      // (self-echo guard) and team id (route-gate scope). The legacy path
+      // keeps calling getBotUserId exactly as before — its runtime surface is
+      // part of the byte-for-byte back-compat contract.
+      this.ownBotUserIdInFlight = this.routing
+        ? this.slackApi.getAuthIdentity().then((identity) => {
+            this.ownTeamId = identity?.teamId ?? null;
+            return identity?.userId ?? null;
+          })
+        : this.slackApi.getBotUserId();
     }
     const inFlight = this.ownBotUserIdInFlight;
     const resolved = await inFlight;
@@ -180,6 +212,26 @@ export class SlackSocketListener {
     this.ownBotUserId = resolved;
     if (resolved === null) {
       this.ownBotUserIdLastFailureAt = Date.now();
+    }
+  }
+
+  /**
+   * Keys RESERVED synchronously at the dedup check but not yet durably
+   * delivered. Without this, two copies of one envelope arriving close together
+   * both pass the `deliveredKeys` membership check before either finishes the
+   * awaited identity lookup and records its key — a TOCTOU double delivery. A
+   * reservation is released when its handling ends, so a FAILED write still
+   * leaves the window clear for a redelivery (spec §2.1c).
+   */
+  private pendingKeys = new Set<string>();
+
+  /** Bounded FIFO dedup window for (event, agent) keys. */
+  private recordDelivered(key: string): void {
+    this.deliveredKeys.add(key);
+    this.deliveredOrder.push(key);
+    while (this.deliveredOrder.length > SlackSocketListener.DEDUP_WINDOW_MAX) {
+      const evicted = this.deliveredOrder.shift();
+      if (evicted !== undefined) this.deliveredKeys.delete(evicted);
     }
   }
 
@@ -211,6 +263,56 @@ export class SlackSocketListener {
       return;
     }
 
+    // D1 ROUTE GATE (routing mode only): the first of two sequential identity
+    // filters — decides IF this agent receives the event at all. Fail-closed on
+    // every axis, including an unresolvable team id: a gate that cannot verify
+    // the workspace cannot admit.
+    let dedupKey: string | null = null;
+    if (this.routing) {
+      if (!this.ownTeamId) {
+        this.log(`Slack route gate: team id unresolved — event ${event.ts} in ${event.channel} DENIED (fail-closed)`);
+        return;
+      }
+      const decision = evaluateSlackRoute(this.routing, {
+        teamId: this.ownTeamId,
+        channel: event.channel ?? this.channel,
+        userId,
+      });
+      if (!decision.allowed) {
+        this.log(`Slack route gate DENIED (${decision.reason}): user ${userId} in ${event.channel ?? this.channel}, event ${event.ts}`);
+        return;
+      }
+      // (event, agent) dedup — socket redeliveries collapse per agent. The key
+      // is RESERVED here, synchronously, BEFORE any await: a concurrent second
+      // copy of the same envelope must lose this check, not race the identity
+      // lookup below (TOCTOU). The reservation is released in the finally.
+      const key = slackDedupKey(this.ownTeamId, event.channel ?? this.channel, event.ts, this.agentName);
+      if (this.deliveredKeys.has(key) || this.pendingKeys.has(key)) {
+        this.log(`Slack event ${event.ts} deduped for ${this.agentName} (already delivered or in flight)`);
+        return;
+      }
+      this.pendingKeys.add(key);
+      dedupKey = key;
+    }
+
+    try {
+      await this.deliverGatedMessage(event, userId, dedupKey);
+    } finally {
+      // Release the reservation whether delivery succeeded (the durable window
+      // now holds the key), was denied by the trust gate, or FAILED (the window
+      // stays clear so a redelivery can still land — spec §2.1c).
+      if (dedupKey !== null) this.pendingKeys.delete(dedupKey);
+    }
+  }
+
+  /** Post-gate delivery: identity enrichment, trust gate, durable inbox write.
+   * Split from handleMessage so the dedup reservation above has exactly one
+   * release point around everything that can await or throw. */
+  private async deliverGatedMessage(
+    event: SlackMessageEvent,
+    userId: string,
+    dedupKey: string | null,
+  ): Promise<void> {
     const identity = await resolveSlackIdentity(
       userId,
       (id) => this.slackApi.getUserInfo(id),
@@ -232,13 +334,21 @@ export class SlackSocketListener {
     // so interpolating event.text directly would render the literal string
     // "undefined" in the inbox body. Match the poll's empty-body behavior.
     const body = event.text ?? '';
+    // Routing mode reports the EVENT's channel (multi-channel listener);
+    // legacy mode keeps the configured channel — identical output, since the
+    // socket filter only passes this.channel there.
+    const eventChannel = this.routing ? (event.channel ?? this.channel) : this.channel;
     const inboxText =
-      `=== SLACK from ${from} (channel:${this.channel} ts:${event.ts}) ===\n` +
+      `=== SLACK from ${from} (channel:${eventChannel} ts:${event.ts}) ===\n` +
       `${body}\n` +
-      `Reply using: cortextos bus send-slack ${this.channel} "<reply>"`;
+      `Reply using: cortextos bus send-slack ${eventChannel} "<reply>"`;
 
     try {
       sendMessage(this.paths, 'fast-checker', this.agentName, 'normal', inboxText);
+      // Mark delivered only AFTER the durable write succeeded, so a thrown
+      // write leaves the key clear and a redelivery can still land (spec §2.1c).
+      // The key is the SAME reservation taken at the gate — never recomputed.
+      if (dedupKey !== null) this.recordDelivered(dedupKey);
     } catch (err) {
       this.log('Slack socket inbox write failed: ' + err);
     }

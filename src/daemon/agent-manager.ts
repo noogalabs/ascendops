@@ -6,6 +6,7 @@ import { AgentProcess, type AgentInjectionOptions, type AgentInjectionResult } f
 import { WorkerProcess } from './worker-process.js';
 import { FastChecker } from './fast-checker.js';
 import { SlackSocketListener } from './slack-socket-listener.js';
+import { loadSlackRoutingConfig, slackConfigPath, claimSlackAppToken, releaseSlackAppTokens, type SlackRoutingConfig } from '../slack/slack-routing.js';
 import { resolveSlackInboundMode } from './slack-inbound-mode.js';
 import { CronScheduler, type CronFireContext } from './cron-scheduler.js';
 import { syncCronsForAgent } from './cron-migration.js';
@@ -113,6 +114,10 @@ type AgentEntry = { process: AgentProcess; checker: FastChecker; stopped?: boole
 
 export class AgentManager {
   private agents: Map<string, AgentEntry> = new Map();
+  /** Socket Mode app-token ownership: appToken -> agent name. Slack splits an
+   * app's events across its open connections, so two agents sharing one app
+   * token silently LOSE messages — detected at listener start, warned loudly. */
+  private slackAppTokenOwners: Map<string, string> = new Map();
   private workers: Map<string, WorkerProcess> = new Map();
   /** Daemon-level cron scheduler registry: one CronScheduler per enabled agent. */
   private cronSchedulers: Map<string, CronScheduler> = new Map();
@@ -1257,12 +1262,14 @@ export class AgentManager {
           token: string;
           trustedSlackUsers?: string[];
           teamMembers?: TeamMember[];
+          routing?: SlackRoutingConfig;
         }
       | undefined;
     let slackSocketConfig: { channel: string; botToken: string; appToken: string } | undefined;
     // D1 routing config, loaded ONCE and shared by BOTH inbound consumers
     // (socket listener AND poll fallback) — hoisted so the listener
     // construction below reuses the same load instead of re-reading the file.
+    let agentSlackRouting: SlackRoutingConfig | null = null;
     if (config.slack_watch?.channel) {
       let slackBotToken = '';
       let slackAppToken = '';
@@ -1276,6 +1283,14 @@ export class AgentManager {
       }
       if (!slackBotToken) slackBotToken = process.env.SLACK_BOT_TOKEN ?? '';
       if (!slackAppToken) slackAppToken = process.env.SLACK_APP_TOKEN ?? '';
+
+      // The census rule: every ingress passes through the same route gate —
+      // an ungated fallback would be an unfenced consumer.
+      const slackJsonPathEarly = slackConfigPath(this.frameworkRoot, resolvedOrg, name);
+      agentSlackRouting = loadSlackRoutingConfig(this.frameworkRoot, resolvedOrg, name);
+      if (agentSlackRouting === null && existsSync(slackJsonPathEarly)) {
+        log(`WARNING: ${slackJsonPathEarly} exists but is malformed (unparseable JSON, or a field with the wrong shape — allowed_channels/allowed_users must be string arrays). Slack routing DISABLED for this agent — running in legacy single-channel mode. Fix the file and restart.`);
+      }
 
       // Socket Mode is primary ONLY when native WebSocket is available (Node 22+);
       // otherwise the poll stays live as the fallback so there is never a silent
@@ -1302,6 +1317,7 @@ export class AgentManager {
           token: decision.botToken,
           trustedSlackUsers: config.trusted_slack_users,
           teamMembers: config.team_members,
+          routing: agentSlackRouting ?? undefined,
         };
       } else {
         log(`Slack watch configured but ${decision.reason} in .env — skipping`);
@@ -1441,6 +1457,22 @@ export class AgentManager {
     if (slackSocketConfig) {
       // SHARED-APP DETECTION (PR313 Codex P1): Slack distributes an app's
       // event envelopes across its open Socket Mode connections — each event
+      // reaches ONE connection. Two agents on one app token therefore each
+      // receive a random SUBSET of events: silent message loss, not fan-out.
+      // The supported N:1 topology is one Slack app per agent (runbook §1).
+      // Warn loudly (log + operator Telegram) rather than refuse: an existing
+      // shared-token fleet keeps today's runtime behavior, but the loss mode
+      // is named where the operator will see it.
+      const conflictOwner = claimSlackAppToken(this.slackAppTokenOwners, slackSocketConfig.appToken, name);
+      if (conflictOwner !== null) {
+        const sharedAppAlert = `⚠️ SLACK SHARED APP TOKEN: agents '${conflictOwner}' and '${name}' are using the SAME Slack app token. Slack splits events across an app's connections, so EACH agent will receive only a random subset of messages (silent loss). Give each agent its own Slack app (see docs/architecture/slack-adapter-setup.md §1).`;
+        log(sharedAppAlert);
+        if (telegramApi && chatId) {
+          telegramApi.sendMessage(chatId, sharedAppAlert).catch(() => {
+            /* alert is best-effort; the log line above always lands */
+          });
+        }
+      }
       const slackListener = new SlackSocketListener({
         appToken: slackSocketConfig.appToken,
         botToken: slackSocketConfig.botToken,
@@ -1450,6 +1482,7 @@ export class AgentManager {
         log,
         trustedSlackUsers: config.trusted_slack_users,
         teamMembers: config.team_members,
+        routing: agentSlackRouting ?? undefined,
         // PERMANENT auth failure (invalid/revoked app token): the socket client
         // has STOPPED reconnecting — this never self-heals, so alert the
         // operator directly over Telegram (same mechanism as the ALLOWED_USER
@@ -1914,6 +1947,7 @@ export class AgentManager {
     if (entry.poller) entry.poller.stop();
     if (entry.activityPoller) entry.activityPoller.stop();
     if (entry.slackListener) entry.slackListener.stop();
+    releaseSlackAppTokens(this.slackAppTokenOwners, name);
     this.cronNoopDetector.cancelAgentVerifications(name);
     entry.checker.stop();
     await entry.process.stop();

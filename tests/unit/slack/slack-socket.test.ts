@@ -384,7 +384,7 @@ describe('SlackSocketClient — reconnection robustness', () => {
   });
 });
 
-describe('SlackSocketClient — permanent auth failure classification (Collie medium)', () => {
+describe('SlackSocketClient — permanent auth failure classification (Moss medium)', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -408,7 +408,7 @@ describe('SlackSocketClient — permanent auth failure classification (Collie me
     expect(SLACK_PERMANENT_AUTH_ERRORS.has('fatal_error')).toBe(false);
   });
 
-  // THE regression guard for the Collie finding: an invalid/revoked token
+  // THE regression guard for the Moss finding: an invalid/revoked token
   // returns HTTP 200 ok:false — the old code threw, caught, and retried every
   // 30s FOREVER, log-spamming while masking a config error that never
   // self-heals. It must STOP reconnecting and latch a loud, visible state.
