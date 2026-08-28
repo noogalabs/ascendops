@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# send-slack.sh — wrapper for Node.js CLI (transport parity with send-telegram.sh)
+# Usage: send-slack.sh <channel> <message>
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CLI="${SCRIPT_DIR}/../dist/cli.js"
+
+exec node "$CLI" bus send-slack "$@"

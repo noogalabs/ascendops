@@ -9,6 +9,7 @@ import { updateApproval } from '../bus/approval.js';
 import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { SlackAPI, type SlackMessage } from '../slack/api.js';
+import { evaluateSlackRoute, type SlackRoutingConfig } from '../slack/slack-routing.js';
 import {
   resolveSlackIdentity,
   evaluateSlackTrust,
@@ -173,6 +174,12 @@ export class FastChecker {
   // Slack identity + trust layer (P2 — text-enrich only).
   private slackTrustedUsers?: string[];
   private slackTeamMembers?: TeamMember[];
+  // D1 routing (poll consumer's route gate). Absent = legacy behavior.
+  private slackRouting?: SlackRoutingConfig;
+  // Own workspace team id for the composite route-gate key; resolved lazily.
+  private slackOwnTeamId: string | null | undefined = undefined;
+  // Route-warned latch: the not-allowed-channel condition logs once, not per poll.
+  private slackRouteWarned = false;
   // userId -> resolved identity; cache hits skip users.info.
   private slackIdentityCache: Map<string, { handle: string | null; displayName: string }> = new Map();
   // Loudly-open warning is logged at most once per checker instance.
@@ -368,6 +375,9 @@ export class FastChecker {
         token: string;
         trustedSlackUsers?: string[];
         teamMembers?: TeamMember[];
+        /** D1 routing: the poll is the SECOND inbound Slack consumer and must
+         * pass the same route gate as the socket listener (consumer census). */
+        routing?: SlackRoutingConfig;
       };
       ctxRestartThreshold?: number;
       turnWatchdogThresholdMinutes?: number;
@@ -411,6 +421,7 @@ export class FastChecker {
       this.slackLastTs = (Date.now() / 1000).toFixed(6);
       this.slackTrustedUsers = options.slackWatch.trustedSlackUsers;
       this.slackTeamMembers = options.slackWatch.teamMembers;
+      this.slackRouting = options.slackWatch.routing;
     }
 
     // Initialize usage tier state
@@ -1641,6 +1652,30 @@ export class FastChecker {
     if (now - this.slackLastCheckedAt < this.slackWatch.intervalMs) return;
     this.slackLastCheckedAt = now;
 
+    // D1 ROUTE GATE, poll consumer (consumer census: SAME gate as the socket
+    // listener — an ungated fallback would be an unfenced ingress).
+    // Channel axis: the poll watches ONE channel; if routing does not allow
+    // it, the poll delivers NOTHING (fail-closed) and says so once. Routing
+    // mode's poll fallback covering only this channel is a documented
+    // limitation in the runbook — a capability gap, never a gate gap.
+    if (this.slackRouting) {
+      if (!(this.slackRouting.allowed_channels ?? []).includes(this.slackWatch.channel)) {
+        if (!this.slackRouteWarned) {
+          this.log(`Slack poll: configured channel ${this.slackWatch.channel} is not in slack.json allowed_channels — poll delivers nothing (fail-closed).`);
+          this.slackRouteWarned = true;
+        }
+        return;
+      }
+      if (this.slackOwnTeamId === undefined) {
+        this.slackOwnTeamId = (await this.slackApi.getAuthIdentity())?.teamId ?? null;
+      }
+      if (this.slackOwnTeamId === null) {
+        this.log('Slack poll: team id unresolved — deliveries DENIED this cycle (fail-closed); will retry.');
+        this.slackOwnTeamId = undefined; // retry next poll
+        return;
+      }
+    }
+
     let messages: SlackMessage[] = [];
     try {
       messages = await this.slackApi.getHistory(this.slackWatch.channel, this.slackLastTs);
@@ -1676,6 +1711,20 @@ export class FastChecker {
     const deliverable: string[] = [];
     for (const msg of messages) {
       let from: string;
+      // Route-gate user axis (routing mode): composite team:user, fail-closed.
+      // Userless messages cannot satisfy a composite allowlist — always denied
+      // under routing (stricter than the legacy allowlist-absent open path).
+      if (this.slackRouting && this.slackOwnTeamId) {
+        const decision = evaluateSlackRoute(this.slackRouting, {
+          teamId: this.slackOwnTeamId,
+          channel: this.slackWatch.channel,
+          userId: msg.user ?? '',
+        });
+        if (!decision.allowed) {
+          this.log(`Slack poll route gate DENIED (${decision.reason}): user ${msg.user ?? '(none)'} ts ${msg.ts}`);
+          continue;
+        }
+      }
       if (msg.user) {
         // Identity + trust gate (P2). Cache hits skip users.info.
         const identity = await resolveSlackIdentity(

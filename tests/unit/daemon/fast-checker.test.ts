@@ -2575,3 +2575,89 @@ describe('Signal-3 suppression when context handoff is in flight (§5d)', () => 
     });
   });
 });
+
+describe('checkSlackWatch — D1 route gate on the POLL consumer (census fence)', () => {
+  // The poll is the second inbound Slack consumer; it must pass the SAME
+  // route gate as the socket listener. Paired polarity throughout.
+  const ROUTING = {
+    allowed_channels: ['C1234567890'],
+    allowed_users: ['T01:U123'],
+  };
+
+  let gatePaths: BusPaths;
+  let gateDir: string;
+
+  function pollChecker(routing: any) {
+    const checker = new FastChecker(createMockAgent(), gatePaths, '/framework', {
+      slackWatch: { channel: 'C1234567890', intervalMs: 60000, token: 'xoxb-test', routing },
+    });
+    (checker as any).slackLastCheckedAt = 0;
+    const mockApi = vi.mocked(SlackAPI).mock.results[vi.mocked(SlackAPI).mock.results.length - 1].value;
+    return { checker, mockApi };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    gateDir = mkdtempSync(join(tmpdir(), 'fc-slack-gate-'));
+    gatePaths = createTestPaths(gateDir);
+  });
+
+  afterEach(() => rmSync(gateDir, { recursive: true, force: true }));
+
+  it('POSITIVE control: an allowed composite sender in the allowed channel delivers', async () => {
+    const { checker, mockApi } = pollChecker(ROUTING);
+    mockApi.getAuthIdentity.mockResolvedValue({ userId: 'UBOT', teamId: 'T01' });
+    mockApi.getHistory.mockResolvedValue([{ ts: '1.1', user: 'U123', text: 'hi', type: 'message' }]);
+    mockApi.getUserInfo.mockResolvedValue({ handle: 'h', displayName: 'H' });
+    await (checker as any).checkSlackWatch();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies a sender outside allowed_users even in the allowed channel', async () => {
+    const { checker, mockApi } = pollChecker(ROUTING);
+    mockApi.getAuthIdentity.mockResolvedValue({ userId: 'UBOT', teamId: 'T01' });
+    mockApi.getHistory.mockResolvedValue([{ ts: '1.2', user: 'U999', text: 'hi', type: 'message' }]);
+    await (checker as any).checkSlackWatch();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('polls NOTHING when the configured channel is not in allowed_channels (fail-closed, logged once)', async () => {
+    const { checker, mockApi } = pollChecker({ allowed_channels: ['C_OTHER'], allowed_users: ['T01:U123'] });
+    mockApi.getHistory.mockResolvedValue([{ ts: '1.3', user: 'U123', text: 'hi', type: 'message' }]);
+    await (checker as any).checkSlackWatch();
+    (checker as any).slackLastCheckedAt = 0;
+    await (checker as any).checkSlackWatch();
+    expect(sendMessage).not.toHaveBeenCalled();
+    // Fail-closed BEFORE fetching: a disallowed channel is never even polled.
+    expect(mockApi.getHistory).not.toHaveBeenCalled();
+  });
+
+  it('denies everything while the team id is unresolved, and retries resolution next poll', async () => {
+    const { checker, mockApi } = pollChecker(ROUTING);
+    mockApi.getAuthIdentity.mockResolvedValueOnce(null).mockResolvedValueOnce({ userId: 'UBOT', teamId: 'T01' });
+    mockApi.getHistory.mockResolvedValue([{ ts: '1.4', user: 'U123', text: 'hi', type: 'message' }]);
+    mockApi.getUserInfo.mockResolvedValue({ handle: 'h', displayName: 'H' });
+    await (checker as any).checkSlackWatch();
+    expect(sendMessage).not.toHaveBeenCalled();
+    (checker as any).slackLastCheckedAt = 0;
+    await (checker as any).checkSlackWatch();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a userless message is ALWAYS denied under routing (composite allowlists have no userless form)', async () => {
+    const { checker, mockApi } = pollChecker(ROUTING);
+    mockApi.getAuthIdentity.mockResolvedValue({ userId: 'UBOT', teamId: 'T01' });
+    mockApi.getHistory.mockResolvedValue([{ ts: '1.5', username: 'webhookbot', text: 'hi', type: 'message' }]);
+    await (checker as any).checkSlackWatch();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('BACK-COMPAT control: no routing config keeps legacy poll behavior delivering', async () => {
+    const { checker, mockApi } = pollChecker(undefined);
+    mockApi.getHistory.mockResolvedValue([{ ts: '1.6', user: 'U777', text: 'legacy', type: 'message' }]);
+    mockApi.getUserInfo.mockResolvedValue({ handle: 'x', displayName: 'X' });
+    await (checker as any).checkSlackWatch();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(mockApi.getAuthIdentity).not.toHaveBeenCalled();
+  });
+});

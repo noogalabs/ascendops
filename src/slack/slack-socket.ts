@@ -475,6 +475,12 @@ export interface SlackSocketConfig {
   appToken: string;
   botToken: string;
   channelId: string;
+  /**
+   * Multi-channel subscription (slack.json routing): when present, an event in
+   * ANY listed channel is delivered and `channelId` is ignored for filtering.
+   * Absent = legacy single-channel behavior, byte-for-byte.
+   */
+  channelIds?: string[];
   /** Optional signing secret for additional message verification */
   signingSecret?: string;
 }
@@ -873,8 +879,9 @@ export class SlackSocketClient {
         // Deliver message events in our channel that the poll would have
         // delivered (non-bot, has text) — including human subtyped messages
         // like file_share. Channel scoping stays inline (needs config).
+        const watchedChannels = this.config.channelIds ?? [this.config.channelId];
         if (
-          event.channel === this.config.channelId &&
+          watchedChannels.includes(event.channel) &&
           shouldDeliverSlackMessage(event)
         ) {
           // Fire-and-forget: don't block the WebSocket handler
