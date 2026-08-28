@@ -41,8 +41,12 @@ POST_PRUNE_WORKTREE_LIST_BIN="${WORKTREE_REAPER_POST_PRUNE_WORKTREE_LIST_BIN:-}"
 CTX_ROOT_VAL="${CTX_ROOT:-$HOME/.cortextos/$INSTANCE}"
 export CTX_ROOT="$CTX_ROOT_VAL"
 export CTX_INSTANCE_ID="$INSTANCE"
-[ -n "$OWNER" ] && [ -n "$FRAMEWORK_ROOT" ] && [ -d "$FRAMEWORK_ROOT/.git" ] || {
-  echo "reap-agent-worktrees.sh: owner and git CTX_FRAMEWORK_ROOT required" >&2; exit 2;
+# Accept both a primary checkout (.git is a directory) and a LINKED worktree
+# (.git is a file pointing at the common dir) — the linked worktree is the
+# expected location for an agent's git operations. `git rev-parse --git-dir`
+# validates either shape; a bare `-d .git` test rejected linked worktrees.
+[ -n "$OWNER" ] && [ -n "$FRAMEWORK_ROOT" ] && git -C "$FRAMEWORK_ROOT" rev-parse --git-dir >/dev/null 2>&1 || {
+  echo "reap-agent-worktrees.sh: owner and a valid git CTX_FRAMEWORK_ROOT required" >&2; exit 2;
 }
 
 git_common_dir=$(git -C "$FRAMEWORK_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
