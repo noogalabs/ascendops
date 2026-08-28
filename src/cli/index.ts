@@ -34,6 +34,7 @@ import { supportAccessCommand } from './support-access.js';
 import { reapWorktreesCommand } from './reap-worktrees.js';
 import { withWorktreeLeaseCommand } from './with-worktree-lease.js';
 import { checkWorktreeLeaseCommand } from './check-worktree-lease.js';
+import { buzzCommand } from './buzz.js';
 import { lifecycleCommand } from './lifecycle.js';
 
 const program = new Command();
@@ -78,6 +79,7 @@ program.addCommand(supportAccessCommand);
 program.addCommand(reapWorktreesCommand);
 program.addCommand(withWorktreeLeaseCommand);
 program.addCommand(checkWorktreeLeaseCommand);
+program.addCommand(buzzCommand);
 program.addCommand(lifecycleCommand);
 
 // crash-alert: SessionEnd hook — cross-platform replacement for crash-alert.sh
