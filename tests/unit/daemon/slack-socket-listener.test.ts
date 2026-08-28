@@ -101,6 +101,33 @@ describe('SlackSocketListener.handleMessage', () => {
     expect(actualText).toContain('channel:C123');
   });
 
+  it('redacts an SSN and Slack token BEFORE the durable inbox write', async () => {
+    const listener = makeListener();
+    await listener.handleMessage(
+      makeEvent({ text: 'ssn 123-45-6789 token xoxb-xxxxxxxxxxxxxxxx' }),
+    );
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    const actualText = sendMessageMock.mock.calls[0][4];
+    expect(actualText).not.toContain('123-45-6789');
+    expect(actualText).not.toContain('xoxb-xxxxxxxxxxxxxxxx');
+    expect(actualText).toContain('[REDACTED-SSN]');
+    expect(actualText).toContain('xoxb-****');
+  });
+
+  it('preserves ordinary prose — inbound redaction never eats words like "not" after "bot"', async () => {
+    // Meaning-inversion guard: a log-oriented redactor with a loose Bot\\s+\\S+
+    // pattern would turn "the bot not to delete" into "the bot **** to delete",
+    // silently inverting the instruction. Inbound redaction must not do that.
+    const listener = makeListener();
+    await listener.handleMessage(
+      makeEvent({ text: 'Tell the bot not to delete the lease; bearer of bad news, bot behavior aside.' }),
+    );
+    const actualText = sendMessageMock.mock.calls[0][4];
+    expect(actualText).toContain('Tell the bot not to delete the lease');
+    expect(actualText).toContain('bearer of bad news');
+    expect(actualText).not.toContain('****');
+  });
+
   it('enriched "from {name} (@handle, trust)" when team_members has the handle', async () => {
     getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     const teamMembers: TeamMember[] = [
