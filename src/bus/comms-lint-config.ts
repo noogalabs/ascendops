@@ -120,28 +120,14 @@ const DEFAULT_TELEGRAM: CommsLintRule[] = [
   },
 ];
 
-// Agent-name lint is ROSTER-DRIVEN, never a hardcoded set. It is built from the
-// CONFIGURED org roster (see buildAgentNameRule + resolveCommsLintRules' `roster`
-// opt). With no roster it is null — you cannot lint agent names you do not know,
-// and the framework must never ship one org's agent names to another.
-function escapeForRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export function buildAgentNameRule(roster: string[]): CommsLintRule | null {
-  const names = (Array.isArray(roster) ? roster : [])
-    .filter((n) => typeof n === 'string' && n.trim().length > 0)
-    .map((n) => escapeForRegex(n.trim()));
-  if (names.length === 0) return null;
-  return {
-    id: 'agent-name:default',
-    pattern: new RegExp(`\\b(${names.join('|')})\\b`, 'i'),
-    reason:
-      'agent name in outbound Telegram (usually the outcome matters, not which agent shipped it)',
-    suggest: 'rephrase to describe the work, OR pass --explicit-naming to allow when naming is intentional',
-    group: 'agent-name',
-  };
-}
+const DEFAULT_AGENT_NAME: CommsLintRule = {
+  id: 'agent-name:default',
+  pattern: /\b(sample-agent|example-bot)\b/i,  // placeholder default; override via org-config roster
+  reason:
+    'agent name in outbound Telegram (usually the outcome matters, not which agent shipped it)',
+  suggest: 'rephrase to describe the work, OR pass --explicit-naming to allow when naming is intentional',
+  group: 'agent-name',
+};
 
 /**
  * Build a fresh copy of the hardcoded default rule set. Each call returns new
@@ -159,9 +145,7 @@ export function getDefaultCommsLintRules(): ResolvedCommsLintRules {
       DEFAULT_NEXT_SIGNAL_CONTEXT.flags,
     ),
     telegram: DEFAULT_TELEGRAM.map((r) => ({ ...r })),
-    // Roster-driven: no hardcoded agent names. resolveCommsLintRules sets this
-    // from the configured org roster when one is passed; null otherwise.
-    agentName: null,
+    agentName: { ...DEFAULT_AGENT_NAME },
   };
 }
 
@@ -329,17 +313,9 @@ export function resolveCommsLintRules(opts: {
   org?: string;
   agentDir?: string;
   frameworkRoot?: string;
-  roster?: string[];
 }): ResolvedCommsLintRules {
   try {
     let resolved = getDefaultCommsLintRules();
-
-    // Roster-driven agent-name rule: built from the CONFIGURED org roster the
-    // caller passes (via listAgents), never a hardcoded set. This is the default
-    // the org/agent config layers below can still override/allow. No roster -> null.
-    if (opts.roster && opts.roster.length > 0) {
-      resolved = { ...resolved, agentName: buildAgentNameRule(opts.roster) };
-    }
 
     // Org layer.
     if (opts.org && opts.frameworkRoot) {

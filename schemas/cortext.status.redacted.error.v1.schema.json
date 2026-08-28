@@ -1,0 +1,265 @@
+{
+  "$id": "cortext.status.redacted.error/v1",
+  "$ref": "#/definitions/RedactedLifecycleStatusErrorEnvelope",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "LifecycleStatusErrorCode": {
+      "enum": [
+        "CORTEXT_STATUS_INVALID_INSTANCE",
+        "CORTEXT_STATUS_INSTANCE_NOT_FOUND",
+        "CORTEXT_STATUS_INSTANCE_AMBIGUOUS",
+        "CORTEXT_STATUS_INVALID_OPTION_COMBINATION",
+        "CORTEXT_STATUS_CONTRACT_REQUIRES_JSON",
+        "CORTEXT_STATUS_CONTRACT_MODE_MISMATCH",
+        "CORTEXT_STATUS_UNSUPPORTED_CONTRACT",
+        "CORTEXT_STATUS_UNSUPPORTED_CHECK_POLICY",
+        "CORTEXT_STATUS_COLLECTION_FAILED"
+      ],
+      "type": "string"
+    },
+    "LifecycleStatusErrorDetailCode": {
+      "enum": [
+        "INVALID_INSTANCE",
+        "INSTANCE_NOT_FOUND",
+        "INSTANCE_AMBIGUOUS",
+        "REDACT_WITH_PATHS",
+        "CONTRACT_WITHOUT_JSON",
+        "CONTRACT_MODE_MISMATCH",
+        "UNSUPPORTED_CONTRACT",
+        "UNSUPPORTED_CHECK_POLICY",
+        "COLLECTION_FAILED"
+      ],
+      "type": "string"
+    },
+    "RedactedLifecycleStatusErrorEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_INVALID_INSTANCE",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "INVALID_INSTANCE",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "The selected Cortext instance identifier is invalid.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_INSTANCE_NOT_FOUND",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "INSTANCE_NOT_FOUND",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "No legacy Cortext instance was found for the selected identifier.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_INSTANCE_AMBIGUOUS",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "INSTANCE_AMBIGUOUS",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "Select exactly one Cortext instance.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_INVALID_OPTION_COMBINATION",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "REDACT_WITH_PATHS",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "The selected redacted-output options cannot be combined.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_CONTRACT_REQUIRES_JSON",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "CONTRACT_WITHOUT_JSON",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "Contract negotiation requires JSON output.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_CONTRACT_MODE_MISMATCH",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "CONTRACT_MODE_MISMATCH",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "The requested status contract does not match the output mode.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_UNSUPPORTED_CONTRACT",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "UNSUPPORTED_CONTRACT",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "The requested status contract is unsupported.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_UNSUPPORTED_CHECK_POLICY",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "UNSUPPORTED_CHECK_POLICY",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "The requested status check policy is unsupported.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": "CORTEXT_STATUS_COLLECTION_FAILED",
+                  "type": "string"
+                },
+                "detail_code": {
+                  "const": "COLLECTION_FAILED",
+                  "type": "string"
+                },
+                "message": {
+                  "const": "A trustworthy lifecycle status snapshot could not be assembled.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "detail_code"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ok": {
+          "const": false,
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "cortext.status.redacted.error/v1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "ok",
+        "error"
+      ],
+      "type": "object"
+    }
+  }
+}

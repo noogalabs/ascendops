@@ -3,6 +3,7 @@ import { join } from 'path';
 import type { Heartbeat, BusPaths } from '../types/index.js';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { withFileLockSync } from '../utils/lock.js';
+import { configuredOrHostTimezone } from '../utils/timezone.js';
 
 /**
  * SessionEnd-hook end-type markers (see src/hooks/hook-crash-alert.ts). A
@@ -73,7 +74,7 @@ export function updateHeartbeat(
   ensureDir(paths.stateDir);
 
   const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const mode = options?.timezone ? detectDayNightMode(options.timezone) : detectDayNightMode('UTC');
+  const mode = detectDayNightMode(configuredOrHostTimezone(options?.timezone));
 
   const heartbeat: Heartbeat = {
     agent: agentName,

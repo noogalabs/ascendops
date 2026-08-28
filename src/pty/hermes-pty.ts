@@ -47,6 +47,17 @@ export class HermesPTY extends AgentPTY {
   }
 
   /**
+   * Hermes never shows a trust-folder prompt (see class-level comment), so
+   * the base class's auto-accept timers must not run. Their loose
+   * "Yes"/"trust" substring match against recent output would fire a stray
+   * Enter at the 5s/8s marks — right when the startup-file read command has
+   * just been injected — and could submit a partial or empty line.
+   */
+  protected needsTrustPromptAutoAccept(): boolean {
+    return false;
+  }
+
+  /**
    * Build Hermes CLI args.
    *
    * Hermes session continuity: if ~/.hermes/state.db exists, pass --continue

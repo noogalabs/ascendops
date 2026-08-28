@@ -1,0 +1,2290 @@
+{
+  "$id": "cortext.status.redacted/v1",
+  "$ref": "#/definitions/RedactedLifecycleStatusSnapshot",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "CountBucket": {
+      "enum": [
+        "0",
+        "1",
+        "2-5",
+        "6-20",
+        "21-100",
+        ">100"
+      ],
+      "type": "string"
+    },
+    "OverallStatus": {
+      "enum": [
+        "healthy",
+        "degraded",
+        "stopped",
+        "migrating",
+        "blocked",
+        "uninitialized",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "RedactedLifecycleStatusSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "application": {
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "type": "null"
+            },
+            "integrity": {
+              "const": "unverified",
+              "type": "string"
+            },
+            "public_release_id": {
+              "type": "null"
+            },
+            "public_source_commit": {
+              "type": "null"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "version",
+            "public_release_id",
+            "public_source_commit",
+            "channel",
+            "integrity"
+          ],
+          "type": "object"
+        },
+        "basis": {
+          "additionalProperties": false,
+          "properties": {
+            "compatibility_matrix_present": {
+              "const": false,
+              "type": "boolean"
+            },
+            "component_lock_present": {
+              "const": false,
+              "type": "boolean"
+            },
+            "config_observation_digest_present": {
+              "const": false,
+              "type": "boolean"
+            },
+            "config_revision_alias": {
+              "type": "null"
+            },
+            "lifecycle_generation_present": {
+              "const": false,
+              "type": "boolean"
+            },
+            "public_release_id": {
+              "type": "null"
+            },
+            "state_control_observation_digest_present": {
+              "const": false,
+              "type": "boolean"
+            },
+            "state_layout_generation_present": {
+              "const": false,
+              "type": "boolean"
+            },
+            "state_schema": {
+              "type": "null"
+            },
+            "trust_metadata_present": {
+              "const": false,
+              "type": "boolean"
+            },
+            "writer_epoch_present": {
+              "const": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "lifecycle_generation_present",
+            "writer_epoch_present",
+            "trust_metadata_present",
+            "compatibility_matrix_present",
+            "public_release_id",
+            "config_revision_alias",
+            "config_observation_digest_present",
+            "state_schema",
+            "state_layout_generation_present",
+            "state_control_observation_digest_present",
+            "component_lock_present"
+          ],
+          "type": "object"
+        },
+        "capabilities": {
+          "additionalProperties": false,
+          "properties": {
+            "profile": {
+              "const": "legacy_bridge_v1",
+              "type": "string"
+            },
+            "supported": {
+              "items": {
+                "enum": [
+                  "legacy_layout",
+                  "legacy_application_evidence",
+                  "legacy_state_readability",
+                  "legacy_agent_inventory",
+                  "legacy_daemon_ipc",
+                  "redacted_projection",
+                  "check_policies_v1"
+                ],
+                "type": "string"
+              },
+              "maxItems": 7,
+              "minItems": 7,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "unsupported": {
+              "items": {
+                "enum": [
+                  "transaction_basis",
+                  "device_identity",
+                  "writer_lease",
+                  "release_integrity",
+                  "component_lock",
+                  "recovery_index",
+                  "update_metadata",
+                  "compatibility_matrix"
+                ],
+                "type": "string"
+              },
+              "maxItems": 8,
+              "minItems": 8,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "profile",
+            "supported",
+            "unsupported"
+          ],
+          "type": "object"
+        },
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StatusCheckResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "compatibility": {
+          "additionalProperties": false,
+          "properties": {
+            "reason_codes": {
+              "maxItems": 0,
+              "minItems": 0,
+              "type": "array"
+            },
+            "status": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        "components": {
+          "additionalProperties": false,
+          "properties": {
+            "declared_count_bucket": {
+              "type": "null"
+            },
+            "drift": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "lock_status": {
+              "const": "unsupported",
+              "type": "string"
+            },
+            "resolved_count_bucket": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "lock_status",
+            "declared_count_bucket",
+            "resolved_count_bucket",
+            "drift"
+          ],
+          "type": "object"
+        },
+        "consistency": {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unsupported",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        "device": {
+          "additionalProperties": false,
+          "properties": {
+            "device_alias": {
+              "type": "null"
+            },
+            "identity_status": {
+              "const": "absent",
+              "type": "string"
+            },
+            "lease_status": {
+              "const": "unsupported",
+              "type": "string"
+            },
+            "writer_role": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "identity_status",
+            "device_alias",
+            "writer_role",
+            "lease_status"
+          ],
+          "type": "object"
+        },
+        "instance": {
+          "additionalProperties": false,
+          "properties": {
+            "config_schema": {
+              "type": "null"
+            },
+            "config_status": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "instance_alias": {
+              "const": "instance_1",
+              "type": "string"
+            },
+            "portability": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "remote_status": {
+              "enum": [
+                "none",
+                "configured_unverified",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "versioning": {
+              "enum": [
+                "git",
+                "unversioned",
+                "unknown"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "instance_alias",
+            "config_schema",
+            "config_status",
+            "versioning",
+            "remote_status",
+            "portability"
+          ],
+          "type": "object"
+        },
+        "manager": {
+          "additionalProperties": false,
+          "properties": {
+            "installation_status": {
+              "const": "legacy_bridge",
+              "type": "string"
+            },
+            "integrity": {
+              "const": "unverified",
+              "type": "string"
+            },
+            "recovery_launcher_status": {
+              "const": "unsupported",
+              "type": "string"
+            },
+            "trust_status": {
+              "const": "unsupported",
+              "type": "string"
+            },
+            "version": {
+              "maxLength": 64,
+              "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "installation_status",
+            "integrity",
+            "trust_status",
+            "recovery_launcher_status"
+          ],
+          "type": "object"
+        },
+        "observations": {
+          "items": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_LEGACY_LAYOUT",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "legacy",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "info",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_LEGACY_CAPABILITIES_LIMITED",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "legacy",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "info",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_LEGACY_ROOT_AUTHORITY_UNPROVEN",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "legacy",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_FRAMEWORK_NOT_FOUND",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "application",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_APPLICATION_VERSION_UNKNOWN",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "application",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_FRAMEWORK_MODIFIED",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "application",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_VERSION_CONFLICT",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "application",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_REGISTRY_INVALID",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_AGENT_CONFIG_INVALID",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_AGENT_ID_INVALID",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_LEGACY_AGENT_ID_NONCANONICAL",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_LEGACY_AGENT_NAME_COLLISION",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_HEARTBEAT_INVALID",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_DAEMON_ENDPOINT_STALE",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_DAEMON_TIMEOUT",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_DAEMON_RESPONSE_INVALID",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_DAEMON_STATUS_UNKNOWN",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_AGENT_EXPECTED_MISSING",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_DISABLED_PROCESS_ACTIVE",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_UNREGISTERED_PROCESS_ACTIVE",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_AGENT_DEGRADED",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "runtime",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "warning",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_STATE_MISSING",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "state",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "const": "CORTEXT_STATUS_STATE_UNREADABLE",
+                    "type": "string"
+                  },
+                  "domain": {
+                    "const": "state",
+                    "type": "string"
+                  },
+                  "recommended_operation": {
+                    "type": "null"
+                  },
+                  "severity": {
+                    "const": "critical",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "severity",
+                  "domain",
+                  "recommended_operation"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "observed_day": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])Z$"
+        },
+        "ok": {
+          "const": true,
+          "type": "boolean"
+        },
+        "overall": {
+          "additionalProperties": false,
+          "properties": {
+            "highest_severity": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/StatusSeverity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/OverallStatus"
+            }
+          },
+          "required": [
+            "status",
+            "highest_severity"
+          ],
+          "type": "object"
+        },
+        "recovery": {
+          "additionalProperties": false,
+          "properties": {
+            "backup_age_bucket": {
+              "type": "null"
+            },
+            "backup_alias": {
+              "type": "null"
+            },
+            "backup_verification": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "checkpoint_age_bucket": {
+              "type": "null"
+            },
+            "checkpoint_alias": {
+              "type": "null"
+            },
+            "checkpoint_verification": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "rollback_status": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "checkpoint_alias",
+            "checkpoint_age_bucket",
+            "checkpoint_verification",
+            "backup_alias",
+            "backup_age_bucket",
+            "backup_verification",
+            "rollback_status"
+          ],
+          "type": "object"
+        },
+        "report_id": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$"
+        },
+        "runtime": {
+          "additionalProperties": false,
+          "properties": {
+            "active_process_count_bucket": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CountBucket"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agent_count_bucket": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CountBucket"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cron_count_bucket": {
+              "type": "null"
+            },
+            "daemon_status": {
+              "enum": [
+                "running",
+                "stopped",
+                "unresponsive",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "dashboard_status": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "degraded_agent_count_bucket": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CountBucket"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "disabled_active_count_bucket": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CountBucket"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "duplicate_poller_count_bucket": {
+              "type": "null"
+            },
+            "expected_missing_count_bucket": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CountBucket"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "isolation": {
+              "additionalProperties": false,
+              "properties": {
+                "boundary": {
+                  "enum": [
+                    "none",
+                    "os_process",
+                    "container",
+                    "vm",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "claim": {
+                  "enum": [
+                    "none",
+                    "cortext_namespace",
+                    "security_contained"
+                  ],
+                  "type": "string"
+                },
+                "credentials": {
+                  "enum": [
+                    "removed",
+                    "scoped",
+                    "host_available",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "data_roots": {
+                  "enum": [
+                    "isolated",
+                    "live",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "evidence_codes": {
+                  "items": {
+                    "enum": [
+                      "CORTEXT_ISOLATION_LIVE_ROOT_DISJOINT",
+                      "CORTEXT_ISOLATION_PROCESS_NAMESPACE_DISJOINT",
+                      "CORTEXT_ISOLATION_MANAGED_INTEGRATIONS_ROUTED",
+                      "CORTEXT_ISOLATION_BOUNDARY_ENFORCED",
+                      "CORTEXT_ISOLATION_HOST_CREDENTIALS_UNAVAILABLE",
+                      "CORTEXT_ISOLATION_EGRESS_POLICY_ENFORCED",
+                      "CORTEXT_ISOLATION_HOST_ACCESS_CONSTRAINED"
+                    ],
+                    "type": "string"
+                  },
+                  "maxItems": 7,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "host_access": {
+                  "enum": [
+                    "constrained",
+                    "full",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "managed_integrations": {
+                  "enum": [
+                    "intercepted",
+                    "disabled",
+                    "enabled",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "network": {
+                  "enum": [
+                    "none",
+                    "restricted",
+                    "unrestricted",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "process_namespace": {
+                  "enum": [
+                    "isolated",
+                    "live",
+                    "unknown"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "boundary",
+                "data_roots",
+                "process_namespace",
+                "managed_integrations",
+                "credentials",
+                "network",
+                "host_access",
+                "claim",
+                "evidence_codes"
+              ],
+              "type": "object"
+            },
+            "observed_process_count_bucket": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CountBucket"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "poller_count_bucket": {
+              "type": "null"
+            },
+            "unregistered_active_count_bucket": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CountBucket"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "daemon_status",
+            "dashboard_status",
+            "agent_count_bucket",
+            "observed_process_count_bucket",
+            "active_process_count_bucket",
+            "degraded_agent_count_bucket",
+            "expected_missing_count_bucket",
+            "disabled_active_count_bucket",
+            "unregistered_active_count_bucket",
+            "poller_count_bucket",
+            "duplicate_poller_count_bucket",
+            "cron_count_bucket",
+            "isolation"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "cortext.status.redacted/v1",
+          "type": "string"
+        },
+        "scope": {
+          "additionalProperties": false,
+          "properties": {
+            "instance_alias": {
+              "const": "instance_1",
+              "type": "string"
+            },
+            "layout_kind": {
+              "enum": [
+                "legacy_combined",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "target_kind": {
+              "enum": [
+                "live",
+                "sandbox",
+                "unknown"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "instance_alias",
+            "target_kind",
+            "layout_kind"
+          ],
+          "type": "object"
+        },
+        "snapshot_status": {
+          "$ref": "#/definitions/SnapshotStatus"
+        },
+        "state": {
+          "additionalProperties": false,
+          "properties": {
+            "migration_status": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "null"
+            },
+            "status": {
+              "enum": [
+                "readable",
+                "missing",
+                "unreadable",
+                "unknown"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema_version",
+            "status",
+            "migration_status"
+          ],
+          "type": "object"
+        },
+        "updates": {
+          "additionalProperties": false,
+          "properties": {
+            "availability": {
+              "const": "not_checked",
+              "type": "string"
+            },
+            "channel": {
+              "type": "null"
+            },
+            "checked_age_bucket": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "channel",
+            "availability",
+            "checked_age_bucket"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "ok",
+        "report_id",
+        "observed_day",
+        "snapshot_status",
+        "scope",
+        "manager",
+        "capabilities",
+        "basis",
+        "consistency",
+        "device",
+        "application",
+        "instance",
+        "state",
+        "components",
+        "runtime",
+        "recovery",
+        "updates",
+        "compatibility",
+        "overall",
+        "check",
+        "observations"
+      ],
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "check": {
+                "type": "object",
+                "properties": {
+                  "policy": {
+                    "const": "usable"
+                  },
+                  "result": {
+                    "const": "pass"
+                  }
+                },
+                "required": [
+                  "policy",
+                  "result"
+                ]
+              }
+            },
+            "required": [
+              "check"
+            ]
+          },
+          "then": {
+            "properties": {
+              "snapshot_status": {
+                "const": "complete"
+              },
+              "state": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "readable"
+                  }
+                }
+              },
+              "overall": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "healthy",
+                      "degraded",
+                      "stopped"
+                    ]
+                  }
+                }
+              },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "daemon_status": {
+                    "enum": [
+                      "running",
+                      "stopped",
+                      "unresponsive"
+                    ]
+                  }
+                }
+              },
+              "observations": {
+                "type": "array",
+                "not": {
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "enum": [
+                          "CORTEXT_STATUS_LEGACY_ROOT_AUTHORITY_UNPROVEN",
+                          "CORTEXT_STATUS_FRAMEWORK_NOT_FOUND",
+                          "CORTEXT_STATUS_APPLICATION_VERSION_UNKNOWN",
+                          "CORTEXT_STATUS_REGISTRY_INVALID",
+                          "CORTEXT_STATUS_AGENT_CONFIG_INVALID",
+                          "CORTEXT_STATUS_AGENT_ID_INVALID",
+                          "CORTEXT_STATUS_LEGACY_AGENT_NAME_COLLISION",
+                          "CORTEXT_STATUS_HEARTBEAT_INVALID",
+                          "CORTEXT_STATUS_DAEMON_TIMEOUT",
+                          "CORTEXT_STATUS_DAEMON_RESPONSE_INVALID",
+                          "CORTEXT_STATUS_DAEMON_STATUS_UNKNOWN",
+                          "CORTEXT_STATUS_STATE_MISSING",
+                          "CORTEXT_STATUS_STATE_UNREADABLE"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "check": {
+                "type": "object",
+                "properties": {
+                  "policy": {
+                    "const": "healthy"
+                  },
+                  "result": {
+                    "const": "pass"
+                  }
+                },
+                "required": [
+                  "policy",
+                  "result"
+                ]
+              }
+            },
+            "required": [
+              "check"
+            ]
+          },
+          "then": {
+            "properties": {
+              "snapshot_status": {
+                "const": "complete"
+              },
+              "state": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "readable"
+                  }
+                }
+              },
+              "consistency": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "stable",
+                      "unsupported"
+                    ]
+                  }
+                }
+              },
+              "overall": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "healthy"
+                  },
+                  "highest_severity": {
+                    "enum": [
+                      null,
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "observations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "severity": {
+                      "const": "info"
+                    }
+                  }
+                }
+              },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "daemon_status": {
+                    "const": "running"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "check": {
+                "type": "object",
+                "properties": {
+                  "policy": {
+                    "const": "sandbox-namespace"
+                  },
+                  "result": {
+                    "const": "pass"
+                  }
+                },
+                "required": [
+                  "policy",
+                  "result"
+                ]
+              }
+            },
+            "required": [
+              "check"
+            ]
+          },
+          "then": {
+            "properties": {
+              "snapshot_status": {
+                "const": "complete"
+              },
+              "scope": {
+                "type": "object",
+                "properties": {
+                  "target_kind": {
+                    "const": "sandbox"
+                  }
+                }
+              },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "isolation": {
+                    "type": "object",
+                    "properties": {
+                      "data_roots": {
+                        "const": "isolated"
+                      },
+                      "process_namespace": {
+                        "const": "isolated"
+                      },
+                      "managed_integrations": {
+                        "enum": [
+                          "intercepted",
+                          "disabled"
+                        ]
+                      },
+                      "claim": {
+                        "enum": [
+                          "cortext_namespace",
+                          "security_contained"
+                        ]
+                      },
+                      "evidence_codes": {
+                        "type": "array",
+                        "allOf": [
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_LIVE_ROOT_DISJOINT"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_PROCESS_NAMESPACE_DISJOINT"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_MANAGED_INTEGRATIONS_ROUTED"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "check": {
+                "type": "object",
+                "properties": {
+                  "policy": {
+                    "const": "security-contained"
+                  },
+                  "result": {
+                    "const": "pass"
+                  }
+                },
+                "required": [
+                  "policy",
+                  "result"
+                ]
+              }
+            },
+            "required": [
+              "check"
+            ]
+          },
+          "then": {
+            "properties": {
+              "snapshot_status": {
+                "const": "complete"
+              },
+              "scope": {
+                "type": "object",
+                "properties": {
+                  "target_kind": {
+                    "const": "sandbox"
+                  }
+                }
+              },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "isolation": {
+                    "type": "object",
+                    "properties": {
+                      "boundary": {
+                        "enum": [
+                          "container",
+                          "vm"
+                        ]
+                      },
+                      "data_roots": {
+                        "const": "isolated"
+                      },
+                      "process_namespace": {
+                        "const": "isolated"
+                      },
+                      "managed_integrations": {
+                        "enum": [
+                          "intercepted",
+                          "disabled"
+                        ]
+                      },
+                      "credentials": {
+                        "enum": [
+                          "removed",
+                          "scoped"
+                        ]
+                      },
+                      "network": {
+                        "enum": [
+                          "none",
+                          "restricted"
+                        ]
+                      },
+                      "host_access": {
+                        "const": "constrained"
+                      },
+                      "claim": {
+                        "const": "security_contained"
+                      },
+                      "evidence_codes": {
+                        "type": "array",
+                        "allOf": [
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_LIVE_ROOT_DISJOINT"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_PROCESS_NAMESPACE_DISJOINT"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_MANAGED_INTEGRATIONS_ROUTED"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_BOUNDARY_ENFORCED"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_HOST_CREDENTIALS_UNAVAILABLE"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_EGRESS_POLICY_ENFORCED"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "CORTEXT_ISOLATION_HOST_ACCESS_CONSTRAINED"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "overall": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "healthy"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "overall"
+            ]
+          },
+          "then": {
+            "properties": {
+              "snapshot_status": {
+                "const": "complete"
+              },
+              "state": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "readable"
+                  }
+                }
+              },
+              "consistency": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "stable",
+                      "unsupported"
+                    ]
+                  }
+                }
+              },
+              "overall": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "healthy"
+                  },
+                  "highest_severity": {
+                    "enum": [
+                      null,
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "observations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "severity": {
+                      "const": "info"
+                    }
+                  }
+                }
+              },
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "daemon_status": {
+                    "const": "running"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "observations": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "CORTEXT_STATUS_LEGACY_ROOT_AUTHORITY_UNPROVEN",
+                        "CORTEXT_STATUS_FRAMEWORK_NOT_FOUND",
+                        "CORTEXT_STATUS_APPLICATION_VERSION_UNKNOWN",
+                        "CORTEXT_STATUS_REGISTRY_INVALID",
+                        "CORTEXT_STATUS_AGENT_CONFIG_INVALID",
+                        "CORTEXT_STATUS_AGENT_ID_INVALID",
+                        "CORTEXT_STATUS_LEGACY_AGENT_NAME_COLLISION",
+                        "CORTEXT_STATUS_HEARTBEAT_INVALID",
+                        "CORTEXT_STATUS_DAEMON_TIMEOUT",
+                        "CORTEXT_STATUS_DAEMON_RESPONSE_INVALID",
+                        "CORTEXT_STATUS_DAEMON_STATUS_UNKNOWN",
+                        "CORTEXT_STATUS_STATE_MISSING",
+                        "CORTEXT_STATUS_STATE_UNREADABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "observations"
+            ]
+          },
+          "then": {
+            "properties": {
+              "snapshot_status": {
+                "const": "partial"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "SnapshotStatus": {
+      "enum": [
+        "complete",
+        "partial"
+      ],
+      "type": "string"
+    },
+    "StatusCheckPolicy": {
+      "enum": [
+        "usable",
+        "healthy",
+        "update-safe",
+        "sandbox-namespace",
+        "security-contained"
+      ],
+      "type": "string"
+    },
+    "StatusCheckReasonCode": {
+      "enum": [
+        "CORTEXT_CHECK_SNAPSHOT_INCOMPLETE",
+        "CORTEXT_CHECK_INSTANCE_UNRESOLVED",
+        "CORTEXT_CHECK_OVERALL_DISALLOWED",
+        "CORTEXT_CHECK_STATE_NOT_READABLE",
+        "CORTEXT_CHECK_PROFILE_UNSUPPORTED",
+        "CORTEXT_CHECK_MANAGER_INTEGRITY_UNVERIFIED",
+        "CORTEXT_CHECK_CONSISTENCY_UNSTABLE",
+        "CORTEXT_CHECK_DAEMON_NOT_RUNNING",
+        "CORTEXT_CHECK_BASIS_INCOMPLETE",
+        "CORTEXT_CHECK_WRITER_NOT_ACTIVE",
+        "CORTEXT_CHECK_MIGRATION_NOT_IDLE",
+        "CORTEXT_CHECK_APPLICATION_UNVERIFIED",
+        "CORTEXT_CHECK_COMPATIBILITY_UNSAFE",
+        "CORTEXT_CHECK_CHECKPOINT_UNVERIFIED",
+        "CORTEXT_CHECK_BACKUP_UNVERIFIED",
+        "CORTEXT_CHECK_ROLLBACK_NOT_READY",
+        "CORTEXT_CHECK_LIFECYCLE_ERROR_PRESENT",
+        "CORTEXT_CHECK_TARGET_NOT_SANDBOX",
+        "CORTEXT_CHECK_ROOTS_NOT_ISOLATED",
+        "CORTEXT_CHECK_PROCESSES_NOT_ISOLATED",
+        "CORTEXT_CHECK_INTEGRATIONS_NOT_ROUTED",
+        "CORTEXT_CHECK_BOUNDARY_INSUFFICIENT",
+        "CORTEXT_CHECK_CREDENTIALS_EXPOSED",
+        "CORTEXT_CHECK_NETWORK_UNCONSTRAINED",
+        "CORTEXT_CHECK_HOST_ACCESS_FULL",
+        "CORTEXT_CHECK_ISOLATION_EVIDENCE_MISSING"
+      ],
+      "type": "string"
+    },
+    "StatusCheckResult": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "usable",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.usable/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "maxItems": 0,
+              "minItems": 0,
+              "type": "array"
+            },
+            "result": {
+              "const": "pass",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "usable",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.usable/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "items": {
+                "enum": [
+                  "CORTEXT_CHECK_SNAPSHOT_INCOMPLETE",
+                  "CORTEXT_CHECK_INSTANCE_UNRESOLVED",
+                  "CORTEXT_CHECK_OVERALL_DISALLOWED",
+                  "CORTEXT_CHECK_STATE_NOT_READABLE"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "result": {
+              "const": "fail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "healthy",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.healthy/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "maxItems": 0,
+              "minItems": 0,
+              "type": "array"
+            },
+            "result": {
+              "const": "pass",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "healthy",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.healthy/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "items": {
+                "enum": [
+                  "CORTEXT_CHECK_SNAPSHOT_INCOMPLETE",
+                  "CORTEXT_CHECK_INSTANCE_UNRESOLVED",
+                  "CORTEXT_CHECK_OVERALL_DISALLOWED",
+                  "CORTEXT_CHECK_STATE_NOT_READABLE",
+                  "CORTEXT_CHECK_CONSISTENCY_UNSTABLE",
+                  "CORTEXT_CHECK_DAEMON_NOT_RUNNING",
+                  "CORTEXT_CHECK_LIFECYCLE_ERROR_PRESENT"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "result": {
+              "const": "fail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "update-safe",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.update-safe/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "items": {
+                "enum": [
+                  "CORTEXT_CHECK_SNAPSHOT_INCOMPLETE",
+                  "CORTEXT_CHECK_INSTANCE_UNRESOLVED",
+                  "CORTEXT_CHECK_OVERALL_DISALLOWED",
+                  "CORTEXT_CHECK_STATE_NOT_READABLE",
+                  "CORTEXT_CHECK_PROFILE_UNSUPPORTED",
+                  "CORTEXT_CHECK_MANAGER_INTEGRITY_UNVERIFIED",
+                  "CORTEXT_CHECK_CONSISTENCY_UNSTABLE",
+                  "CORTEXT_CHECK_BASIS_INCOMPLETE",
+                  "CORTEXT_CHECK_WRITER_NOT_ACTIVE",
+                  "CORTEXT_CHECK_MIGRATION_NOT_IDLE",
+                  "CORTEXT_CHECK_APPLICATION_UNVERIFIED",
+                  "CORTEXT_CHECK_COMPATIBILITY_UNSAFE",
+                  "CORTEXT_CHECK_CHECKPOINT_UNVERIFIED",
+                  "CORTEXT_CHECK_BACKUP_UNVERIFIED",
+                  "CORTEXT_CHECK_ROLLBACK_NOT_READY",
+                  "CORTEXT_CHECK_LIFECYCLE_ERROR_PRESENT"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "result": {
+              "const": "fail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "sandbox-namespace",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.sandbox-namespace/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "maxItems": 0,
+              "minItems": 0,
+              "type": "array"
+            },
+            "result": {
+              "const": "pass",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "sandbox-namespace",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.sandbox-namespace/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "items": {
+                "enum": [
+                  "CORTEXT_CHECK_SNAPSHOT_INCOMPLETE",
+                  "CORTEXT_CHECK_TARGET_NOT_SANDBOX",
+                  "CORTEXT_CHECK_ROOTS_NOT_ISOLATED",
+                  "CORTEXT_CHECK_PROCESSES_NOT_ISOLATED",
+                  "CORTEXT_CHECK_INTEGRATIONS_NOT_ROUTED",
+                  "CORTEXT_CHECK_ISOLATION_EVIDENCE_MISSING"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "result": {
+              "const": "fail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "security-contained",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.security-contained/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "maxItems": 0,
+              "minItems": 0,
+              "type": "array"
+            },
+            "result": {
+              "const": "pass",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "const": "security-contained",
+              "type": "string"
+            },
+            "policy_version": {
+              "const": "cortext.check.security-contained/v1",
+              "type": "string"
+            },
+            "reason_codes": {
+              "items": {
+                "enum": [
+                  "CORTEXT_CHECK_SNAPSHOT_INCOMPLETE",
+                  "CORTEXT_CHECK_TARGET_NOT_SANDBOX",
+                  "CORTEXT_CHECK_ROOTS_NOT_ISOLATED",
+                  "CORTEXT_CHECK_PROCESSES_NOT_ISOLATED",
+                  "CORTEXT_CHECK_INTEGRATIONS_NOT_ROUTED",
+                  "CORTEXT_CHECK_BOUNDARY_INSUFFICIENT",
+                  "CORTEXT_CHECK_CREDENTIALS_EXPOSED",
+                  "CORTEXT_CHECK_NETWORK_UNCONSTRAINED",
+                  "CORTEXT_CHECK_HOST_ACCESS_FULL",
+                  "CORTEXT_CHECK_ISOLATION_EVIDENCE_MISSING"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "result": {
+              "const": "fail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy",
+            "policy_version",
+            "result",
+            "reason_codes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "StatusSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "type": "string"
+    }
+  }
+}

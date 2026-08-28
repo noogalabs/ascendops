@@ -31,6 +31,10 @@ import { detectChatIdCommand } from './detect-chat-id.js';
 import { finalizeProcess } from './_finalize.js';
 import { updateCommand } from './update.js';
 import { supportAccessCommand } from './support-access.js';
+import { reapWorktreesCommand } from './reap-worktrees.js';
+import { withWorktreeLeaseCommand } from './with-worktree-lease.js';
+import { checkWorktreeLeaseCommand } from './check-worktree-lease.js';
+import { lifecycleCommand } from './lifecycle.js';
 
 const program = new Command();
 
@@ -71,6 +75,10 @@ program.addCommand(botCommand);
 program.addCommand(updateCommand);
 program.addCommand(detectChatIdCommand);
 program.addCommand(supportAccessCommand);
+program.addCommand(reapWorktreesCommand);
+program.addCommand(withWorktreeLeaseCommand);
+program.addCommand(checkWorktreeLeaseCommand);
+program.addCommand(lifecycleCommand);
 
 // crash-alert: SessionEnd hook — cross-platform replacement for crash-alert.sh
 const crashAlertCommand = new Command('crash-alert')

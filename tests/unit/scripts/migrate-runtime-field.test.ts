@@ -3,7 +3,7 @@
  * preserve all existing config fields when injecting `runtime: claude-code`.
  * If this script overwrote, dropped, or reordered fields incorrectly across
  * 17 live agent configs, recovery would be a per-agent restore. Idempotency
- * also matters because James will run the dry-run, then the real run; we
+ * also matters because Owen will run the dry-run, then the real run; we
  * never want a second real run to introduce drift.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

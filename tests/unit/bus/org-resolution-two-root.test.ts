@@ -99,7 +99,7 @@ describe('org resolution from BusPaths (two-root regression)', () => {
     expect(readArrivalEvent(paths, 'receiver').org).toBe('env-org');
   });
 
-  // CASUALTY 1 (builder, review of 6e25b670). My first fix used a SUFFIX heuristic —
+  // CASUALTY 1 (kit, review of 6e25b670). My first fix used a SUFFIX heuristic —
   // "is the segment two back literally 'orgs'" — with no anchor to ctxRoot. That is
   // defeated by a ctxRoot which itself ends in orgs/<something>: the UNSCOPED path
   // <ctxRoot>/analytics then looks org-scoped and the helper returns the last segment
@@ -137,7 +137,7 @@ describe('org resolution from BusPaths (two-root regression)', () => {
     }
   });
 
-  // CASUALTY 2 (builder, same review). split('/') cannot parse what join() emits on
+  // CASUALTY 2 (kit, same review). split('/') cannot parse what join() emits on
   // win32, so an org-scoped Windows path fell through to CTX_ORG. Parsing is now
   // separator-agnostic, which also means this is checkable on a posix host instead of
   // only on the platform where it is hardest to check.

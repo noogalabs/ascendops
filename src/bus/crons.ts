@@ -14,7 +14,7 @@
  * Write always goes through atomicWriteSync (mkdir + tmp rename).
  */
 
-import { existsSync, readFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import type { CronDefinition, CronExecutionLogEntry } from '../types/index.js';
 import { CRONS_DIRECTORY, CRONS_FILENAME, cronExecutionLogPathFor } from './crons-schema.js';
@@ -41,6 +41,25 @@ interface CronsFile {
 function cronsFilePath(agentName: string): string {
   const ctxRoot = process.env.CTX_ROOT ?? process.cwd();
   return join(ctxRoot, CRONS_DIRECTORY, agentName, CRONS_FILENAME);
+}
+
+/**
+ * Return the mtime (ms since epoch) of an agent's crons.json, or null.
+ *
+ * Resolves the path via the same private {@link cronsFilePath} the readers use,
+ * so callers never duplicate CTX_ROOT resolution (which could drift in test
+ * sandboxes). Returns null when the file is absent or any stat error occurs —
+ * callers treat null as "no change" so a transient failure never drops a live
+ * schedule.
+ */
+export function cronsFileMtimeMs(agentName: string): number | null {
+  try {
+    const path = cronsFilePath(agentName);
+    if (!existsSync(path)) return null;
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 /**

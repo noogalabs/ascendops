@@ -304,7 +304,7 @@ describe('bus list-crons', () => {
   it('populated: prints table with name, schedule, last_fire, next_fire, prompt', async () => {
     seedCrons([
       makeCron('heartbeat', { last_fired_at: '2026-04-28T12:00:00.000Z' }),
-      makeCron('morning-briefing', { schedule: '0 13 * * *', prompt: 'Prepare and send the morning briefing to James.' }),
+      makeCron('morning-briefing', { schedule: '0 13 * * *', prompt: 'Prepare and send the morning briefing to Owen.' }),
     ]);
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});

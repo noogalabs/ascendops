@@ -9,6 +9,7 @@ import {
   releaseContextHandoffLease,
   requestContextHandoffLease,
 } from '../../../src/daemon/context-handoff-lease.js';
+import { renderDaemonInjection } from '../../../src/utils/validate.js';
 
 describe('context handoff fleet lease', () => {
   let ctxRoot: string;
@@ -247,7 +248,7 @@ describe('context handoff fleet lease', () => {
 
   function handoffPrompts(record: { injectMessage: ReturnType<typeof vi.fn> }): string[] {
     return record.injectMessage.mock.calls
-      .map((call) => String(call[0]))
-      .filter((message) => message.includes('[CONTEXT HANDOFF REQUIRED]'));
+      .map((call) => renderDaemonInjection(call[0]))
+      .filter((message) => message.includes('CONTEXT HANDOFF REQUIRED'));
   }
 });

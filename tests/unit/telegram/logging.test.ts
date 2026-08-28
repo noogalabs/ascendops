@@ -19,13 +19,18 @@ import type { BusPaths, TelegramMessage } from '../../../src/types';
 
 describe('Telegram Logging', () => {
   let testDir: string;
+  let previousAdminUsername: string | undefined;
 
   beforeEach(() => {
     testDir = mkdtempSync(join(tmpdir(), 'cortextos-tg-log-'));
+    previousAdminUsername = process.env.ADMIN_USERNAME;
+    process.env.ADMIN_USERNAME = 'user';
   });
 
   afterEach(() => {
     rmSync(testDir, { recursive: true, force: true });
+    if (previousAdminUsername === undefined) delete process.env.ADMIN_USERNAME;
+    else process.env.ADMIN_USERNAME = previousAdminUsername;
   });
 
   describe('logOutboundMessage', () => {
@@ -131,6 +136,44 @@ describe('Telegram Logging', () => {
           text_chars: 8,
         },
       });
+    });
+
+    it('does NOT refresh last_heartbeat — inbound traffic cannot spoof a wedged agent alive', () => {
+      const paths = buildPaths(testDir, 'spark');
+      mkdirSync(paths.stateDir, { recursive: true });
+
+      // Wedged agent with a stale heartbeat on disk.
+      const staleHeartbeat = JSON.stringify({
+        agent: 'spark',
+        org: 'eros-os',
+        status: 'online',
+        current_task: 'wedged',
+        mode: 'day',
+        last_heartbeat: '2026-04-23T12:00:00Z',
+        loop_interval: '4h',
+      });
+      writeFileSync(join(paths.stateDir, 'heartbeat.json'), staleHeartbeat);
+
+      const msg: TelegramMessage = {
+        message_id: 12345,
+        date: 1714214400,
+        from: { id: 6595584963, is_bot: false, first_name: 'Eros' },
+        chat: { id: 6595584963, type: 'private' },
+        text: 'Doe maar',
+      };
+
+      recordInboundTelegram(paths, testDir, 'spark', 'eros-os', 'Eros', msg);
+
+      // The telegram_received event WAS written…
+      const today = new Date().toISOString().split('T')[0];
+      const eventPath = join(testDir, 'analytics', 'events', 'spark', `${today}.jsonl`);
+      const eventEntry = JSON.parse(readFileSync(eventPath, 'utf-8').trim());
+      expect(eventEntry.event).toBe('telegram_received');
+
+      // …but last_heartbeat is byte-identical: the daemon-on-behalf write
+      // did not opt into the refresh.
+      const after = readFileSync(join(paths.stateDir, 'heartbeat.json'), 'utf-8');
+      expect(after).toBe(staleHeartbeat);
     });
 
     it('marks has_media=true and uses caption length when the message carries a photo', () => {

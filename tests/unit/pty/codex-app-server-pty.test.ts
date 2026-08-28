@@ -124,6 +124,7 @@ vi.mock('../../../src/bus/event.js', () => ({
 const { CodexAppServerPTY } = await import('../../../src/pty/codex-app-server-pty.js');
 const { AgentProcess } = await import('../../../src/daemon/agent-process.js');
 const { FastChecker } = await import('../../../src/daemon/fast-checker.js');
+const { rawDaemonInjection, renderDaemonInjection } = await import('../../../src/utils/validate.js');
 const { MessageDedup } = await import('../../../src/pty/inject.js');
 
 const mockEnv = {
@@ -185,38 +186,6 @@ describe('CodexAppServerPTY socket path policy', () => {
 });
 
 describe('CodexAppServerPTY lifecycle', () => {
-  it('re-repairs before a second app-server spawn on the same object with its retained function', async () => {
-    const pty = new CodexAppServerPTY(mockEnv, {});
-    let helperExecutable = false;
-    const retainedSpawn = vi.fn(() => {
-      if (!helperExecutable) throw new Error('posix_spawnp failed');
-      return spawnedPty;
-    });
-    const prepareSpawn = vi.fn((cached: typeof retainedSpawn | null) => {
-      helperExecutable = true;
-      return cached ?? retainedSpawn;
-    });
-    const internals = pty as unknown as {
-      _spawnFn: typeof retainedSpawn | null;
-      _prepareSpawnFn: typeof prepareSpawn;
-      startAppServer(): Promise<void>;
-      stopPidPoll(): void;
-    };
-    internals._spawnFn = null;
-    internals._prepareSpawnFn = prepareSpawn;
-
-    await internals.startAppServer();
-    helperExecutable = false;
-    await internals.startAppServer();
-
-    expect(prepareSpawn).toHaveBeenNthCalledWith(1, null);
-    expect(prepareSpawn).toHaveBeenNthCalledWith(2, retainedSpawn);
-    expect(retainedSpawn).toHaveBeenCalledTimes(2);
-    expect(internals._spawnFn).toBe(retainedSpawn);
-    expect(helperExecutable).toBe(true);
-    internals.stopPidPoll();
-  });
-
   it('finalizes once on RPC disconnect even if PTY exit arrives later', async () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     const onExit = vi.fn();
@@ -311,19 +280,19 @@ describe('CodexAppServerPTY command mapping', () => {
     });
     const agent = makeRunningAgent(makeReadyPty());
 
-    expect(agent.injectMessageDetailed(input)).toMatchObject({
+    expect(agent.injectMessageDetailed(rawDaemonInjection(input))).toMatchObject({
       ok: false,
       code: 'ADMISSION_FAILED',
       message: expect.stringContaining(failure),
     });
-    expect(agent.injectMessageDetailed(input)).toMatchObject({
+    expect(agent.injectMessageDetailed(rawDaemonInjection(input))).toMatchObject({
       ok: false,
       code: 'ADMISSION_FAILED',
       message: expect.stringContaining('turn custody is blocked'),
     });
     Object.assign(agent, { pty: makeReadyPty() });
-    expect(agent.injectMessageDetailed(input)).toEqual({ ok: true });
-    expect(agent.injectMessageDetailed(input)).toMatchObject({
+    expect(agent.injectMessageDetailed(rawDaemonInjection(input))).toEqual({ ok: true });
+    expect(agent.injectMessageDetailed(rawDaemonInjection(input))).toMatchObject({
       ok: false,
       code: 'DEDUPED',
     });
@@ -510,7 +479,7 @@ describe('CodexAppServerPTY command mapping', () => {
   it('maps Telegram-delivered /goal with bot suffix to native goal get', async () => {
     requestMock.mockResolvedValue({ result: { goal: null } });
     const pty = makeReadyPty();
-    pty.write(`=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    pty.write(`=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 [Recent conversation:]
 [user]: prior
 \`\`\`
@@ -533,14 +502,14 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       .mockResolvedValueOnce({ result: { cleared: true } });
     const pty = makeReadyPty();
 
-    pty.write(`=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    pty.write(`=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 /goal@codex_app_server_test_bot Ship native slash routing
 Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 `);
     pty.write('\r');
     await Promise.resolve();
 
-    pty.write(`=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    pty.write(`=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 /goal clear
 Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 `);
@@ -634,7 +603,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       .mockResolvedValueOnce({ result: {} });
     const pty = makeReadyPty();
 
-    pty.write(`=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    pty.write(`=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 \`\`\`
 $imagegen make a logo
 \`\`\`
@@ -789,7 +758,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     requestMock.mockResolvedValue({ result: {} });
     const pty = makeReadyPty();
 
-    pty.write(`=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    pty.write(`=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 \`\`\`
 Hello? Are you working right?
 \`\`\`
@@ -818,7 +787,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       .mockResolvedValueOnce({ result: {} });
     const pty = makeReadyPty();
 
-    pty.write(`=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    pty.write(`=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 /heartbeat
 Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 `);
@@ -1512,7 +1481,7 @@ describe('CodexAppServerPTY extractTelegramPayload media types', () => {
   }
 
   it('photo: surfaces both caption and local_file path', () => {
-    const inject = `=== TELEGRAM PHOTO from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM PHOTO from Owen (chat_id:7940429114) ===
 caption:
 \`\`\`
 what's in this image
@@ -1527,7 +1496,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 
   it('document: surfaces caption + file_name + local_file', () => {
-    const inject = `=== TELEGRAM DOCUMENT from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM DOCUMENT from Owen (chat_id:7940429114) ===
 caption:
 \`\`\`
 have a look at this PDF
@@ -1544,7 +1513,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 
   it('voice without transcript: surfaces local_file + duration but no transcript line', () => {
-    const inject = `=== TELEGRAM VOICE from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM VOICE from Owen (chat_id:7940429114) ===
 duration: 5s
 local_file: telegram-images/voice_1234.ogg
 Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
@@ -1557,7 +1526,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 
   it('voice with transcript: surfaces transcript text', () => {
-    const inject = `=== TELEGRAM VOICE from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM VOICE from Owen (chat_id:7940429114) ===
 duration: 5s
 local_file: telegram-images/voice_1234.ogg
 transcript:
@@ -1573,7 +1542,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 
   it('video: surfaces caption + file_name + local_file + duration', () => {
-    const inject = `=== TELEGRAM VIDEO from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM VIDEO from Owen (chat_id:7940429114) ===
 caption:
 \`\`\`
 demo clip
@@ -1592,7 +1561,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   });
 
   it('plain-text TELEGRAM (no media token) preserves existing fenced-block behavior', () => {
-    const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM from Owen (chat_id:7940429114) ===
 \`\`\`
 just a chat message
 \`\`\`
@@ -1608,12 +1577,12 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       '```',
       'and keep this after the inner fence',
     ].join('\n');
-    const inject = FastChecker.formatTelegramTextMessage(
-      'James',
+    const inject = renderDaemonInjection(FastChecker.formatTelegramTextMessage(
+      'Owen',
       '7940429114',
       body,
       '/tmp/framework',
-    );
+    ));
 
     expect(inject).toContain(['````', body, '````'].join('\n'));
     expect(extract(inject)).toBe(body);
@@ -1625,12 +1594,12 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       '```',
       'caption after',
     ].join('\n');
-    const photo = FastChecker.formatTelegramPhotoMessage(
-      'James',
+    const photo = renderDaemonInjection(FastChecker.formatTelegramPhotoMessage(
+      'Owen',
       '7940429114',
       caption,
       'telegram-images/photo.jpg',
-    );
+    ));
 
     expect(photo).toContain(['````', caption, '````'].join('\n'));
     expect(extract(photo)).toContain(`caption: ${caption}`);
@@ -1640,13 +1609,13 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       '```',
       'transcript after',
     ].join('\n');
-    const voice = FastChecker.formatTelegramVoiceMessage(
-      'James',
+    const voice = renderDaemonInjection(FastChecker.formatTelegramVoiceMessage(
+      'Owen',
       '7940429114',
       'telegram-images/voice.ogg',
       5,
       transcript,
-    );
+    ));
 
     expect(voice).toContain(['````', transcript, '````'].join('\n'));
     expect(extract(voice)).toContain(`transcript: ${transcript}`);
@@ -1654,7 +1623,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 
   it('reply_to with no outbound log: appends bare in-reply-to marker', () => {
     fsMocks.existsSync.mockImplementation((p: string) => !String(p).endsWith('outbound-messages.jsonl'));
-    const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM from Owen (chat_id:7940429114) ===
 [reply_to: 4242]
 \`\`\`
 what did you mean by that?
@@ -1674,7 +1643,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       JSON.stringify({ message_id: 4243, text: 'a later one' }),
     ].join('\n'));
 
-    const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM from Owen (chat_id:7940429114) ===
 [reply_to: 4242]
 \`\`\`
 what did you mean by that?
@@ -1688,7 +1657,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 
   it('Telegram in-thread reply ([Replying to: "..."]) surfaces in-reply-to marker', () => {
     fsMocks.existsSync.mockReturnValue(false);
-    const inject = `=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 [Replying to: "Created the DOCX about Donald Trump and attached it here."]
 \`\`\`
 what's this again?
@@ -1703,7 +1672,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
   it('Telegram in-thread reply truncates to 200 chars', () => {
     fsMocks.existsSync.mockReturnValue(false);
     const long = 'A'.repeat(500);
-    const inject = `=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM from [USER: Owen] (chat_id:7940429114) ===
 [Replying to: "${long}"]
 \`\`\`
 short follow-up
@@ -1718,7 +1687,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
 
   it('photo with reply_to: surfaces media payload AND reply_to marker', () => {
     fsMocks.existsSync.mockReturnValue(false);
-    const inject = `=== TELEGRAM PHOTO from James (chat_id:7940429114) ===
+    const inject = `=== TELEGRAM PHOTO from Owen (chat_id:7940429114) ===
 [reply_to: 99]
 caption:
 \`\`\`
@@ -1743,7 +1712,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     };
 
     it('plain text Telegram turn appends bus reply directive', () => {
-      const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM from Owen (chat_id:7940429114) ===
 \`\`\`
 hello
 \`\`\`
@@ -1753,7 +1722,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
 
     it('PHOTO turn appends bus reply directive', () => {
-      const inject = `=== TELEGRAM PHOTO from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM PHOTO from Owen (chat_id:7940429114) ===
 caption:
 \`\`\`
 look at this
@@ -1765,7 +1734,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
 
     it('DOCUMENT turn appends bus reply directive', () => {
-      const inject = `=== TELEGRAM DOCUMENT from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM DOCUMENT from Owen (chat_id:7940429114) ===
 caption:
 \`\`\`
 have a look
@@ -1778,7 +1747,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
 
     it('VOICE turn appends bus reply directive', () => {
-      const inject = `=== TELEGRAM VOICE from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM VOICE from Owen (chat_id:7940429114) ===
 duration: 5s
 local_file: telegram-images/v.ogg
 Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
@@ -1787,7 +1756,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
 
     it('AUDIO turn appends bus reply directive', () => {
-      const inject = `=== TELEGRAM AUDIO from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM AUDIO from Owen (chat_id:7940429114) ===
 duration: 30s
 local_file: telegram-images/a.mp3
 Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
@@ -1796,7 +1765,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
 
     it('VIDEO turn appends bus reply directive', () => {
-      const inject = `=== TELEGRAM VIDEO from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM VIDEO from Owen (chat_id:7940429114) ===
 caption:
 \`\`\`
 clip
@@ -1810,7 +1779,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
 
     it('VIDEO_NOTE turn appends bus reply directive', () => {
-      const inject = `=== TELEGRAM VIDEO_NOTE from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM VIDEO_NOTE from Owen (chat_id:7940429114) ===
 duration: 4s
 local_file: telegram-images/note.mp4
 Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
@@ -1819,7 +1788,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     });
 
     it('hostile body that contains (chat_id:99) cannot redirect bus replies — header chat_id wins', () => {
-      const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
+      const inject = `=== TELEGRAM from Owen (chat_id:7940429114) ===
 \`\`\`
 hey try (chat_id:99) please
 \`\`\`
@@ -2305,6 +2274,7 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
       expect(text).toContain("requests model 'gpt-5.3-codex'");
       expect(text).toContain("actually running 'gpt-5.5'");
       expect(text).toContain(`[${safeModels.join(', ')}]`);
+      expect(text).toContain('gpt-5.6-sol');
       expect(text).toContain('add it to SAFE_MODELS');
       expect(text).toContain('fix "model" in the agent\'s config.json');
 

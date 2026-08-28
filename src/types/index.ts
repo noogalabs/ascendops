@@ -252,9 +252,6 @@ export interface AgentConfig {
    * Defaults to true (back-compat: agents run unattended). Set to false to keep
    * Claude Code's permission system engaged so the PermissionRequest hook
    * (hook-permission-telegram) gates tool use instead of everything auto-running.
-   * An explicitly present config field wins over the install-level consent
-   * record in both directions. The record supplies this value only when the
-   * field is omitted.
    * Only applies to the claude-code runtime (Hermes never passes the flag).
    */
   dangerously_skip_permissions?: boolean;
@@ -378,10 +375,10 @@ export interface CronEntry {
    * config.json is reconciled into crons.json on EVERY AGENT BOOT (#125), every
    * boot silently re-armed every cron an operator had switched off.
    *
-   * It surfaced when an agent hardened cash's config with `enabled: false` on five
-   * proactive crons specifically so a fleet restart could not re-arm them; the
-   * restart re-armed all five. Zero prohibited fires only because cash noticed
-   * and re-disabled them ~25 minutes before the next window.
+   * It surfaced when an operator hardened an agent's config with `enabled: false`
+   * on five proactive crons specifically so a fleet restart could not re-arm them;
+   * the restart re-armed all five. Zero prohibited fires only because the operator
+   * noticed and re-disabled them ~25 minutes before the next window.
    *
    * `type: "disabled"` was the only disable signal the reader honoured. Both are
    * legitimate ways to express intent, so both are honoured now.
@@ -900,7 +897,11 @@ export type IPCCommandType =
   | 'add-cron'
   | 'update-cron'
   | 'remove-cron'
-  | 'fleet-health';
+  | 'fleet-health'
+  | 'acquire-worktree-lease'
+  | 'bind-worktree-lease-child'
+  | 'check-worktree-lease'
+  | 'release-worktree-lease';
 
 // ---------------------------------------------------------------------------
 // Execution log pagination response — Subtask 4.3
@@ -1015,7 +1016,7 @@ export interface IPCRequest {
 
 // Worker Types
 
-export type WorkerStatusValue = 'starting' | 'running' | 'completed' | 'failed';
+export type WorkerStatusValue = 'starting' | 'running' | 'completed' | 'failed' | 'revoke-failed';
 
 export interface WorkerStatus {
   name: string;
@@ -1037,7 +1038,7 @@ export interface IPCResponse {
    * in-flight identical op" (DEDUPED), and a live runtime that could not
    * durably admit the request (ADMISSION_FAILED). See issue #346.
    */
-  code?: 'NOT_FOUND' | 'DEDUPED' | 'INVALID_INPUT' | 'NOT_RUNNING' | 'ADMISSION_FAILED';
+  code?: 'NOT_FOUND' | 'DEDUPED' | 'INVALID_INPUT' | 'NOT_RUNNING' | 'ADMISSION_FAILED' | 'ADMISSION_TIMEOUT' | 'IN_FLIGHT' | 'REFUSED';
 }
 
 // Agent Discovery Types
@@ -1063,11 +1064,11 @@ export const VALID_TRUST_LEVELS: TrustLevel[] = ['owner', 'manager', 'member'];
  * Stored in org config or agent config under team_members.
  */
 export interface TeamMember {
-  /** Display name (e.g. "Morgan Reed") */
+  /** Display name (e.g. "Jordan Rivera") */
   name: string;
   /** Job role or title (e.g. "Operations Manager") */
   role: string;
-  /** Slack handle without @ (e.g. "morgan.reed") */
+  /** Slack handle without @ (e.g. "jordan.rivera") */
   slack_handle: string;
   /** Trust level — determines how the agent treats messages from this person */
   trust_level: TrustLevel;

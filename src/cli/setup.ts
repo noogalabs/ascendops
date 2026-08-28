@@ -17,6 +17,7 @@ import { spawnSync } from 'child_process';
 import { TelegramAPI, formatValidateError } from '../telegram/api.js';
 import { validateAgentName, validateOrgName } from '../utils/validate.js';
 
+import { stripSessionCredentialFromEnv } from '../utils/env.js';
 function rl(): Interface {
   return createInterface({ input: process.stdin, output: process.stdout });
 }
@@ -63,7 +64,7 @@ function runCli(cwd: string, args: string[], label: string): boolean {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd,
     stdio: 'inherit',
-    env: process.env,
+    env: stripSessionCredentialFromEnv(process.env),
   });
   if (result.status !== 0) {
     console.error(`\n  Error during: ${label}`);
@@ -411,7 +412,7 @@ export const setupCommand = new Command('setup')
     console.log('\n  ─────────────────────────────────────\n');
     console.log('  Step 5: Generating ecosystem config and starting daemon...\n');
 
-    const ecoEnv = { ...process.env, CTX_INSTANCE_ID: instanceId, CTX_ORG: orgName };
+    const ecoEnv = { ...stripSessionCredentialFromEnv(process.env), CTX_INSTANCE_ID: instanceId, CTX_ORG: orgName };
     const ecoResult = spawnSync(process.execPath, [join(projectRoot, 'dist', 'cli.js'), 'ecosystem', '--instance', instanceId], {
       cwd: projectRoot,
       stdio: 'inherit',
@@ -422,12 +423,14 @@ export const setupCommand = new Command('setup')
       console.error('  Failed to generate ecosystem config. Run manually: cortextos ecosystem');
     } else {
       // Try PM2 start
+      // See start.ts: pm2 inherits the calling env, stripped at every invocation.
       const pm2Result = spawnSync('pm2', ['start', 'ecosystem.config.js'], {
+        env: stripSessionCredentialFromEnv(process.env),
         cwd: projectRoot,
         stdio: 'inherit',
       });
       if (pm2Result.status === 0) {
-        spawnSync('pm2', ['save'], { cwd: projectRoot, stdio: 'inherit' });
+        spawnSync('pm2', ['save'], { cwd: projectRoot, stdio: 'inherit', env: stripSessionCredentialFromEnv(process.env) });
         console.log('\n  Daemon started via PM2.');
       } else {
         // Fallback: cortextos start

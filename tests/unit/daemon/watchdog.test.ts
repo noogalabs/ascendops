@@ -152,7 +152,7 @@ describe('rollback destructive safety gates', () => {
     expect(watchdogRollbackMaxResets({ WATCHDOG_ROLLBACK_MAX_RESETS: '0' } as NodeJS.ProcessEnv)).toBe(1);
   });
 
-  it('depth cap halts before stash/reset after N cumulative resets on the branch', async () => {
+  it('depth cap halts before stash/reset after N cumulative resets on the branch', () => {
     const rollbackTarget = getCurrentCommit(repoRoot)!;
     const failedCommit = commitEmpty('unstable');
     const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
@@ -162,14 +162,14 @@ describe('rollback destructive safety gates', () => {
       rollback_counts: { [branch]: 1 },
     });
 
-    const result = await performRollback(stateDir, repoRoot, { maxResetsPerBranch: 1 });
+    const result = performRollback(stateDir, repoRoot, { maxResetsPerBranch: 1 });
 
     expect(result.success).toBe(false);
     expect(result.reason).toContain('Rollback depth cap reached');
     expect(getCurrentCommit(repoRoot)).toBe(failedCommit);
   });
 
-  it('fires event and Telegram pre-notify hooks before a destructive rollback', async () => {
+  it('fires event and Telegram pre-notify hooks before a destructive rollback', () => {
     const rollbackTarget = getCurrentCommit(repoRoot)!;
     const failedCommit = commitEmpty('unstable');
     writeStability({
@@ -180,7 +180,7 @@ describe('rollback destructive safety gates', () => {
     const eventHook = vi.fn();
     const notifyHook = vi.fn();
 
-    const result = await performRollback(stateDir, repoRoot, {
+    const result = performRollback(stateDir, repoRoot, {
       maxResetsPerBranch: 1,
       logEventBeforeRollback: eventHook,
       notifyBeforeRollback: notifyHook,
@@ -203,43 +203,7 @@ describe('rollback destructive safety gates', () => {
     expect(parsed.rollback_counts?.[branch]).toBe(1);
   });
 
-  it('waits for the Telegram pre-notify promise before running git reset', async () => {
-    const rollbackTarget = getCurrentCommit(repoRoot)!;
-    const failedCommit = commitEmpty('unstable');
-    writeStability({
-      restart_counts: { [failedCommit]: ROLLBACK_THRESHOLD },
-      last_healthy: rollbackTarget,
-      rollback_counts: {},
-    });
-    let releaseNotify!: () => void;
-    let settled = false;
-    const notifyStarted = vi.fn();
-    const notifyHook = vi.fn(() => new Promise<void>((resolve) => {
-      notifyStarted();
-      releaseNotify = resolve;
-    }));
-
-    const rollbackPromise = performRollback(stateDir, repoRoot, {
-      maxResetsPerBranch: 1,
-      notifyBeforeRollback: notifyHook,
-    }).then((result) => {
-      settled = true;
-      return result;
-    });
-
-    await Promise.resolve();
-    expect(notifyStarted).toHaveBeenCalledTimes(1);
-    expect(settled).toBe(false);
-    expect(getCurrentCommit(repoRoot)).toBe(failedCommit);
-
-    releaseNotify();
-    const result = await rollbackPromise;
-
-    expect(result.success).toBe(true);
-    expect(getCurrentCommit(repoRoot)).toBe(rollbackTarget);
-  });
-
-  it('refuses rollback targets older than the configured floor ref before reset', async () => {
+  it('refuses rollback targets older than the configured floor ref before reset', () => {
     const tooOldTarget = getCurrentCommit(repoRoot)!;
     const floorCommit = commitEmpty('floor');
     const failedCommit = commitEmpty('unstable');
@@ -249,7 +213,7 @@ describe('rollback destructive safety gates', () => {
       rollback_counts: {},
     });
 
-    const result = await performRollback(stateDir, repoRoot, {
+    const result = performRollback(stateDir, repoRoot, {
       maxResetsPerBranch: 1,
       floorRef: floorCommit,
     });

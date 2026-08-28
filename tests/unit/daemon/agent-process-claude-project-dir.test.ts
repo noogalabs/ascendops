@@ -7,6 +7,7 @@ import { claudeProjectDirName } from '../../../src/utils/claude-project-dir.js';
 const mocks = vi.hoisted(() => ({
   homeDir: '',
   pty: {
+    sessionNonce: vi.fn().mockReturnValue(null),
     spawn: vi.fn().mockResolvedValue(undefined),
     kill: vi.fn(),
     write: vi.fn(),

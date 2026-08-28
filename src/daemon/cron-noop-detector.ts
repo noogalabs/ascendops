@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { join, sep } from 'path';
+import { join } from 'path';
 import type { AgentConfig, AgentStatus, CronExecutionLogEntry, CronFireKind } from '../types/index.js';
 import { resolveClaudeProjectDir } from '../utils/claude-project-dir.js';
 
@@ -23,16 +23,13 @@ export function resolveClaudeTranscriptPath(
   config: Pick<AgentConfig, 'working_directory'>,
   agentDir: string,
   homeDir: string = homedir(),
+  logger: (message: string) => void = console.warn,
 ): string | null {
   const launchDir = config.working_directory || agentDir;
   if (!launchDir) return null;
 
-  const convDir = join(
-    homeDir,
-    '.claude',
-    'projects',
-    launchDir.split(sep).join('-'),
-  );
+  const convDir = resolveClaudeProjectDir(launchDir, homeDir, logger);
+  if (!convDir) return null;
 
   try {
     const jsonlFiles = readdirSync(convDir)
@@ -162,7 +159,8 @@ export class CronNoopDetector {
     this.hasActivitySince = options.hasActivitySince ?? (() => false);
     this.logger = options.logger ?? (() => {});
     this.now = options.now ?? (() => new Date());
-    this.transcriptPathFor = options.transcriptPathFor ?? ((agentDir, config) => resolveClaudeTranscriptPath(config, agentDir));
+    this.transcriptPathFor = options.transcriptPathFor
+      ?? ((agentDir, config) => resolveClaudeTranscriptPath(config, agentDir, homedir(), this.logger));
   }
 
   registerFire(input: {
@@ -174,7 +172,11 @@ export class CronNoopDetector {
     firedAt: string;
     fireKind?: CronFireKind;
   }): void {
-    if (input.config.runtime === 'codex-app-server' || input.config.runtime === 'hermes') {
+    if (
+      input.config.runtime === 'codex-app-server'
+      || input.config.runtime === 'hermes'
+      || input.config.runtime === 'opencode'
+    ) {
       return;
     }
     const salt = cronFireSalt(input.firedAt, input.cronName);

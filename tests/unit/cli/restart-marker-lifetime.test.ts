@@ -26,7 +26,7 @@
  *        cadence gap is invisible. Hook reads happen at times nothing here
  *        controls, so such a gap CAN coincide with one — an ACCEPTED residual,
  *        not a harmless case.
- *        ITS DURATION IS BOUNDED (reviewer, 6b2d021c). Two separate facts, stated
+ *        ITS DURATION IS BOUNDED (nova, 6b2d021c). Two separate facts, stated
  *        separately: per-run, every inter-sample gap was measured and the worst
  *        asserted <= MAX_ALLOWED_GAP_MS, so an undetected delete+restore fits
  *        inside that measured ceiling; standing, the bound IS that cadence
@@ -54,7 +54,7 @@
  *  fourteen review rounds, each restatement an independent chance to overreach.
  *  If you need to state the guarantee, EDIT THIS BLOCK; do not re-say it below.
  *
- * WHY THIS FILE EXISTS (reviewer RED + Codex P2 on b9273b5f, 2026-08-14):
+ * WHY THIS FILE EXISTS (nova RED + Codex P2 on b9273b5f, 2026-08-14):
  *   The previous assertion pinned the absence of an eager clear by checking that
  *   `clearStopMarker` was not among a mocked module's property names. A guarded
  *   mutation that inlined `existsSync`/`unlinkSync` — no helper involved — left the
@@ -152,7 +152,7 @@ afterAll(() => {
 const markerPath = (agent: string) =>
   join(SANDBOX, '.cortextos', 'default', 'state', agent, '.user-stop');
 
-// SLOW LANE (coordinator's ruling, 2026-08-14). The grace-window case costs ~125s, which
+// SLOW LANE (rex's ruling, 2026-08-14). The grace-window case costs ~125s, which
 // is right for a PR gate and wrong for a rapid local edit-test cycle. So it runs
 // in CI (which sets CI=true) and on explicit opt-in, and is skipped otherwise.
 //
@@ -199,7 +199,7 @@ describe('cortextos restart: .user-stop must survive the command (black box)', (
     // every assertion above and still removes the marker afterwards.
     //
     // ORDER IS LOAD-BEARING AGAIN, for the same reason as the $HOME sandbox and on
-    // a different axis (reviewer casualty, 3314fb75). Installing the fake clock
+    // a different axis (nova casualty, 3314fb75). Installing the fake clock
     // inside the test is too late: a module that captured a scheduler at import
     // time — `import { setTimeout } from 'node:timers'` — holds a reference the
     // fake never replaces, so an unref'd 1s unlink through that reference deletes
@@ -269,7 +269,7 @@ describe('cortextos restart: .user-stop must survive the command (black box)', (
       // unlink at 50s passed the 48s window while a late hook still needed the
       // marker. No finite observation can prove "survives until firing #2".
       //
-      // WHY THIS WINDOW (reviewer, 2c1aa300). MARKER_CLEAR_GRACE_MS is a grace
+      // WHY THIS WINDOW (nova, 2c1aa300). MARKER_CLEAR_GRACE_MS is a grace
       // FLOOR, not a handoff instant — the marker is cleared only when a
       // heartbeat actually runs clearEndMarkers() on a marker AT OR OLDER THAN
       // that: heartbeat.ts:56 skips on strictly `<`, so age == grace IS deleted.
@@ -284,7 +284,7 @@ describe('cortextos restart: .user-stop must survive the command (black box)', (
       //
       // The architectural argument behind N4 is stated in N4, not restated here.
       //
-      // WHY 125s, STATED WITHOUT THE OVERREACH IT HAD (reviewer, 92336bb7). I had
+      // WHY 125s, STATED WITHOUT THE OVERREACH IT HAD (nova, 92336bb7). I had
       // called it "the last point at which an absent marker is unambiguously this
       // command's fault". That is wrong in system terms: 125s is BEYOND the 120s
       // grace floor, so in production a heartbeat may have run clearEndMarkers() by
@@ -302,7 +302,7 @@ describe('cortextos restart: .user-stop must survive the command (black box)', (
       //         between the two firings. (Codex, e946d20d)
       //   46s — summed performStop's graceful sleeps as 9s unconditional. They are
       //         MUTUALLY EXCLUSIVE runtime branches: hermes 3s, codex-app-server
-      //         0s, opencode 1s, Claude 1s+5s=6s max. (self-caught; reviewer
+      //         0s, opencode 1s, Claude 1s+5s=6s max. (self-caught; nova
       //         independently)
       //   43s — 6s + 15s race = "21s worst case to firing #1". REFUTED: the race
       //         bounds how long stop() WAITS, not when the PTY dies.
@@ -325,8 +325,8 @@ describe('cortextos restart: .user-stop must survive the command (black box)', (
       // fully subsumed, and a redundant assertion that reads like a guard is the
       // trap already hit once on this PR.
 
-      // SAMPLED OBSERVATION, NOT ENDPOINT SAMPLING (reviewer casualty, 92336bb7) —
-      // and NOT continuity, which sampling cannot establish at all (reviewer again,
+      // SAMPLED OBSERVATION, NOT ENDPOINT SAMPLING (nova casualty, 92336bb7) —
+      // and NOT continuity, which sampling cannot establish at all (nova again,
       // 0507b1ed: a delete at 25ms with an identical restore at 75ms sits entirely
       // inside the first interval and is invisible here). The title, the failure
       // text and this comment all now say the same bounded thing, because the
@@ -347,7 +347,7 @@ describe('cortextos restart: .user-stop must survive the command (black box)', (
 
       await restartCommand.parseAsync(['alice'], { from: 'user' });
 
-      // The gap denominator includes BOTH ENDS (reviewer, 92336bb7). Presence at
+      // The gap denominator includes BOTH ENDS (nova, 92336bb7). Presence at
       // return is the LEFT ENDPOINT of the first interval, not observation of it —
       // the return-to-first-sample window is unobserved exactly like every other
       // inter-sample window, and bounded only by the first sample arriving.

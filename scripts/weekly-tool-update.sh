@@ -32,8 +32,10 @@ declare -a PINS=(
 
 # Active trials — anything upstream of these is on transitive integrity hold.
 # Update this list when a trial opens or seals.
+# mempalace-rooms-graphify-p4 SEALED as inconclusive 2026-07-06 (David approved):
+#   stalled since 2026-05-10, no result artifact (42-node partial graph, no eval/verdict).
+#   Restart later as a fresh scoped experiment with success criteria + written verdict.
 declare -a ACTIVE_TRIALS=(
-  "mempalace-rooms-graphify-p4"
 )
 
 # Tools transitive-blocked while ACTIVE_TRIALS is non-empty.

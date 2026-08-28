@@ -42,11 +42,11 @@ describe('private KB query — caller-scoped identity (real guard)', () => {
 
   // ── REJECT ──
   it('REFUSES a mismatched --agent private query (agent-<other>) and never spawns mmrag', () => {
-    expect(() => q({ scope: 'private', agent: 'dane', requestedAgent: 'aussie' })).toThrow(/BLOCKED/);
+    expect(() => q({ scope: 'private', agent: 'rex', requestedAgent: 'nova' })).toThrow(/BLOCKED/);
     expect(execFileSyncSpy).not.toHaveBeenCalled();
   });
   it('REFUSES a mismatched --agent under scope=all', () => {
-    expect(() => q({ scope: 'all', agent: 'dane', requestedAgent: 'aussie' })).toThrow(/BLOCKED/);
+    expect(() => q({ scope: 'all', agent: 'rex', requestedAgent: 'nova' })).toThrow(/BLOCKED/);
     expect(execFileSyncSpy).not.toHaveBeenCalled();
   });
   it('REFUSES private scope with no runtime identity (not addressable)', () => {
@@ -55,20 +55,20 @@ describe('private KB query — caller-scoped identity (real guard)', () => {
 
   // ── ALLOW (must-preserve) ──
   it('ALLOWS own-private (explicit --agent == runtime identity) -> addresses agent-<self> ONLY', () => {
-    q({ scope: 'private', agent: 'dane', requestedAgent: 'dane' });
-    expect(collectionsQueried()).toEqual(['agent-dane']);
+    q({ scope: 'private', agent: 'rex', requestedAgent: 'rex' });
+    expect(collectionsQueried()).toEqual(['agent-rex']);
   });
   it('ALLOWS own-private with no explicit --agent (uses runtime identity) -> agent-<self>', () => {
-    q({ scope: 'private', agent: 'dane' });
-    expect(collectionsQueried()).toEqual(['agent-dane']);
+    q({ scope: 'private', agent: 'rex' });
+    expect(collectionsQueried()).toEqual(['agent-rex']);
   });
   it('shared scope with no agent is unaffected -> shared-<org>', () => {
     q({ scope: 'shared' });
     expect(collectionsQueried()).toEqual([`shared-${ORG}`]);
   });
   it('scope=all with a runtime identity -> shared + own private only', () => {
-    q({ scope: 'all', agent: 'dane' });
-    expect(collectionsQueried()).toEqual([`shared-${ORG}`, 'agent-dane']);
+    q({ scope: 'all', agent: 'rex' });
+    expect(collectionsQueried()).toEqual([`shared-${ORG}`, 'agent-rex']);
   });
   it('scope=all with no runtime identity -> shared-only (no agent-<X>)', () => {
     q({ scope: 'all' });
@@ -77,12 +77,12 @@ describe('private KB query — caller-scoped identity (real guard)', () => {
 
   // ── direct guard matrix (supplements the wired tests) ──
   it('assertQueryIdentity: own-private allowed, cross-agent refused, shared always fine', () => {
-    expect(() => assertQueryIdentity('private', 'dane', 'dane')).not.toThrow();
-    expect(() => assertQueryIdentity('private', 'dane', undefined)).not.toThrow();
-    expect(() => assertQueryIdentity('all', 'dane', undefined)).not.toThrow();
-    expect(() => assertQueryIdentity('private', 'dane', 'aussie')).toThrow(/BLOCKED/);
-    expect(() => assertQueryIdentity('all', 'dane', 'aussie')).toThrow(/BLOCKED/);
+    expect(() => assertQueryIdentity('private', 'rex', 'rex')).not.toThrow();
+    expect(() => assertQueryIdentity('private', 'rex', undefined)).not.toThrow();
+    expect(() => assertQueryIdentity('all', 'rex', undefined)).not.toThrow();
+    expect(() => assertQueryIdentity('private', 'rex', 'nova')).toThrow(/BLOCKED/);
+    expect(() => assertQueryIdentity('all', 'rex', 'nova')).toThrow(/BLOCKED/);
     expect(() => assertQueryIdentity('private', undefined, undefined)).toThrow(/BLOCKED/);
-    expect(() => assertQueryIdentity('shared', undefined, 'aussie')).not.toThrow();
+    expect(() => assertQueryIdentity('shared', undefined, 'nova')).not.toThrow();
   });
 });

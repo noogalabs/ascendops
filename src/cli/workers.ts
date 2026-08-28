@@ -27,7 +27,7 @@ export const spawnWorkerCommand = new Command('spawn-worker')
       console.log(`Stop:    cortextos terminate-worker ${name}`);
     } else {
       console.error(`Error: ${response.error}`);
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -47,7 +47,7 @@ export const terminateWorkerCommand = new Command('terminate-worker')
       console.log(`Worker "${name}" terminating`);
     } else {
       console.error(`Error: ${response.error}`);
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 

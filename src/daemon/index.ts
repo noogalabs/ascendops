@@ -6,7 +6,22 @@ import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { ensureDir } from '../utils/atomic.js';
 import { resolveCanonicalCtxRoot } from '../utils/paths.js';
+import { createWorktreeLeaseRuntime } from './worktree-lease-runtime.js';
+import { DeferredAgentLifecycle } from './deferred-agent-lifecycle.js';
+import { DeferredStartMachine, type DeferredRecord } from './deferred-start-machine.js';
+import { FileDeferredStartJournal } from './file-deferred-start-journal.js';
+import { createNodeDurableFs } from './node-durable-state.js';
+import { readNativeProcessIdentity, runNativeFullFsync } from './native-peer-credential-helper.js';
+import { DurableLeaseRequest } from './durable-lease-request.js';
+import { randomUUID } from 'node:crypto';
+import { acceptNativeMeasuredPeer } from './peer-credentials.js';
+import { InternalWorktreeWriterLease } from './internal-worktree-writer-lease.js';
 
+import { HEARTBEAT_SESSION_ENV } from '../utils/env.js';
+import { revokeAllSessionNonces, instanceSocketAnswers } from '../bus/heartbeat-session-store.js';
+import { quarantineAgentForUnrevokedSession } from './session-revocation-quarantine.js';
+import { getIpcPath } from '../utils/paths.js';
+import { bindInstanceAndReconcileSessionRecords } from './instance-boot-sequence.js';
 // Each fast-checker registers a process-level SIGUSR1 handler (see
 // fast-checker.ts:102). With >10 active agents the default Node listener cap
 // trips MaxListenersExceededWarning. Bump for the full fleet.
@@ -285,6 +300,14 @@ class Daemon {
   }
 
   async start(): Promise<void> {
+    // Defence-in-depth is the wrong description: this is the by-construction
+    // closure. Whatever launched this daemon, the daemon is not an agent session.
+    // Deleting the marker from our own process.env closes EVERY inheritance path
+    // at once — however many spawn sites exist now or arrive later — where
+    // enumerating spawn sites only closes the ones someone remembered.
+    delete process.env[HEARTBEAT_SESSION_ENV];
+
+
     // Force restrictive default permissions for everything the daemon writes:
     // 0700 dirs, 0600 files. Belt-and-suspenders for explicit chmod calls.
     if (process.platform !== 'win32') {
@@ -330,15 +353,11 @@ class Daemon {
       );
     }
 
-    // Write PID file
+    // The PID file is published only after this process owns exclusivity. A
+    // rejected duplicate must never overwrite or unlink the live owner's bytes.
     const pidFile = join(this.ctxRoot, 'daemon.pid');
     ensureDir(this.ctxRoot);
-    writeFileSync(pidFile, String(process.pid), 'utf-8');
-    if (process.platform !== 'win32') {
-      try {
-        chmodSync(pidFile, 0o600);
-      } catch { /* best effort */ }
-    }
+    let ownsPidFile = false;
 
     // Create agent manager
     this.agentManager = new AgentManager(this.instanceId, this.ctxRoot, frameworkRoot, org);
@@ -367,8 +386,11 @@ class Daemon {
       }
       // Clean up PID file
       try {
-        const { unlinkSync } = require('fs');
-        unlinkSync(pidFile);
+        if (ownsPidFile) {
+          const { unlinkSync } = require('fs');
+          unlinkSync(pidFile);
+          ownsPidFile = false;
+        }
       } catch { /* ignore */ }
       process.exit(0);
     };
@@ -424,6 +446,7 @@ class Daemon {
         this.ipcServer.stop();
       }
       try {
+        if (!ownsPidFile) return;
         const { unlinkSync } = require('fs');
         unlinkSync(pidFile);
       } catch { /* ignore */ }
@@ -431,9 +454,116 @@ class Daemon {
 
     // --- Boot work begins only AFTER all handlers above are installed (F2) ---
 
+    // Reject an already-owned instance before deriving repository-scoped runtime
+    // state. A duplicate daemon has no right to require (or mutate) repository
+    // state merely to discover that another daemon already owns the socket. The
+    // probe-bind sequence below remains authoritative and probes again, closing
+    // the race where an owner appears after this fail-fast check.
+    if (await instanceSocketAnswers(getIpcPath(this.instanceId))) {
+      console.log('[daemon] another daemon owns this instance; refusing to start');
+      throw new Error('another daemon is already running for this instance');
+    }
+
     // Start IPC server
-    this.ipcServer = new IPCServer(this.agentManager, this.instanceId);
-    await this.ipcServer.start();
+    const nativeHelperPath = join(frameworkRoot, 'dist', 'native', 'peer-credentials');
+    const commonDir = spawnSync('git', [
+      '-C', frameworkRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir',
+    ], { encoding: 'utf8' });
+    if (commonDir.status !== 0 || !commonDir.stdout.trim()) {
+      throw new Error('cannot derive canonical repository lease scope');
+    }
+    const repositoryCommonDir = commonDir.stdout.trim();
+    const repositoryScope = `repo:${repositoryCommonDir}`;
+    const worktreeLeaseRuntime = createWorktreeLeaseRuntime({
+      ctxRoot: this.ctxRoot,
+      repositoryCommonDir,
+      nativeHelperPath,
+    });
+    if (!worktreeLeaseRuntime.policy.custodyEnabled) {
+      console.log(`[daemon] ${worktreeLeaseRuntime.policy.reason}; agent starts bypass custody and destructive reaping is refused`);
+    }
+    const deferredJournal = new FileDeferredStartJournal<DeferredRecord>({
+      directory: join(this.ctxRoot, 'state', '.deferred-agent-operations'),
+      platform: process.platform,
+      fs: createNodeDurableFs({ fullFsync: path => runNativeFullFsync(path, nativeHelperPath) }),
+    });
+    const deferredMachine = new DeferredStartMachine(deferredJournal);
+    const internalWriterLease = new InternalWorktreeWriterLease({
+      scopeKey: repositoryScope,
+      arbiter: worktreeLeaseRuntime.arbiter,
+      peer: () => {
+        const identity = readNativeProcessIdentity(process.pid, nativeHelperPath);
+        return identity.kind === 'known'
+          ? acceptNativeMeasuredPeer({
+              pid: process.pid,
+              platform: identity.platform,
+              processStartIdentity: identity.kernelToken,
+            })
+          : undefined;
+      },
+      createRequest: agent => new DurableLeaseRequest({
+        directory: join(this.ctxRoot, 'state', '.worktree-lease-requests'),
+        scopeKey: repositoryScope,
+        owner: `daemon-agent-start:${agent}`,
+        platform: process.platform,
+        fs: createNodeDurableFs({ fullFsync: path => runNativeFullFsync(path, nativeHelperPath) }),
+        createRequestId: randomUUID,
+        createAttemptNonce: randomUUID,
+      }),
+    });
+    const deferredLifecycle = new DeferredAgentLifecycle(deferredMachine, {
+      custodyVerdict: agent => worktreeLeaseRuntime.policy.custodyEnabled
+        ? internalWriterLease.custodyVerdict(agent) : 'clear',
+      acquireCustody: agent => worktreeLeaseRuntime.policy.custodyEnabled
+        ? internalWriterLease.acquire(agent) : true,
+      releaseCustody: agent => {
+        if (worktreeLeaseRuntime.policy.custodyEnabled) internalWriterLease.release(agent);
+      },
+      enabled: agent => this.agentManager!.isAgentEnabledForDeferred(agent),
+      stopOld: (agent, identity) => this.agentManager!.executeDeferredStop(agent, identity),
+      spawn: (agent, token, generation) => this.agentManager!.executeDeferredSpawn(agent, token, generation),
+      reapChild: (agent, binding) => this.agentManager!.reapDeferredChild(agent, binding),
+      deliver: effect => this.agentManager!.completeDeferredSubscriber(effect),
+      scheduleRetry: (callback, delayMs) => setTimeout(callback, delayMs),
+      cancelRetry: handle => clearTimeout(handle as NodeJS.Timeout),
+    });
+    this.agentManager.configureDeferredLifecycle(deferredLifecycle, pid => {
+      const observed = readNativeProcessIdentity(pid, nativeHelperPath);
+      if (observed.kind !== 'known') throw new Error(`child process identity ${observed.kind}`);
+      return `${observed.platform}:${observed.kernelToken}`;
+    });
+    this.ipcServer = new IPCServer(
+      this.agentManager,
+      this.instanceId,
+      worktreeLeaseRuntime.service,
+    );
+    await bindInstanceAndReconcileSessionRecords({
+      probe: () => instanceSocketAnswers(getIpcPath(this.instanceId)),
+      bind: () => this.ipcServer!.start(),
+      revoke: () => {
+        revokeAllSessionNonces(this.ctxRoot ?? process.env.CTX_ROOT ?? '', (agent, error) => {
+          // Loud on purpose: every record left behind is a credential that still
+          // refreshes a heartbeat for a session this boot did not start.
+          // Scoped fail-closed. A record we could not revoke stays VALID alongside
+          // the fresh generation this agent is about to mint, so this agent does
+          // not start until a later revoke succeeds. Every other agent boots.
+          const reason = `stale heartbeat session records could not be revoked at boot (${error}); `
+            + 'any record left there is still a valid credential, so starting a new '
+            + 'generation would leave two live sessions for this agent';
+          quarantineAgentForUnrevokedSession(agent, reason);
+          console.error(`[daemon] REFUSING TO START "${agent}": ${reason}`);
+        });
+      },
+      onConflict: () => console.log('[daemon] another daemon owns this instance; refusing to start'),
+    });
+
+    writeFileSync(pidFile, String(process.pid), 'utf-8');
+    ownsPidFile = true;
+    if (process.platform !== 'win32') {
+      try {
+        chmodSync(pidFile, 0o600);
+      } catch { /* best effort */ }
+    }
 
     // Discover and start agents
     await this.agentManager.discoverAndStart();

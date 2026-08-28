@@ -196,3 +196,76 @@ describe('kb warn messages — UX invariants', () => {
     expect(specificOrgWarns.every((m) => /run setup/i.test(m))).toBe(true);
   });
 });
+
+describe('queryKnowledgeBase — cross-collection merge ranks by SCORE, not collection order', () => {
+  // Regression for the merge defect found 2026-07-17. Each collection is queried
+  // separately with its own --top-k, so results arrive as one descending run PER
+  // collection. The old code concat'd them, which preserved COLLECTION order:
+  // for scope:'all', shared-* is queried first, so every shared hit outranked every
+  // agent hit no matter the score. Observed live: a 0.778 agent hit returned at rank 6,
+  // beneath five shared hits scoring 0.668–0.699.
+  //
+  // These tests assert ORDER, not membership. A set-equality assertion PASSES against
+  // the bug, because all ten documents are present — merely mis-ranked.
+  const sharedLow = [
+    { content: 'shared-a', similarity: 0.699, source: 'shared-a.md', type: 'markdown' },
+    { content: 'shared-b', similarity: 0.693, source: 'shared-b.md', type: 'markdown' },
+    { content: 'shared-c', similarity: 0.684, source: 'shared-c.md', type: 'markdown' },
+    { content: 'shared-d', similarity: 0.671, source: 'shared-d.md', type: 'markdown' },
+    { content: 'shared-e', similarity: 0.668, source: 'shared-e.md', type: 'markdown' },
+  ];
+  // The agent collection is queried SECOND and holds the single best match.
+  const agentHigh = [
+    { content: 'agent-best', similarity: 0.778, source: 'OPERATING_MODEL.md', type: 'markdown' },
+    { content: 'agent-b', similarity: 0.724, source: 'agent-b.md', type: 'markdown' },
+    { content: 'agent-c', similarity: 0.722, source: 'agent-c.md', type: 'markdown' },
+    { content: 'agent-d', similarity: 0.704, source: 'agent-d.md', type: 'markdown' },
+    { content: 'agent-e', similarity: 0.701, source: 'agent-e.md', type: 'markdown' },
+  ];
+
+  const seedBothCollections = () => {
+    mockConfiguredKb();
+    execFileSyncMock.mockImplementation((_py: unknown, args: string[]) => {
+      const i = args.indexOf('--collection');
+      const col = i >= 0 ? args[i + 1] : '';
+      if (col === 'shared-TestOrg') return JSON.stringify({ results: sharedLow });
+      if (col === 'agent-tester') return JSON.stringify({ results: agentHigh });
+      return JSON.stringify({ results: [] });
+    });
+  };
+
+  it('the highest-scoring hit ranks FIRST even when it comes from the later collection', () => {
+    seedBothCollections();
+
+    const result = queryKnowledgeBase(dummyPaths, 'q', { ...baseOptions, scope: 'all', topK: 10 });
+
+    // Pre-fix this was 'shared-a' (0.699) because shared-* is concat'd first.
+    expect(result.results[0].content).toBe('agent-best');
+    expect(result.results[0].score).toBe(0.778);
+  });
+
+  it('scores descend MONOTONICALLY across the whole merged list', () => {
+    seedBothCollections();
+
+    const result = queryKnowledgeBase(dummyPaths, 'q', { ...baseOptions, scope: 'all', topK: 10 });
+    const scores = result.results.map((r) => r.score);
+
+    // Pre-fix this was two descending runs stapled together:
+    // 0.699 0.693 0.684 0.671 0.668 | 0.778 0.724 0.722 0.704 0.701
+    for (let i = 1; i < scores.length; i++) {
+      expect(scores[i]).toBeLessThanOrEqual(scores[i - 1]);
+    }
+  });
+
+  it('honours the caller topK instead of returning topK PER collection', () => {
+    seedBothCollections();
+
+    const result = queryKnowledgeBase(dummyPaths, 'q', { ...baseOptions, scope: 'all', topK: 5 });
+
+    // --top-k is passed per collection, so pre-fix scope:'all' returned 5 + 5 = 10.
+    expect(result.results).toHaveLength(5);
+    expect(result.total).toBe(5);
+    // ...and the 5 returned must be the true global top 5, not one collection's 5.
+    expect(result.results.map((r) => r.score)).toEqual([0.778, 0.724, 0.722, 0.704, 0.701]);
+  });
+});

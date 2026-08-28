@@ -8,6 +8,7 @@ const codexSpawnMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const codexSetTelegramHandleMock = vi.hoisted(() => vi.fn());
 
 const mockCodexAppServerPty = vi.hoisted(() => ({
+  sessionNonce: vi.fn().mockReturnValue(null),
   spawn: codexSpawnMock,
   kill: vi.fn(),
   write: vi.fn(),

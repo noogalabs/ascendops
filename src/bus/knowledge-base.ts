@@ -281,6 +281,23 @@ export function queryKnowledgeBase(
       lastCollection = col;
     }
 
+    // Merge across collections by RELEVANCE, not by collection order.
+    //
+    // Each collection is queried separately with its own --top-k, so results arrive
+    // as one descending run PER collection. Concatenating them (above) preserves
+    // collection order, not score order, which means a hit from a later collection
+    // ranks below every hit from an earlier one no matter how much better it scores.
+    // Observed before this fix: a 0.778 agent-collection match returned at rank 6,
+    // beneath five shared-collection hits scoring 0.668–0.699. Retrieval was correct;
+    // the merge discarded it. Callers that read "the top result" got the wrong answer
+    // systematically — for scope:'all' the shared collection always won on position.
+    //
+    // The slice is part of the same defect: --top-k is applied PER collection, so
+    // scope:'all' returned topK * collections.length rows and the true global top-K
+    // was never computed. Sort first, then honour the caller's topK.
+    allResults.sort((a, b) => b.score - a.score);
+    if (allResults.length > topK) allResults = allResults.slice(0, topK);
+
     if (allResults.length > 0) {
       return {
         results: allResults,

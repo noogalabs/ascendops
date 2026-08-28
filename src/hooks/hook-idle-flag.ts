@@ -11,7 +11,14 @@ import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
+import { hookBootstrap } from './bootstrap.js';
 async function main(): Promise<void> {
+  // PROCESS LINEAGE IS NOT INTENT — see bootstrap.ts.
+  // main() is invoked at module scope below, so importing a hook module runs
+  // hookBootstrap(). Shared validators live in skill-validators.ts specifically
+  // so bus code never imports a hook module merely to reuse its exports; that
+  // extraction, not main() placement, fixed the credential-loss regression.
+  hookBootstrap();
   const agentName = process.env.CTX_AGENT_NAME;
   const instanceId = process.env.CTX_INSTANCE_ID || 'default';
   if (!agentName) return;

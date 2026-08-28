@@ -9,13 +9,15 @@
  *   P-1  Startup time      — scheduler reads 1000 cron defs, ready in <5s
  *   P-2  Fire latency      — cron due → fires within 1 min (30s tick)
  *   P-3  Polling overhead  — scanning 100 agents + 1000 crons in <10s
- *   P-4  File I/O          — read/write crons.json with 100 crons in <100ms
+ *   P-4  File I/O          — write, read, and round-trip each gate the MEDIAN
+ *                            of 10 samples under 100ms
  *   P-5  Concurrent fires  — 100 crons fire simultaneously in <30s
  *   P-6  Disk usage        — 1000 crons.json + execution logs <100MB
  *
  * Also includes scaling-cliff probes to identify where the system degrades:
  *
  *   SC-1  Load vs. startup — 500 / 1000 / 2000 crons on a single agent
+ *                            (MEASURED AND LOGGED ONLY - no scaling gate)
  *   SC-2  Sequential fire drift — 1000 crons × 10ms PTY = 10s tick latency
  *   SC-3  File I/O scale  — crons.json write at 500 / 1000 crons
  *   SC-4  Fleet scan scale — 200 / 500 agents
@@ -163,6 +165,63 @@ function populateFleet(agentCount: number, cronsPerAgent: number): string[] {
     writeCronsJson(name, generateCrons(name, cronsPerAgent));
   }
   return agents;
+}
+
+/**
+ * Median of a sample. Used by all three P-4 file-I/O gates.
+ *
+ * ## WHY A GATE NEVER READS THE TAIL
+ *
+ * The P-4 round-trip gate asserted `Math.max(...times) < 100` over 10 samples
+ * and failed in CI at 170.96ms on code that was not slow. Measured over 6
+ * full-suite runs on one machine the same operation runs in 1.05-2.07ms against
+ * that 100ms bound - a 50-95x margin - so at this scale scheduler noise IS the
+ * signal, and `max()` over ten samples gives one stall ten chances to be the
+ * verdict.
+ *
+ * The discriminator for P-4 is in its own record: the former round-trip `max`
+ * gate failed on one 170.96ms tail while ordinary cycles measured 1.05-2.07ms.
+ * This rationale is deliberately scoped to the three real-time P-4 I/O gates;
+ * SC-1's former ratio and P-5's simulated-time bounds have different contracts
+ * described below. For P-4, the fix is not a bigger number - a bound loose
+ * enough to absorb that stall would also admit a broad slowdown. The fix is to
+ * gate on a statistic a single stall cannot move.
+ *
+ * The median does that in both directions, proven by injection rather than by a
+ * green run: a uniform +120ms regression moves it to 119.99ms and FAILS, while a
+ * single injected 200ms stall - larger than the actual CI failure - leaves it at
+ * 0.33ms and PASSES. Tail values are still measured and logged, because losing
+ * sight of them is how a real tail regression hides.
+ *
+ * ## WHY SC-1 IS NOT ALSO CONVERTED — a failed attempt, recorded
+ *
+ * SC-1 ratios two SINGLE measurements and has failed in CI at 8.11x against a
+ * <5x bound, so it looks like the same defect. It is not fixed the same way.
+ *
+ * Repeating each size 5x and ratioing the medians was tried and **made it
+ * worse**: 2 failures in 5 full-suite runs, against 0 in 6 before the change.
+ * The 1000-cron median inflated to 125-140ms while 2000 measured ~20ms, and all
+ * five samples at 1000 were elevated - systematic, not a tail event.
+ *
+ * The reason is the distinction this comment exists to record: P-4 sampling is
+ * free. The write and read probes showed flat costs across 20 repetitions, and
+ * the round-trip already had its ten-sample loop; none constructs a process,
+ * timer, or scheduler. For SC-1, repeating the measurement changed the process:
+ * each repetition constructs and start()s a real scheduler with real timers, so
+ * 3 live schedulers became 15. **The act of measuring more perturbed the thing
+ * being measured.** Averaging only removes noise when sampling is free, and
+ * there it was not.
+ *
+ * SC-1's MEASUREMENT is therefore left exactly as it was — no repetition, no
+ * medians. Its two ratio ASSERTIONS were removed separately, so the block now
+ * measures and logs without gating. It is not a weak gate; it is NOT A GATE.
+ * The honest state is "scaling is unguarded here", not "fixed".
+ */
+function median(values: number[]): number {
+  if (values.length === 0) throw new Error('median: empty sample');
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
 /**
@@ -373,38 +432,118 @@ describe('P-3: Polling overhead — 100 agents + 1000 crons scan in <10s', () =>
 });
 
 // ===========================================================================
-// P-4: File I/O — read/write crons.json with 100 crons in <100ms
+// P-4: File I/O — read/write crons.json with 100 crons, MEDIAN under 100ms
+//
+// ** NO GATE IN THIS BLOCK IS PER-OPERATION. ALL THREE READ THE MEDIAN. **
+//
+// This header previously said the block held "two different contracts" — a
+// per-operation ceiling for the single-shot tests and a median SLA for the
+// round-trip. That stopped being true when the single-shot tests were converted
+// to sampling, and the prose kept asserting it: exactly the stale-claim shape
+// this file has now produced three times.
+//
+// WHAT A MEDIAN GATE DOES NOT CATCH, stated plainly so nobody has to derive it:
+// a REPEATABLE HALF-THE-CALLS slowdown. Five samples at 150ms and five at 0ms
+// give a 75ms median and PASS, printing 150ms in `max` and failing nothing. That
+// is a real regression shape this file does not gate on.
+//
+// It is accepted deliberately rather than papered over. The alternative — a
+// per-call bound with an explicit stall tolerance — needs a second invented
+// constant (how many stalls are allowed), and an invented constant in a decision
+// path is the defect that produced the flake this whole line of work started
+// from. The tail is MEASURED AND LOGGED in every case so the shape is visible;
+// what is missing is a verdict on it, and a verdict wants CI distribution data
+// that only began accumulating today. There is no fixed count at which it
+// flips — the median of 10 is the mean of the 5th and 6th SORTED values, so the
+// verdict turns on those two together, i.e. on count AND magnitude. Five slow
+// cycles at +150ms give a median of 75ms and PASS; the same five at +250ms give
+// 125ms and FAIL. That is deliberate (see `median`), and it is stated here
+// because a block header implying one uniform contract would be certifying
+// something the third test does not check. Write-bearing cases therefore keep
+// separate create-path and overwrite-path medians; neither path can hide in the
+// other path's sample population.
 // ===========================================================================
 
-describe('P-4: File I/O — read/write 100 crons per operation in <100ms', () => {
-  it('writeCrons() with 100 crons completes in <100ms', () => {
-    const agent = 'p4-write-100';
-    ensureAgentDir(agent);
-    const crons = generateCrons(agent, 100).map(c => ({
-      ...c as Record<string, unknown>,
-    })) as Parameters<typeof writeCrons>[1];
+describe('P-4: File I/O — ALL THREE gates read the MEDIAN, none is per-operation', () => {
+  it('writeCrons() with 100 crons: create and overwrite MEDIANS of 10 under 100ms', () => {
+    const createTimes: number[] = [];
+    const overwriteTimes: number[] = [];
+    let createSamples = 0;
+    let overwriteSamples = 0;
 
-    const t0 = performance.now();
-    writeCrons(agent, crons);
-    const elapsed = performance.now() - t0;
+    // SAMPLED, NOT MEASURED ONCE. A single wall-clock sample against a 100ms
+    // bound on an operation that runs in ~0.04ms is a coin flip against the
+    // runner: one stall over 100ms fails it outright, and CI has already
+    // produced a 170ms stall on this very file.
+    //
+    // REPETITION IS FREE HERE, and that was CHECKED rather than assumed — a
+    // write constructs no process, timer or scheduler. Each iteration uses a
+    // fresh agent so the create median contains ten creates, then writes the
+    // same file once more so the overwrite median contains ten overwrites.
+    for (let i = 0; i < 10; i++) {
+      const agent = `p4-write-100-${i}`;
+      const crons = generateCrons(agent, 100).map(c => ({
+        ...c as Record<string, unknown>,
+      })) as Parameters<typeof writeCrons>[1];
+      const cronsPath = path.join(agentDir(agent), 'crons.json');
+
+      if (!fs.existsSync(cronsPath)) createSamples += 1;
+      const createStart = performance.now();
+      writeCrons(agent, crons);
+      createTimes.push(performance.now() - createStart);
+
+      if (fs.existsSync(cronsPath)) overwriteSamples += 1;
+      const overwriteStart = performance.now();
+      writeCrons(agent, crons);
+      overwriteTimes.push(performance.now() - overwriteStart);
+    }
+    const createMedian = median(createTimes);
+    const overwriteMedian = median(overwriteTimes);
+    const createMax = Math.max(...createTimes);
+    const overwriteMax = Math.max(...overwriteTimes);
 
     perfResults['write-100-crons'] = {
-      measured: elapsed,
+      measured: Math.max(createMedian, overwriteMedian),
       threshold: 100,
       unit: 'ms',
     };
 
-    console.log(`[P-4] writeCrons 100 crons: ${elapsed.toFixed(2)}ms (spec: <100ms)`);
-    expect(elapsed).toBeLessThan(100);
+    const logSpy = vi.spyOn(console, 'log');
+    console.log(
+      `[P-4] writeCrons 100 crons: create median=${createMedian.toFixed(2)}ms ` +
+        `create max=${createMax.toFixed(2)}ms ` +
+        `overwrite median=${overwriteMedian.toFixed(2)}ms ` +
+        `overwrite max=${overwriteMax.toFixed(2)}ms ` +
+        `(gate: both medians <100ms)`,
+    );
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(
+      /create median=.* create max=.* overwrite median=.* overwrite max=/,
+    ));
+    logSpy.mockRestore();
+    // BOUND UNCHANGED at 100ms — only the statistic changed. Re-gating on a
+    // tighter number needs CI median data still accumulating; picking one from
+    // hours-old logs would be an unsourced value.
+    expect(createSamples).toBe(10); // casualty: every create sample starts without a crons.json
+    expect(overwriteSamples).toBe(10); // casualty: every overwrite sample starts with a crons.json
+    expect(createMedian).toBeLessThan(100);
+    expect(overwriteMedian).toBeLessThan(100);
   });
 
-  it('readCrons() with 100 crons completes in <100ms', () => {
+  it('readCrons() with 100 crons: MEDIAN of 10 under 100ms', () => {
     const agent = 'p4-read-100';
     writeCronsJson(agent, generateCrons(agent, 100));
 
-    const t0 = performance.now();
-    const crons = readCrons(agent);
-    const elapsed = performance.now() - t0;
+    // Sampled for the same reason as the write case above; a probe measured an
+    // 8x read stall (0.326ms against a 0.043ms median) inside 20 samples, which
+    // is exactly the event a single sample has no defence against.
+    const times: number[] = [];
+    let crons: ReturnType<typeof readCrons> = [];
+    for (let i = 0; i < 10; i++) {
+      const t0 = performance.now();
+      crons = readCrons(agent);
+      times.push(performance.now() - t0);
+    }
+    const elapsed = median(times);
 
     perfResults['read-100-crons'] = {
       measured: elapsed,
@@ -412,34 +551,71 @@ describe('P-4: File I/O — read/write 100 crons per operation in <100ms', () =>
       unit: 'ms',
     };
 
-    console.log(`[P-4] readCrons 100 crons: ${elapsed.toFixed(2)}ms (spec: <100ms)`);
+    console.log(
+      `[P-4] readCrons 100 crons: median=${elapsed.toFixed(2)}ms ` +
+        `min=${Math.min(...times).toFixed(2)}ms max=${Math.max(...times).toFixed(2)}ms (gate: median <100ms)`,
+    );
     expect(crons).toHaveLength(100);
     expect(elapsed).toBeLessThan(100);
   });
 
-  it('10 successive write+read cycles of 100 crons all complete in <100ms each', () => {
-    const agent = 'p4-rw-cycle';
-    ensureAgentDir(agent);
-    const crons = generateCrons(agent, 100).map(c => ({
-      ...c as Record<string, unknown>,
-    })) as Parameters<typeof writeCrons>[1];
-
-    const times: number[] = [];
+  it('10 write+read cycles of 100 crons: create and overwrite MEDIANS under 100ms', () => {
+    const createTimes: number[] = [];
+    const overwriteTimes: number[] = [];
+    let createSamples = 0;
+    let overwriteSamples = 0;
     for (let i = 0; i < 10; i++) {
-      const t0 = performance.now();
+      const agent = `p4-rw-cycle-${i}`;
+      const crons = generateCrons(agent, 100).map(c => ({
+        ...c as Record<string, unknown>,
+      })) as Parameters<typeof writeCrons>[1];
+      const cronsPath = path.join(agentDir(agent), 'crons.json');
+
+      if (!fs.existsSync(cronsPath)) createSamples += 1;
+      const createStart = performance.now();
       writeCrons(agent, crons);
       readCrons(agent);
-      times.push(performance.now() - t0);
+      createTimes.push(performance.now() - createStart);
+
+      if (fs.existsSync(cronsPath)) overwriteSamples += 1;
+      const overwriteStart = performance.now();
+      writeCrons(agent, crons);
+      readCrons(agent);
+      overwriteTimes.push(performance.now() - overwriteStart);
     }
 
-    const maxRoundTrip = Math.max(...times);
-    const avgRoundTrip = times.reduce((s, v) => s + v, 0) / times.length;
+    const createMedian = median(createTimes);
+    const overwriteMedian = median(overwriteTimes);
+    const maxRoundTrip = Math.max(...createTimes, ...overwriteTimes);
 
+    // Tail STILL MEASURED AND LOGGED. Gating on the median is not permission to
+    // stop looking at the tail — a real tail regression would show up here first,
+    // and dropping it from the output is how it would stop being noticed.
     console.log(
-      `[P-4] 10×(write+read) 100 crons: max=${maxRoundTrip.toFixed(2)}ms avg=${avgRoundTrip.toFixed(2)}ms`
+      `[P-4] 10×(write+read) 100 crons: create median=${createMedian.toFixed(2)}ms ` +
+        `overwrite median=${overwriteMedian.toFixed(2)}ms ` +
+        `max=${maxRoundTrip.toFixed(2)}ms (gate: both medians <100ms)`
     );
 
-    expect(maxRoundTrip).toBeLessThan(100);
+    // WHY NOT A PER-CYCLE GATE WITH AN ISOLATED-STALL TOLERANCE (e.g. "at most
+    // one cycle may exceed"): that is still a per-sample bound, so it still
+    // fails whenever the runner stalls twice in one run — it narrows the
+    // stall-sensitivity this change exists to remove rather than removing it,
+    // and it needs a second invented constant (how many stalls are allowed) with
+    // no evidence behind it. The median needs no such constant.
+    //
+    // GATE ON EACH PATH MEDIAN, not the max. See {@link median} for why: one stall in
+    // ten iterations used to fail this outright at 170.96ms while the operation
+    // itself measures ~1ms. The bound is unchanged at 100ms — still ~50-95x the
+    // observed cost. A sufficiently broad slowdown that moves the sample
+    // median above 100ms is caught. A repeatable half-the-calls slowdown can
+    // still pass: five 150ms samples and five 0ms samples yield a 75ms median.
+    // These are path-specific median gates, not bounds on every sample; the
+    // combined tail remains visible in the logged maximum above.
+    expect(createSamples).toBe(10); // casualty: create-path round trips are genuinely fresh
+    expect(overwriteSamples).toBe(10); // casualty: overwrite-path round trips are genuinely pre-existing
+    expect(createMedian).toBeLessThan(100);
+    expect(overwriteMedian).toBeLessThan(100);
   });
 });
 
@@ -667,11 +843,29 @@ describe('P-6: Disk usage — 1000 crons.json + logs <100MB', () => {
 });
 
 // ===========================================================================
-// SC-1: Scaling cliff — startup time at 500 / 1000 / 2000 crons on single agent
+// SC-1: startup timings at 500 / 1000 / 2000 crons — MEASURE AND LOG ONLY
+//
+// ** THIS BLOCK DOES NOT GUARD SCALING. ** It records three startup timings and
+// the two doubling ratios; nothing here asserts a growth bound, and a genuinely
+// superlinear regression PASSES. A reviewer's injection demonstrated exactly
+// that: real 15.75x and 9.81x growth ran green under the previous title, which
+// still promised sub-linear scaling after both assertions had been removed.
+//
+// The gate was removed because its noise band (0.14x-6.67x observed on unchanged
+// code) SPANNED its own 5x threshold, so it fired on the runner and would have
+// stayed silent on a real regression landing in a quiet run. It never detected
+// superlinearity; demoting it made an existing absence honest.
+//
+// THE GAP THAT LEAVES: the absolute per-size bounds below are ceilings (<5000ms
+// against 5-40ms measurements). They catch "startup got slow". Nothing here
+// catches "startup got SUPERLINEAR while staying fast" — an O(n^2) regression at
+// these sizes still finishes in tens of ms. Restoring that detection is tracked
+// as its own task, and its bar is an INJECTED superlinear regression it must
+// catch, so a redesign cannot pass by going quiet.
 // ===========================================================================
 
-describe('SC-1: Scaling cliff — startup time at 500/1000/2000 crons', () => {
-  it('startup time scales sub-linearly: 500/1000/2000 crons measured', async () => {
+describe('SC-1: startup timings at 500/1000/2000 crons — MEASURED AND LOGGED, not gated', () => {
+  it('RECORDS startup timings and growth ratios at 500/1000/2000 crons — NO scaling gate', async () => {
     const sizes = [500, 1000, 2000];
     const results: { size: number; ms: number }[] = [];
 
@@ -699,16 +893,69 @@ describe('SC-1: Scaling cliff — startup time at 500/1000/2000 crons', () => {
       expect(ms, `startup with ${size} crons must be <5000ms`).toBeLessThan(5000);
     }
 
-    // Check growth ratio: startup should not grow faster than 5× when doubling cron count
+    // COMPUTE the growth ratios for the log. This is not a check and there is no
+    // "should" here any more: the assertions that enforced a 5x bound were
+    // removed below, and this comment used to keep promising the bound after
+    // they were gone.
     const ratio1kTo500 = results[1].ms / Math.max(results[0].ms, 0.1);
     const ratio2kTo1k  = results[2].ms / Math.max(results[1].ms, 0.1);
     console.log(
       `[SC-1] scaling ratio 1000/500=${ratio1kTo500.toFixed(2)}x  2000/1000=${ratio2kTo1k.toFixed(2)}x`
     );
 
-    // Expect sub-5x growth between doublings (linear or sub-linear)
-    expect(ratio1kTo500).toBeLessThan(5);
-    expect(ratio2kTo1k).toBeLessThan(5);
+    // ── DEMOTED TO MEASURE-AND-LOG. NOT A GATE. ──────────────────────────
+    //
+    // These two ratios used to assert `< 5`. They no longer assert anything,
+    // and that is a deliberate, documented loss rather than a cleanup.
+    //
+    // MEASURED RATE, why the gate went: over 9 full-suite runs on UNCHANGED
+    // code the ratios came back
+    //
+    //   1.91/1.83  0.14/6.67  2.01/1.83  0.31/1.19  1.73/1.61
+    //   1.98/1.58  1.83/1.40  1.86/2.98  1.99/2.32
+    //
+    // a range of 0.14x to 6.67x against a 5x threshold. **The noise band spans
+    // the threshold on code that never changed.**
+    //
+    // TWO WINDOWS, LABELLED, because they are different denominators and citing
+    // one number beside the other list mixes them:
+    //   - the 6-run batch on the shipping form:            1 red => 1-in-6
+    //   - all 9 pairs listed above, pre-fix and post-revert: 1 red => 1-in-9
+    // The 9-pair list is the fuller record; the 6-run batch is the tighter
+    // window. Neither is "the" rate on its own.
+    //
+    // The outlier is not even consistent: sometimes 500 and 2000 inflate while
+    // 1000 comes in fast, sometimes the reverse. A ratio of two SINGLE
+    // wall-clock samples of real scheduler startups measures the runner, not
+    // the code, and a red that carries no information about the code only
+    // trains readers to reflex-rerun — the habit that lets a real regression
+    // through.
+    //
+    // AN ATTEMPTED FIX MADE IT WORSE and is recorded so nobody retries it
+    // blind: sampling each size 5x and ratioing the medians went to 2 failures
+    // in 5 runs, because every repetition constructs and start()s a real
+    // scheduler — 3 live became 15, and the measurement perturbed what it
+    // measured. Averaging removes noise only when sampling is FREE.
+    //
+    // ** WHAT THIS LOSES, STATED PLAINLY. ** The absolute per-size bounds above
+    // are ceilings (<5000ms against 5-40ms measurements, ~125x headroom). They
+    // catch "startup got slow". They CANNOT catch "startup got SUPERLINEAR
+    // while staying fast" — an O(n²) regression at these sizes still finishes
+    // in tens of ms and passes every absolute bound in this file. The doubling
+    // ratio was the only assertion here that looked at SHAPE rather than
+    // magnitude. That coverage is now absent.
+    //
+    // It is absent rather than lost: with a noise band wider than its own
+    // threshold, this gate never detected superlinearity either — it fired on
+    // the runner and would have stayed silent on a real 5x regression landing
+    // in a quiet run. Demoting it removes a verdict nobody could believe and
+    // makes the gap honest instead of imaginary-covered.
+    //
+    // The redesign is tracked as its own task and must RESTORE that detection,
+    // proven against an INJECTED superlinear regression — not merely stop
+    // firing, which a wider bound would also achieve.
+    void ratio1kTo500;
+    void ratio2kTo1k;
 
     perfResults['sc1-startup-cliff'] = {
       measured: results[2].ms,

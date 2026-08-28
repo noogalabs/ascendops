@@ -46,40 +46,6 @@ export type ValidateCredentialsResult =
       detail: string;
     };
 
-type CombinedAbortSignal = {
-  signal: AbortSignal;
-  cleanup: () => void;
-};
-
-function combineAbortSignals(signals: AbortSignal[]): CombinedAbortSignal {
-  if (typeof AbortSignal.any === 'function') {
-    return {
-      signal: AbortSignal.any(signals),
-      cleanup: () => {},
-    };
-  }
-
-  const controller = new AbortController();
-  const listeners = signals.map((source) => {
-    const listener = () => controller.abort();
-    if (source.aborted) {
-      controller.abort();
-    } else {
-      source.addEventListener('abort', listener, { once: true });
-    }
-    return { source, listener };
-  });
-
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      for (const { source, listener } of listeners) {
-        source.removeEventListener('abort', listener);
-      }
-    },
-  };
-}
-
 /**
  * Format a human-readable error message for a failed ValidateCredentialsResult.
  * Single source of truth for the CLI-facing error strings so setup.ts and
@@ -684,15 +650,15 @@ export class TelegramAPI {
     // Keep the request timeout while allowing lifecycle owners to cancel an
     // in-flight request when they explicitly stop the client.
     const timeoutSignal = AbortSignal.timeout(15000);
-    const combined = signal
-      ? combineAbortSignals([signal, timeoutSignal])
-      : { signal: timeoutSignal, cleanup: () => {} };
+    const combinedSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
     try {
       const response = await fetch(`${this.baseUrl}/${method}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
-        signal: combined.signal,
+        signal: combinedSignal,
       });
       const result = await response.json() as any;
       if (!result.ok) {
@@ -713,8 +679,6 @@ export class TelegramAPI {
         throw new Error(`Telegram API request timed out after 15s: ${method}`);
       }
       throw new Error(`Telegram API request failed: ${err}`);
-    } finally {
-      combined.cleanup();
     }
   }
 

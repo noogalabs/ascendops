@@ -24,6 +24,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { loadEnv, readStdin } from './index.js';
 
+import { hookBootstrap } from './bootstrap.js';
 interface FactEntry {
   ts: string;
   session_id: string;
@@ -43,6 +44,12 @@ const MAX_SUMMARY_CHARS = 3000;
 const MAX_AGE_HOURS = 6;
 
 async function main(): Promise<void> {
+  // PROCESS LINEAGE IS NOT INTENT — see bootstrap.ts.
+  // main() is invoked at module scope below, so importing a hook module runs
+  // hookBootstrap(). Shared validators live in skill-validators.ts specifically
+  // so bus code never imports a hook module merely to reuse its exports; that
+  // extraction, not main() placement, fixed the credential-loss regression.
+  hookBootstrap();
   try {
     const raw = await readStdin();
     let payload: SessionStartPayload = {};

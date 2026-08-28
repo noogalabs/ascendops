@@ -2,14 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { join } from 'path';
 import { homedir } from 'os';
 
-const preflightMocks = vi.hoisted(() => ({
-  ensureFolderTrusted: vi.fn(() => true),
-  ensureBypassPromptSuppressed: vi.fn(() => true),
-  readUnattendedConsent: vi.fn(() => undefined),
-}));
-
-vi.mock('../../../src/utils/claude-preflight.js', () => preflightMocks);
-
 const fsMocks = {
   existsSync: vi.fn().mockReturnValue(false),
   writeFileSync: vi.fn(),
@@ -54,8 +46,6 @@ beforeEach(() => {
   fsMocks.existsSync.mockReset().mockReturnValue(false);
   fsMocks.writeFileSync.mockReset();
   fsMocks.unlinkSync.mockReset();
-  preflightMocks.ensureFolderTrusted.mockClear();
-  preflightMocks.ensureBypassPromptSuppressed.mockClear();
 });
 
 describe('hermesDbExists', () => {
@@ -116,42 +106,14 @@ describe('HermesPTY', () => {
     expect(pty.getOutputBuffer().isBootstrapped()).toBe(false);
   });
 
-  it('identifies Hermes as a non-Claude runtime', () => {
+  it('disables the trust-prompt auto-accept (Hermes has no trust prompt)', () => {
+    // The base class's 5s/8s auto-accept timers match "Yes"/"trust" as
+    // loose substrings; on Hermes they could fire a stray Enter right
+    // after the startup-file injection. HermesPTY must opt out.
     const pty = new HermesPTY(mockEnv, {});
     expect(
-      (pty as unknown as { isClaudeCodeRuntime(): boolean }).isClaudeCodeRuntime(),
+      (pty as unknown as { needsTrustPromptAutoAccept(): boolean }).needsTrustPromptAutoAccept(),
     ).toBe(false);
-  });
-
-  it('does not run Claude preflight or prompt timers for Hermes', async () => {
-    vi.useFakeTimers();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      const pty = new HermesPTY(mockEnv, {});
-      const spawned = {
-        pid: 99,
-        write: vi.fn(),
-        onData: vi.fn(),
-        onExit: vi.fn(),
-        kill: vi.fn(),
-        resize: vi.fn(),
-      };
-      (pty as unknown as { spawnFn: unknown }).spawnFn = vi.fn(() => spawned);
-      await pty.spawn('fresh', '');
-      pty.getOutputBuffer().push(
-        'Claude Code is running in Bypass Permissions mode.\n  2. Yes, I accept\n',
-      );
-      await vi.advanceTimersByTimeAsync(32_000);
-
-      expect(preflightMocks.ensureFolderTrusted).not.toHaveBeenCalled();
-      expect(preflightMocks.ensureBypassPromptSuppressed).not.toHaveBeenCalled();
-      expect(warn).not.toHaveBeenCalled();
-      expect(spawned.write).not.toHaveBeenCalledWith('\x1b[B\r');
-      expect(spawned.write).not.toHaveBeenCalledWith('\r');
-    } finally {
-      warn.mockRestore();
-      vi.useRealTimers();
-    }
   });
 });
 

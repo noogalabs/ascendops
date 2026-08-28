@@ -74,7 +74,7 @@ describe('tsup config — the DEFAULT path must resolve an out dir', () => {
   it('a bare config resolve carries outDir', async () => {
     // The missing known positive. `outDir: options.outDir` passed undefined
     // through on a bare invocation, overrode tsup's own default and broke
-    // `npm run build` — the one path David actually uses, and the one path that
+    // `npm run build` — the one path Avery actually uses, and the one path that
     // cannot be exercised locally without building the live tree. CI was the
     // first place it could surface. This asserts it directly instead.
     // Resolving the config runs the guard. Pin CI=true so this asserts config

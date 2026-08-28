@@ -1,4 +1,6 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { agentSessionCredential, stripReservedSessionCredential, HEARTBEAT_SESSION_ENV } from '../utils/env.js';
+import { recordSessionNonce, clearSessionNonce } from '../bus/heartbeat-session-store.js';
 import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { randomBytes, randomUUID } from 'crypto';
@@ -13,7 +15,6 @@ import { WsUnixJsonRpcClient, type JsonRpcResponse } from '../utils/ws-unix-clie
 import { sanitizeForInjection } from './inject.js';
 import { parseEnvFile } from '../utils/env.js';
 import { CodexTurnCustodyStore, type CustodiedTurn } from './codex-turn-custody.js';
-import { prepareNodePtySpawn } from './node-pty-loader.js';
 
 interface IPty {
   pid: number;
@@ -256,7 +257,6 @@ export class CodexAppServerPTY {
   private _turnReconcilePolls = 3;
   private _retiredTurnIds = new Set<string>();
   private _spawnFn: SpawnFn | null = null;
-  private _prepareSpawnFn: (cachedSpawn: SpawnFn | null) => SpawnFn = prepareNodePtySpawn;
   private _appServerPty: IPty | null = null;
   private _rpc: WsUnixJsonRpcClient | null = null;
   private _rpcMessageUnsubscribe: (() => void) | null = null;
@@ -264,6 +264,7 @@ export class CodexAppServerPTY {
   private _pidPollTimer: ReturnType<typeof setInterval> | null = null;
   private _exitFinalized = false;
   private _onExitHandler: ((exitCode: number, signal?: number) => void) | null = null;
+  private _mintedSessionNonce: string | null = null;
   private _outputBuffer: OutputBuffer;
   private _env: CtxEnv;
   private _config: AgentConfig;
@@ -299,6 +300,11 @@ export class CodexAppServerPTY {
     this._socketCwd = socket.cwd;
     this._outputBuffer = new OutputBuffer(1000, logPath, BOOTSTRAP_PATTERN);
     this.warnIfModelGated();
+  }
+
+  /** The session nonce minted for the current app-server lifecycle. */
+  sessionNonce(): string | null {
+    return this._mintedSessionNonce;
   }
 
   /**
@@ -712,7 +718,13 @@ export class CodexAppServerPTY {
       .split('\n[Your last message:', 1)[0]
       .split('\nReply using:', 1)[0];
 
-    const replyToContext = this.extractReplyToContext(beforeReply);
+    // Structured daemon injections fence the complete untrusted Telegram body
+    // at the final PTY boundary. Unwrap that outer authority-neutralizing
+    // envelope before parsing the payload's own media/text fences.
+    const structuralBody = beforeReply.match(/^=== TELEGRAM[^\n]*\n(`{3,})\n([\s\S]*)\n\1$/);
+    const payloadSource = structuralBody?.[2] ?? beforeReply;
+
+    const replyToContext = this.extractReplyToContext(payloadSource);
     const replyDirective = chatId
       ? `Reply via: cortextos bus send-telegram ${chatId} '<your reply>' — this is the only path that surfaces in Telegram and on the dashboard. Do not reply through the codex channel.`
       : null;
@@ -723,11 +735,11 @@ export class CodexAppServerPTY {
     };
 
     if (mediaType) {
-      const mediaPayload = this.buildMediaPayload(mediaType, beforeReply);
+      const mediaPayload = this.buildMediaPayload(mediaType, payloadSource);
       if (mediaPayload) return wrap(mediaPayload);
     }
 
-    const lines = beforeReply
+    const lines = payloadSource
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
@@ -742,7 +754,7 @@ export class CodexAppServerPTY {
       break;
     }
 
-    const fencedBlocks = [...beforeReply.matchAll(/(`{3,})(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n\1/g)];
+    const fencedBlocks = [...payloadSource.matchAll(/(`{3,})(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n\1/g)];
     if (fencedBlocks.length > 0) {
       return wrap(fencedBlocks[fencedBlocks.length - 1]?.[2]?.trim() || null);
     }
@@ -835,27 +847,85 @@ export class CodexAppServerPTY {
     let lastErr: unknown;
 
     for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      // A prior attempt may have failed to revoke its exact nonce. Retry that
+      // owner-named clear BEFORE buildEnv() can mint and overwrite the identity.
+      // If it remains unknown, abort without creating a second live credential.
+      if (this._mintedSessionNonce) {
+        const retried = this.clearMintedSessionNonce(`before spawn attempt ${attempt + 1}`);
+        if (!retried.cleared) {
+          this.cleanupSpawnAttempt();
+          throw this.spawnFailureWithRevocationCause(lastErr, retried.error);
+        }
+      }
       try {
         this.removeSocket();
         await this.startAppServer();
         return;
       } catch (err) {
         lastErr = err;
+        // THIS attempt's record, cleared before the next attempt overwrites the
+        // field. Every attempt calls buildEnv() and every buildEnv() records a
+        // nonce, so clearing only at the end of the loop left attempts 1..n-1
+        // live on disk with nothing behind them — the terminal clear below could
+        // only ever name the LAST one. Same lost-update shape as the agent path.
+        const cleared = this.clearMintedSessionNonce(`after spawn attempt ${attempt + 1}`);
         this.cleanupSpawnAttempt();
         this._outputBuffer.push(`[codex-app-server] spawn attempt ${attempt + 1} failed: ${err}\n`);
+        if (!cleared.cleared) {
+          this._outputBuffer.push(
+            `[codex-app-server] session revocation will be retried before another nonce is minted: ${cleared.error}\n`,
+          );
+        }
         if (attempt < delays.length - 1) {
           await sleep(delays[attempt]);
         }
       }
     }
 
+    // Retain-on-failed-clear makes this boundary reachable: when the final
+    // attempt's per-attempt clear fails, the exact nonce stays named here. This
+    // owner retry must run before the original final spawn error is surfaced.
+    const terminalClear = this.clearMintedSessionNonce('after final spawn attempt');
+    if (!terminalClear.cleared) {
+      throw this.spawnFailureWithRevocationCause(lastErr, terminalClear.error);
+    }
+
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
+  /**
+   * Clear the nonce currently owned by this exact app-server attempt. Null only
+   * after success: a failed clear must retain the identity so the same owner can
+   * retry it before any later buildEnv() overwrites the field.
+   */
+  private clearMintedSessionNonce(phase: string): { cleared: true } | { cleared: false; error: unknown } {
+    if (!this._mintedSessionNonce) return { cleared: true };
+    try {
+      clearSessionNonce(this._env.ctxRoot, this._env.agentName, this._mintedSessionNonce);
+    } catch (error) {
+      console.error(
+        `[codex-app-server] SESSION REVOCATION UNKNOWN for ${this._env.agentName} during ${phase}; `
+        + `retaining owned nonce: ${error}`,
+      );
+      return { cleared: false, error };
+    }
+    this._mintedSessionNonce = null;
+    return { cleared: true };
+  }
+
+  private spawnFailureWithRevocationCause(spawnError: unknown, revocationError: unknown): Error {
+    const original = spawnError instanceof Error ? spawnError : new Error(String(spawnError));
+    return new Error(
+      `${original.message}; session revocation also failed: ${revocationError}`,
+      { cause: original },
+    );
+  }
+
   private async startAppServer(): Promise<void> {
-    // Repair on every child spawn, even when this long-lived server object has
-    // cached node-pty's spawn function and npm has since replaced the package.
-    this._spawnFn = this._prepareSpawnFn(this._spawnFn);
+    if (!this._spawnFn) {
+      const nodePty = require('node-pty');
+      this._spawnFn = nodePty.spawn;
+    }
 
     // codex-cli 0.118.0 dropped `unix://` --listen support. Allocate a free
     // ephemeral TCP port on loopback and spawn with `--listen ws://127.0.0.1:<port>`.
@@ -2094,6 +2164,8 @@ export class CodexAppServerPTY {
   private emitUnsupportedRequestEvent(method: string): void {
     try {
       const paths = resolvePaths(this._env.agentName, this._env.instanceId, this._env.org);
+      // Error/runtime event: deliberately does not refresh heartbeat —
+      // emitting an error does not prove the reasoning loop is alive.
       logEvent(
         paths,
         this._env.agentName,
@@ -2336,6 +2408,14 @@ export class CodexAppServerPTY {
       env['TZ'] = this._config.timezone;
     }
 
+    // MINT LAST — see the same comment in agent-pty.ts. Both env files are
+    // Object.assigned over this env above, so the mint has to come after them.
+    // See agent-pty.ts: the record is written before the child env exists.
+    const credential = agentSessionCredential(this._env.agentName);
+    this._mintedSessionNonce = credential[HEARTBEAT_SESSION_ENV].split(':').slice(1).join(':');
+    recordSessionNonce(this._env.ctxRoot, this._env.agentName, credential[HEARTBEAT_SESSION_ENV].split(':').slice(1).join(':'));
+    Object.assign(env, credential);
+
     return env;
   }
 
@@ -2357,7 +2437,7 @@ export class CodexAppServerPTY {
    */
   private loadEnvFile(path: string, env: Record<string, string>): void {
     if (!existsSync(path)) return;
-    Object.assign(env, parseEnvFile(path, { stripInlineComments: false }));
+    Object.assign(env, stripReservedSessionCredential(path, parseEnvFile(path, { stripInlineComments: false })));
   }
 
   private getPackageVersion(): string {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
+import { rawDaemonInjection, renderDaemonInjection, type DaemonInjection } from '../../src/utils/validate.js';
 
 /**
  * End-to-end for the cron side-run path.
@@ -27,8 +28,11 @@ vi.mock('../../src/daemon/agent-process.js', () => ({
     onExit() {}
     getAgentDir() { return this.dir; }
     getConfig() { return { runtime: 'claude-code', model: 'claude-opus-5' }; }
-    injectMessageDetailed(text: string) {
-      injected.push({ text });
+    injectMessageDetailed(input: DaemonInjection) {
+      // The daemon hands the PTY a structured injection; render it to the exact
+      // text the main session receives, so assertions compare against what the
+      // session actually reads (fence-wrapped), not the wrapper object.
+      injected.push({ text: renderDaemonInjection(input) });
       return { ok: true as const, dedupIdentity: undefined };
     }
   },
@@ -95,7 +99,7 @@ describe('side-run path — an INELIGIBLE cron reaches the main session untouche
     expect(ok).toBe(true);
     // The whole point: an unreviewed prompt must behave exactly as it does today.
     expect(injected).toHaveLength(1);
-    expect(injected[0].text).toBe(prompt);
+    expect(injected[0].text).toBe(renderDaemonInjection(rawDaemonInjection(prompt)));
   });
 
   it('injects a cron that is not in the registry at all', () => {
@@ -108,7 +112,7 @@ describe('side-run path — an INELIGIBLE cron reaches the main session untouche
 
     // inbox-sweep is permanently ineligible; it must never be diverted.
     expect(injected).toHaveLength(1);
-    expect(injected[0].text).toBe(prompt);
+    expect(injected[0].text).toBe(renderDaemonInjection(rawDaemonInjection(prompt)));
   });
 });
 
@@ -135,7 +139,7 @@ describe('side-run path — the FALLBACK actually injects, it does not just log'
       .sweepSideRunsForAgent(AGENT, admittedAtMs + SIDE_RUN_DEADLINE_MS + 1);
 
     expect(injected).toHaveLength(1);
-    expect(injected[0].text).toBe(cronPrompt);
+    expect(injected[0].text).toBe(renderDaemonInjection(rawDaemonInjection(cronPrompt)));
 
     // And the fallback event must record the reason AND that it really injected.
     const fallbackEvents = logEventMock.mock.calls.filter((c) => c[4] === 'cron_side_run_fallback');
@@ -164,7 +168,7 @@ describe('side-run path — the FALLBACK actually injects, it does not just log'
     (am as unknown as { sweepSideRunsForAgent: (a: string, n: number) => void })
       .sweepSideRunsForAgent(AGENT, admittedAtMs + SIDE_RUN_DEADLINE_MS + 1);
 
-    expect(injected).toEqual([{ text: 'x' }]);
+    expect(injected).toEqual([{ text: renderDaemonInjection(rawDaemonInjection('x')) }]);
     const ev = logEventMock.mock.calls.filter((c) => c[4] === 'cron_side_run_fallback');
     expect(ev[0][6]).toMatchObject({ injected: true });
   });
@@ -193,7 +197,7 @@ describe('side-run path — the FALLBACK actually injects, it does not just log'
     (am as unknown as { sweepSideRunsForAgent: (a: string, n: number) => void })
       .sweepSideRunsForAgent(AGENT, admittedAtMs + SIDE_RUN_DEADLINE_MS + 1);
 
-    expect(injected).toEqual([{ text: admittedPrompt }]);
+    expect(injected).toEqual([{ text: renderDaemonInjection(rawDaemonInjection(admittedPrompt)) }]);
     const ev = logEventMock.mock.calls.filter((c) => c[4] === 'cron_side_run_fallback');
     expect(ev[0][6]).toMatchObject({ injected: true });
   });
@@ -313,7 +317,7 @@ describe('heartbeat preflight — the DELIVERED summary carries the not-stamped 
     // not the collection substitute. A fallback has to reproduce exactly what would
     // have fired without routing.
     expect(injected).toHaveLength(1);
-    expect(injected[0].text).toBe(HB_PROMPT_TXT);
+    expect(injected[0].text).toBe(renderDaemonInjection(rawDaemonInjection(HB_PROMPT_TXT)));
     const ev = logEventMock.mock.calls.filter((c) => c[4] === 'cron_side_run_fallback');
     expect(ev[0][6]).toMatchObject({ cron: 'heartbeat', reason: 'deadline_expired', injected: true });
   });

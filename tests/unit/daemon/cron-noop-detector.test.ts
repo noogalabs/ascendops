@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
-import { join, sep } from 'path';
+import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   CronNoopDetector,
@@ -29,9 +29,15 @@ describe('cron-noop-detector transcript lookup', () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('resolves the most recently modified Claude JSONL transcript using the canonical project path', () => {
-    const launchDir = join(testDir, 'agent-dir');
-    const convDir = join(testDir, '.claude', 'projects', launchDir.split(sep).join('-'));
+  it.each([
+    ['plain path control', '/tmp/agents/bob'],
+    ['dot', '/tmp/.claude-mem/observer/sessions'],
+    ['underscore', '/tmp/orgs/my_org/agents/bob'],
+    ['space', '/tmp/My Agents/bob'],
+    ['colon and Windows separators', String.raw`C:\Users\X\agents\bob`],
+  ])('resolves the canonical Claude project path for %s', (_label, launchDir) => {
+    const projectDirName = launchDir.replace(/[^a-zA-Z0-9]/g, '-');
+    const convDir = join(testDir, '.claude', 'projects', projectDirName);
     mkdirSync(convDir, { recursive: true });
     const lexicallyLast = join(convDir, 'z.jsonl');
     const newestByMtime = join(convDir, 'a.jsonl');
@@ -41,6 +47,20 @@ describe('cron-noop-detector transcript lookup', () => {
     utimesSync(newestByMtime, new Date('2026-06-17T12:00:00.000Z'), new Date('2026-06-17T12:00:00.000Z'));
 
     expect(resolveClaudeTranscriptPath({}, launchDir, testDir)).toBe(newestByMtime);
+  });
+
+  it('discovers a drifted project directory and reports the naming mismatch', () => {
+    const launchDir = String.raw`C:\Users\X\agents\bob`;
+    const convDir = join(testDir, '.claude', 'projects', 'private-hash-name');
+    mkdirSync(convDir, { recursive: true });
+    const transcript = join(convDir, 'session.jsonl');
+    writeFileSync(transcript, `${JSON.stringify({ cwd: launchDir })}\n`);
+    const log = vi.fn();
+
+    expect(resolveClaudeTranscriptPath({}, launchDir, testDir, log)).toBe(transcript);
+    expect(log).toHaveBeenCalledWith(
+      'projects-dir naming drift: predicted C--Users-X-agents-bob, found private-hash-name',
+    );
   });
 
   it('matches salted cron turns when message.content is a block array', () => {
@@ -317,7 +337,7 @@ describe('CronNoopDetector', () => {
     expect(detector.cancelAgentVerifications(agentName)).toBe(0);
   });
 
-  it('skips codex and hermes runtimes without registering timers', async () => {
+  it('skips codex, hermes, and opencode runtimes without registering timers', async () => {
     const detector = makeDetector();
     detector.registerFire({
       agentName,
@@ -331,6 +351,14 @@ describe('CronNoopDetector', () => {
       agentName,
       agentDir,
       config: { runtime: 'hermes' },
+      cronName,
+      prompt: 'Read HEARTBEAT.md',
+      firedAt: '2026-06-17T12:00:00.000Z',
+    });
+    detector.registerFire({
+      agentName,
+      agentDir,
+      config: { runtime: 'opencode' },
       cronName,
       prompt: 'Read HEARTBEAT.md',
       firedAt: '2026-06-17T12:00:00.000Z',

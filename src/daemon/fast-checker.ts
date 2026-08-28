@@ -15,12 +15,13 @@ import {
   formatSlackOriginator,
 } from '../slack/slack-identity.js';
 import { KEYS } from '../pty/inject.js';
-import { stripControlChars, sanitizeForPtyInjection, wrapFenceSafe, validateOrgName } from '../utils/validate.js';
+import { rawDaemonBody, rawDaemonInjection, renderDaemonInjection, sanitizeForPtyInjection, structuralDaemonInjection, stripControlChars, validateOrgName, wrapFenceSafe } from '../utils/validate.js';
+import type { DaemonInjection } from '../utils/validate.js';
 import { resolve as pathResolve } from 'path';
 import { atomicWriteSync } from '../utils/atomic.js';
 import { logEvent } from '../bus/event.js';
 import { updateHeartbeat } from '../bus/heartbeat.js';
-// added 2026-04-29 via internal dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
+// added 2026-04-29 by a reviewer via orchestrator dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
 import { loadHookRegistry, matchHooks, dispatchHook, type HookRegistry } from '../bus/hooks.js';
 import { registerBuiltInHandlers } from '../bus/hook-handlers/index.js';
 import { agentHoldsContextHandoffLease, releaseContextHandoffLease, requestContextHandoffLease } from './context-handoff-lease.js';
@@ -56,7 +57,7 @@ type WatchdogRestartMarker = {
 const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const SPINNER_ONLY_RE = /^[\s⠀-⣿|/\\\-◐-◓◰-◳✢✳✶✻✽·•*+◯○●◦]+$/u;
-const SPINNER_STATUS_RE = /^[⠀-⣿◐-◓◰-◳✢✳✶✻✽·◯○●◦]\s*/u;
+const SPINNER_STATUS_RE = /^[⠀-⣿◐-◓◰-◳✢✳✶✻✽·•*+◯○●◦]\s*/u;
 const STATUS_SHAPED_PREFIX_RE = /^[⠀-⣿|/\\\-◐-◓◰-◳✢✳✶✻✽·•*+◯○●◦]/u;
 const MAX_MEANINGFUL_STDOUT_DELTA_BYTES = 256 * 1024;
 
@@ -132,7 +133,7 @@ export class FastChecker {
   private allowedUserIds?: number[];
 
   // External Telegram handler (set by daemon)
-  private telegramMessages: Array<{ formatted: string; ackIds: string[] }> = [];
+  private telegramMessages: Array<{ formatted: DaemonInjection; ackIds: string[] }> = [];
 
   // Persistent dedup: message hashes to prevent duplicate delivery
   private seenHashes: Set<string> = new Set();
@@ -240,7 +241,7 @@ export class FastChecker {
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
 
-  // added 2026-04-29 via internal dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
+  // added 2026-04-29 by a reviewer via orchestrator dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
   // Hook dispatcher state. Inert until Day-1 wiring runs in start().
   // Per RFC #15 §9 fail-open: if org cannot be resolved (no CTX_ORG env, no
   // registry file), the dispatcher stays disabled and never fires hooks.
@@ -588,7 +589,7 @@ export class FastChecker {
       }, this.GMAIL_TIMER_TICK_MS);
     }
 
-    // added 2026-04-29 via internal dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
+    // added 2026-04-29 by a reviewer via orchestrator dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
     this.startHookDispatcher();
 
     while (this.running) {
@@ -637,7 +638,7 @@ export class FastChecker {
       clearInterval(this.gmailWatchTimer);
       this.gmailWatchTimer = null;
     }
-    // added 2026-04-29 via internal dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
+    // added 2026-04-29 by a reviewer via orchestrator dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
     if (this.hookRegistryWatcher !== null) {
       try { this.hookRegistryWatcher.close(); } catch { /* best-effort */ }
       this.hookRegistryWatcher = null;
@@ -649,11 +650,11 @@ export class FastChecker {
   }
 
   // ── RFC #15 Day-1 hook dispatcher ─────────────────────────────────────────
-  // added 2026-04-29 via internal dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
+  // added 2026-04-29 by a reviewer via orchestrator dispatch — RFC #15 Day-1 dispatcher integration; Piece 3 (handler-type wiring) deferred to Day-2
   // Piece 1: load + watch hooks.json. Piece 2: tail today's event JSONL and
   // call matchHooks → dispatchHook (still stub). Piece 3 (per-handler-type
   // wiring with bash/send_message/log_event/webhook) is Day-2 work — see
-  // TODOs below and your org internal docs §6.
+  // TODOs below and internal design docs §6.
   private startHookDispatcher(): void {
     const org = process.env.CTX_ORG;
     if (!org) {
@@ -826,7 +827,7 @@ export class FastChecker {
    * Queue a formatted Telegram message for injection.
    * Called by the daemon's Telegram handler.
    */
-  queueTelegramMessage(formatted: string): void {
+  queueTelegramMessage(formatted: DaemonInjection): void {
     this.telegramMessages.push({ formatted, ackIds: [] });
   }
 
@@ -834,8 +835,7 @@ export class FastChecker {
    * Single poll cycle: check inbox + queued Telegram messages.
    */
   private async pollCycle(): Promise<void> {
-    let messageBlock = '';
-    const ackIds: string[] = [];
+    const pending: Array<{ injection: DaemonInjection; ackIds: string[]; telegram: boolean }> = [];
 
     // Process queued Telegram messages. Drain into a local buffer rather than
     // discarding outright — if injection fails because the agent is not running
@@ -848,7 +848,7 @@ export class FastChecker {
     const drainedTelegram: typeof this.telegramMessages = [];
     while (this.telegramMessages.length > 0) {
       const msg = this.telegramMessages.shift()!;
-      messageBlock += msg.formatted;
+      pending.push({ injection: msg.formatted, ackIds: msg.ackIds, telegram: true });
       drainedTelegram.push(msg);
     }
     const hasTelegramMessage = drainedTelegram.length > 0;
@@ -864,28 +864,27 @@ export class FastChecker {
       this.log(`Inbox check failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     for (const msg of inboxMessages) {
-      messageBlock += this.formatInboxMessage(msg);
-      ackIds.push(msg.id);
+      pending.push({ injection: this.formatInboxMessage(msg), ackIds: [msg.id], telegram: false });
     }
 
     // Inject if there's anything
-    if (messageBlock) {
-      const injectResult = this.agent.injectMessageDetailed(messageBlock);
+    for (const item of pending) {
+      const injectResult = this.agent.injectMessageDetailed(item.injection);
       if (injectResult.ok) {
         // ACK inbox messages
-        for (const id of ackIds) {
+        for (const id of item.ackIds) {
           ackInbox(this.paths, id);
         }
-        this.log(`Injected ${messageBlock.length} bytes`);
+        this.log(`Injected ${renderDaemonInjection(item.injection).length} bytes`);
         // Only update typing timestamp for Telegram messages, not inbox/cron.
         // Inbox messages (agent-to-agent, session continuations) must not
         // restart the typing indicator after Stop has cleared it.
-        if (hasTelegramMessage) {
+        if (item.telegram) {
           this.lastMessageInjectedAt = Date.now();
         }
         // Cooldown after injection
         await sleep(5000);
-      } else if (drainedTelegram.length > 0) {
+      } else if (item.telegram && drainedTelegram.length > 0) {
         if (injectResult.code === 'NOT_RUNNING' || injectResult.code === 'ADMISSION_FAILED') {
           // The agent cannot currently take custody. Re-queue the drained Telegram
           // messages at the FRONT so they are retried next cycle and preserve
@@ -1013,7 +1012,7 @@ export class FastChecker {
       // model-agnostic (no Sonnet|Opus|Haiku pinning, which silently disabled
       // Signal 3 for other model families) and kills the prose false positives
       // the previous /(\d{1,3})%[^\n]{0,15}context/ shape let through:
-      //   - "85% context switches"          (a literal FP seen in an agent stdout)
+      //   - "85% context switches"          (a literal FP seen in reviewer stdout)
       //   - "reduced X by 85% in the context of …"  (ordinary prose)
       //   - "hit the 85% proactive-context-reset"   (agent narrating the reset)
       // Those matched because any text (incl. " in the ", "-") sat between the
@@ -1052,9 +1051,9 @@ export class FastChecker {
       // default. We now require a leading marker that the live status line
       // always carries immediately before the percent but bare-literal prose
       // never does: a progress-bar block (█ U+2588 / ░ U+2591) or a status dot
-      // (🔴 U+1F534 / 🟡 U+1F7E1 / 🟢 U+1F7E2). Empirically (real an agent/an agent/
-      // an agent stdout corpora) this kills the dominant remaining FP class
-      // (markerless quotes+prose: ~72/86 on an agent, ~54/72 on an agent) while
+      // (🔴 U+1F534 / 🟡 U+1F7E1 / 🟢 U+1F7E2). Empirically (real reviewer/operator/
+      // orchestrator stdout corpora) this kills the dominant remaining FP class
+      // (markerless quotes+prose: ~72/86 on orchestrator, ~54/72 on operator) while
       // losing ZERO genuine live renders. The /u flag is REQUIRED: the status
       // dots are astral (>U+FFFF); without /u, JS would match a lone surrogate
       // half of a dot = semantically broken. We use \u escapes (not literal
@@ -1095,7 +1094,7 @@ export class FastChecker {
             // First trigger (or cooldown expired): inject graceful restart request
             this.ctxThresholdTriggeredAt = now;
             const msg = `Context window at ${pct}%. Please write your session memory and observations now, then run: cortextos bus hard-restart --reason "proactive context reset at ${pct}%" and then run /exit to close this session.`;
-            this.agent.injectMessage(msg);
+            this.agent.injectMessage(rawDaemonInjection(msg));
             this.log(`WATCHDOG: ctx at ${pct}% >= threshold ${this.ctxThresholdPct}% — injected graceful restart request`);
           }
         }
@@ -1316,7 +1315,10 @@ export class FastChecker {
         this.paths,
         this.agent.name,
         `[watchdog] ${this.agent.name} HUNG - ${reason}; ${action}`,
-        { org: process.env.CTX_ORG ?? '' },
+        {
+          org: process.env.CTX_ORG ?? '',
+          timezone: this.agent.getConfig().timezone,
+        },
       );
     } catch (err) {
       this.log(`WATCHDOG HUNG heartbeat annotation failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1532,8 +1534,16 @@ export class FastChecker {
     const inboxText = header + body + footer + hint;
     this.log(`Gmail watch: ${total} new unread message(s) — writing inbox`);
 
+    // D1 (spec 2026-07-21): the delivered/dedup label proves DELIVERY, so it must be applied ONLY
+    // after bus delivery is confirmed. Previously the label block sat outside this try/catch (whose
+    // catch has no return), so a thrown delivery still applied the label and permanently suppressed
+    // an email that was never delivered — silent mail loss. Gate both the dedup record and the
+    // label on this success flag; on failure the message stays un-labeled and un-deduped and
+    // re-delivers next poll.
+    let delivered = false;
     try {
       sendMessage(this.paths, 'fast-checker', this.agent.name, 'normal', inboxText);
+      delivered = true;
       // Record delivered IDs
       for (const id of newIds) {
         this.gmailDeliveredIds.set(id, now);
@@ -1545,7 +1555,8 @@ export class FastChecker {
 
     // Apply processed label so emails are excluded from future polls even after daemon restart.
     // In-memory dedup is only a safety net — without a persistent label the same emails can re-deliver.
-    if (this.gmailWatch?.processedLabelId) {
+    // Only on confirmed delivery (D1): a failed delivery must not suppress the message.
+    if (delivered && this.gmailWatch?.processedLabelId) {
       const labelId = this.gmailWatch.processedLabelId;
       for (const id of newIds.slice(0, 20)) {
         try {
@@ -1831,14 +1842,15 @@ export class FastChecker {
    * Format an inbox message for injection.
    * Matches bash fast-checker.sh format exactly.
    */
-  private formatInboxMessage(msg: InboxMessage): string {
+  private formatInboxMessage(msg: InboxMessage): DaemonInjection {
     const from = sanitizeForPtyInjection(msg.from);
     const replyNote = msg.reply_to ? ` [reply_to: ${msg.reply_to}]` : '';
-    return `=== AGENT MESSAGE from ${from}${replyNote} [msg_id: ${msg.id}] ===
-${wrapFenceSafe(msg.text)}
-Reply using: cortextos bus send-message ${from} normal '<your reply>' ${msg.id}
-
-`;
+    return structuralDaemonInjection(
+      'AGENT MESSAGE',
+      `from ${from}${replyNote} [msg_id: ${msg.id}]`,
+      rawDaemonBody(msg.text),
+      { kind: 'agent', from, messageId: msg.id },
+    );
   }
 
   /**
@@ -1853,7 +1865,7 @@ Reply using: cortextos bus send-message ${from} normal '<your reply>' ${msg.id}
     replyToText?: string,
     lastSentText?: string,
     recentHistory?: string,
-  ): string {
+  ): DaemonInjection {
     // Every externally-influenced field below is untrusted (the sender controls
     // text/display-name; reply-context, last-sent and recent-history are built
     // from prior external messages). Sanitize each so none can escape the fence
@@ -1878,11 +1890,12 @@ Reply using: cortextos bus send-message ${from} normal '<your reply>' ${msg.id}
     const body = isSlashCommand
       ? sanitizeForPtyInjection(text).trim()
       : wrapFenceSafe(text);
-    return `=== TELEGRAM from [USER: ${sanitizeForPtyInjection(from)}] (chat_id:${chatId}) ===
-${replyCx}${historyCx}${body}
-${lastSentCtx}Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
-
-`;
+    return structuralDaemonInjection(
+      'TELEGRAM',
+      `from [USER: ${sanitizeForPtyInjection(from)}] (chat_id:${chatId})`,
+      rawDaemonBody(`${replyCx}${historyCx}${body}\n${lastSentCtx}`.trimEnd()),
+      { kind: 'telegram', chatId },
+    );
   }
 
   /**
@@ -1902,7 +1915,7 @@ ${lastSentCtx}Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     messageId: number,
     oldReaction: Array<{ type: 'emoji'; emoji: string } | { type: 'custom_emoji'; custom_emoji_id: string }>,
     newReaction: Array<{ type: 'emoji'; emoji: string } | { type: 'custom_emoji'; custom_emoji_id: string }>,
-  ): string {
+  ): DaemonInjection {
     const render = (list: typeof newReaction): string =>
       list.length === 0
         ? '(none)'
@@ -1911,9 +1924,7 @@ ${lastSentCtx}Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const removed = newReaction.length === 0 && oldReaction.length > 0;
     const label = removed ? `removed ${render(oldReaction)}` : render(newReaction);
 
-    return `=== REACTION from [USER: ${sanitizeForPtyInjection(from)}] (chat_id:${chatId}) on message ${messageId}: ${label} ===
-
-`;
+    return structuralDaemonInjection('REACTION', `from [USER: ${sanitizeForPtyInjection(from)}] (chat_id:${chatId}) on message ${messageId}: ${label}`);
   }
 
   /**
@@ -1926,14 +1937,8 @@ ${lastSentCtx}Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     caption: string,
     imagePath: string,
     replyToText?: string,
-  ): string {
-    return `=== TELEGRAM PHOTO from ${sanitizeForPtyInjection(from)} (chat_id:${chatId}) ===
-${FastChecker.formatReplyContext(replyToText)}caption:
-${wrapFenceSafe(caption)}
-local_file: ${imagePath}
-Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
-
-`;
+  ): DaemonInjection {
+    return structuralDaemonInjection('TELEGRAM', `PHOTO from ${sanitizeForPtyInjection(from)} (chat_id:${chatId})`, rawDaemonBody(`${FastChecker.formatReplyContext(replyToText)}caption:\n${wrapFenceSafe(caption)}\nlocal_file: ${imagePath}`), { kind: 'telegram', chatId });
   }
 
   /**
@@ -1947,15 +1952,8 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     filePath: string,
     fileName: string,
     replyToText?: string,
-  ): string {
-    return `=== TELEGRAM DOCUMENT from ${sanitizeForPtyInjection(from)} (chat_id:${chatId}) ===
-${FastChecker.formatReplyContext(replyToText)}caption:
-${wrapFenceSafe(caption)}
-local_file: ${filePath}
-file_name: ${sanitizeForPtyInjection(fileName)}
-Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
-
-`;
+  ): DaemonInjection {
+    return structuralDaemonInjection('TELEGRAM', `DOCUMENT from ${sanitizeForPtyInjection(from)} (chat_id:${chatId})`, rawDaemonBody(`${FastChecker.formatReplyContext(replyToText)}caption:\n${wrapFenceSafe(caption)}\nlocal_file: ${filePath}\nfile_name: ${sanitizeForPtyInjection(fileName)}`), { kind: 'telegram', chatId });
   }
 
   /**
@@ -1974,17 +1972,12 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     duration: number | undefined,
     transcript?: string,
     replyToText?: string,
-  ): string {
+  ): DaemonInjection {
     const dur = duration !== undefined ? duration : 'unknown';
     const transcriptBlock = transcript && transcript.trim()
       ? `transcript:\n${wrapFenceSafe(transcript.trim())}\n`
       : '';
-    return `=== TELEGRAM VOICE from ${sanitizeForPtyInjection(from)} (chat_id:${chatId}) ===
-${FastChecker.formatReplyContext(replyToText)}duration: ${dur}s
-local_file: ${filePath}
-${transcriptBlock}Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
-
-`;
+    return structuralDaemonInjection('TELEGRAM', `VOICE from ${sanitizeForPtyInjection(from)} (chat_id:${chatId})`, rawDaemonBody(`${FastChecker.formatReplyContext(replyToText)}duration: ${dur}s\nlocal_file: ${filePath}\n${transcriptBlock}`.trimEnd()), { kind: 'telegram', chatId });
   }
 
   /**
@@ -1999,17 +1992,9 @@ ${transcriptBlock}Reply using: cortextos bus send-telegram ${chatId} '<your repl
     fileName: string,
     duration: number | undefined,
     replyToText?: string,
-  ): string {
+  ): DaemonInjection {
     const dur = duration !== undefined ? duration : 'unknown';
-    return `=== TELEGRAM VIDEO from ${sanitizeForPtyInjection(from)} (chat_id:${chatId}) ===
-${FastChecker.formatReplyContext(replyToText)}caption:
-${wrapFenceSafe(caption)}
-duration: ${dur}s
-local_file: ${filePath}
-file_name: ${sanitizeForPtyInjection(fileName)}
-Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
-
-`;
+    return structuralDaemonInjection('TELEGRAM', `VIDEO from ${sanitizeForPtyInjection(from)} (chat_id:${chatId})`, rawDaemonBody(`${FastChecker.formatReplyContext(replyToText)}caption:\n${wrapFenceSafe(caption)}\nduration: ${dur}s\nlocal_file: ${filePath}\nfile_name: ${sanitizeForPtyInjection(fileName)}`), { kind: 'telegram', chatId });
   }
 
   private static formatReplyContext(replyToText?: string): string {
@@ -2395,12 +2380,12 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     if (chatId && this.agent) {
       const senderName = sanitizeForPtyInjection(query.from?.first_name || 'User');
       const safeData = sanitizeForPtyInjection(data);
-      const msg = [
-        `=== TELEGRAM from [USER: ${senderName}] (chat_id:${chatId}) ===`,
-        `callback_data: ${safeData}`,
-        `message_id: ${messageId}`,
-        `Reply using: cortextos bus send-telegram ${chatId} '<your reply>'`,
-      ].join('\n');
+      const msg = structuralDaemonInjection(
+        'TELEGRAM',
+        `from [USER: ${senderName}] (chat_id:${chatId})`,
+        rawDaemonBody(`callback_data: ${safeData}\nmessage_id: ${messageId}`),
+        { kind: 'telegram', chatId },
+      );
       const injected = this.agent.injectMessage(msg);
       if (injected && this.telegramApi) {
         try { await this.telegramApi.answerCallbackQuery(callbackQueryId, 'Got it'); } catch { /* ignore */ }
@@ -2503,7 +2488,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
         // so a signal payload carrying its own fence can't break out and forge
         // daemon containment headers.
         if (content) {
-          const urgentMsg = `=== URGENT SIGNAL ===\n${wrapFenceSafe(content)}\n\n`;
+          const urgentMsg = structuralDaemonInjection('URGENT SIGNAL', '', rawDaemonBody(content));
           this.agent.injectMessage(urgentMsg);
         }
       } catch (err) {
@@ -2689,7 +2674,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       this.ctxWarningFiredAt = now;
       const pctRound = Math.round(effectivePct);
       const statusSuffix = effectivePct >= handoff ? 'Handoff in progress.' : `Handoff triggers at ${handoff}%.`;
-      this.agent.injectMessage(`[CONTEXT] Window at ${pctRound}%. ${statusSuffix}`);
+      this.agent.injectMessage(structuralDaemonInjection('CONTEXT', `Window at ${pctRound}%`, rawDaemonBody(statusSuffix)));
       this.log(`Context warning fired at ${pctRound}%`);
     }
 
@@ -2747,8 +2732,8 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
         writeFileSync(statusPath, JSON.stringify({ used_percentage: 0, exceeds_200k_tokens: false, written_at: new Date().toISOString() }));
       } catch { /* non-fatal */ }
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + 'Z';
-      const handoffPrompt = `[CONTEXT HANDOFF REQUIRED] Context is at ${Math.round(effectivePct)}%. Write a handoff document to memory/handoffs/handoff-${ts}.md with these sections: ## Current Tasks, ## Next Actions, ## Active Crons, ## Key Context, ## Files Modified This Session. Then run: cortextos bus hard-restart --reason "context handoff at ${Math.round(effectivePct)}%" --handoff-doc <absolute path to the handoff doc you just wrote>. Do this NOW before the context window is exhausted.`;
-      this.agent.injectMessage(handoffPrompt);
+      const handoffPrompt = `Write a handoff document to memory/handoffs/handoff-${ts}.md with these sections: ## Current Tasks, ## Next Actions, ## Active Crons, ## Key Context, ## Files Modified This Session. Then run: cortextos bus hard-restart --reason "context handoff at ${Math.round(effectivePct)}%" --handoff-doc <absolute path to the handoff doc you just wrote>. Do this NOW before the context window is exhausted.`;
+      this.agent.injectMessage(structuralDaemonInjection('CONTEXT HANDOFF REQUIRED', `Context is at ${Math.round(effectivePct)}%`, rawDaemonBody(handoffPrompt)));
       this.log(`Handoff prompt injected at ${Math.round(effectivePct)}%`);
       // Pre-arm .force-fresh so the next restart is always a clean fresh session.
       // If the agent cooperates and calls hard-restart, it also writes .force-fresh — no-op.

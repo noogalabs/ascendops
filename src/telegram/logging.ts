@@ -20,6 +20,7 @@ import {
 import { join, dirname } from 'path';
 import { logEvent } from '../bus/event.js';
 import { stripControlChars } from '../utils/validate.js';
+import { requireAdminUsername } from '../utils/admin-identity.js';
 import type { BusPaths, TelegramMessage } from '../types/index.js';
 
 /**
@@ -185,6 +186,9 @@ export function recordInboundTelegram(
 
   const hasMedia = !!(msg.photo || msg.document || msg.voice || msg.audio || msg.video || msg.video_note);
   try {
+    // Daemon-on-behalf delivery write: deliberately does NOT opt into
+    // heartbeat refresh, so a wedged agent's heartbeat cannot be spoofed
+    // fresh by inbound traffic it never acted on.
     logEvent(paths, agentName, org, 'message', 'telegram_received', 'info', {
       chat_id: String(msg.chat?.id ?? ''),
       message_id: msg.message_id,
@@ -308,7 +312,7 @@ export function buildRecentHistory(
     } catch { /* skip unreadable */ }
   };
 
-  readLines(inboundPath, process.env.ADMIN_USERNAME ?? 'user');
+  readLines(inboundPath, requireAdminUsername());
   readLines(outboundPath, agentName);
 
   if (entries.length === 0) return null;

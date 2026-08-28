@@ -445,7 +445,7 @@ describe('Bus System', () => {
     });
 
     it('strips "(by <author>)" suffix from generated-md timestamps', () => {
-      // `cortextos goals generate-md` writes `2026-05-18T11:35:27Z (by dane)`.
+      // `cortextos goals generate-md` writes `2026-05-18T11:35:27Z (by rex)`.
       // Without the strip, Date() returns Invalid Date and the cron sees
       // parse_error on every agent.
       const agentDir = join(testDir, 'orgs', 'myorg', 'agents', 'worker');
@@ -453,7 +453,7 @@ describe('Bus System', () => {
       const recentDate = new Date(Date.now() - 86400000).toISOString();
       writeFileSync(
         join(agentDir, 'GOALS.md'),
-        `# Goals\n\n## Updated\n${recentDate} (by dane)\n\nSome goal`,
+        `# Goals\n\n## Updated\n${recentDate} (by rex)\n\nSome goal`,
       );
 
       const report = checkGoalStaleness(testDir, 7);

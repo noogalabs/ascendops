@@ -79,7 +79,7 @@ export const initCommand = new Command('init')
         console.log('    2. Confirm no agent-name collisions across orgs (and');
         console.log('       agree to keep it that way).');
         console.log('');
-        console.log('  Tracked at: Zone C H1 in an agent/memory/2026-05-10.md');
+        console.log('  Tracked at: Zone C H1 in <agent>/memory/<date>.md');
         console.log('  ============================================================');
         console.log('');
       }

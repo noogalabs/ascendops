@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { resolveSafeModel } from '../../../src/pty/codex-app-server-pty.js';
 
-// Regression guard for the 2026-06-04 codie outage: the codex-app-server path
+// Regression guard for the 2026-06-04 kit outage: the codex-app-server path
 // sent no model on thread/turn requests, so codex-cli 0.130.0 picked its own
 // default (gpt-5.3-codex) which the ChatGPT account is not entitled to → 400
 // every turn. resolveSafeModel() must ALWAYS return an explicit, entitled model

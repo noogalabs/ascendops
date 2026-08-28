@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { createTask, updateTask, touchTask, completeTask, checkStaleTasks, archiveTasks, checkHumanTasks, readTaskAudit } from '../../../src/bus/task';
+import { createTask, updateTask, completeTask, checkStaleTasks, archiveTasks, checkHumanTasks } from '../../../src/bus/task';
 import { atomicWriteSync } from '../../../src/utils/atomic';
 import type { BusPaths, Task } from '../../../src/types';
 
@@ -152,65 +152,6 @@ describe('Advanced Task Management', () => {
       expect(report.stale_pending.length).toBe(0);
       expect(report.stale_human.length).toBe(0);
       expect(report.overdue.length).toBe(0);
-    });
-  });
-
-  describe('touchTask (BUG-030)', () => {
-    it('bumps updated_at without changing status', () => {
-      createBackdatedTask(paths, {
-        id: 'task_020_020',
-        title: 'Standing monitor task',
-        status: 'in_progress',
-        created_at: hoursAgo(5),
-        updated_at: hoursAgo(3), // would be stale
-      });
-
-      touchTask(paths, 'task_020_020');
-
-      const raw = readFileSync(join(paths.taskDir, 'task_020_020.json'), 'utf-8');
-      const task: Task = JSON.parse(raw);
-      expect(task.status).toBe('in_progress');
-      expect(new Date(task.updated_at).getTime()).toBeGreaterThan(
-        Date.now() - 5000,
-      );
-    });
-
-    it('prevents a re-verified standing task from being flagged stale', () => {
-      createBackdatedTask(paths, {
-        id: 'task_021_021',
-        title: 'Standing monitor task',
-        status: 'in_progress',
-        created_at: hoursAgo(5),
-        updated_at: hoursAgo(3), // stale unless touched
-      });
-
-      touchTask(paths, 'task_021_021');
-
-      const report = checkStaleTasks(paths);
-      expect(report.stale_in_progress.map((t) => t.id)).not.toContain(
-        'task_021_021',
-      );
-    });
-
-    it('records a "touch" audit entry, not a fake status transition', () => {
-      createBackdatedTask(paths, {
-        id: 'task_022_022',
-        title: 'Standing monitor task',
-        status: 'in_progress',
-        assigned_to: 'agent1',
-      });
-
-      touchTask(paths, 'task_022_022');
-
-      const audit = readTaskAudit(paths, 'task_022_022');
-      const last = audit[audit.length - 1];
-      expect(last.event).toBe('touch');
-      expect(last.from).toBeUndefined();
-      expect(last.to).toBeUndefined();
-    });
-
-    it('throws for a nonexistent task', () => {
-      expect(() => touchTask(paths, 'task_does_not_exist')).toThrow();
     });
   });
 

@@ -29,7 +29,6 @@ const MAX_LOG_BYTES = 50 * 1024 * 1024; // 50 MB — rotate before OS file-cache
  */
 export class OutputBuffer {
   private chunks: string[] = [];
-  private chunkGenerations: number[] = [];
   private maxChunks: number;
   private logPath: string | null;
   private bootstrapPattern: string;
@@ -44,8 +43,6 @@ export class OutputBuffer {
   // (safely masked — see getRecent) in getRecent() so bootstrap / rate-limit /
   // activity detection never miss live output.
   private pendingTail: string = '';
-  private pendingGeneration = 0;
-  private generation = 0;
 
   constructor(maxChunks: number = 1000, logPath?: string, bootstrapPattern?: string) {
     this.maxChunks = maxChunks;
@@ -84,7 +81,6 @@ export class OutputBuffer {
    * holdback only ever sees genuinely-incomplete partials.
    */
   push(data: string): void {
-    const generation = ++this.generation;
     const redacted = redactSecrets(this.pendingTail + data);
     const [, holdJwt] = splitTrailingPartialJwt(redacted);
     const [, holdSsn] = splitTrailingPartialSsn(redacted);
@@ -124,22 +120,19 @@ export class OutputBuffer {
     ].reduce((a, b) => (b.length > a.length ? b : a), '');
     const emit = hold ? redacted.slice(0, redacted.length - hold.length) : redacted;
     this.pendingTail = hold;
-    this.pendingGeneration = hold ? generation : 0;
     if (!emit) return; // everything held back as a potential partial token
 
-    this.commit(emit, generation); // already redacted above
+    this.commit(emit); // already redacted above
   }
 
   /**
    * Append already-redacted data to the in-memory ring buffer and stream
    * it to the disk log. Shared by push() and close().
    */
-  private commit(safe: string, generation: number): void {
+  private commit(safe: string): void {
     this.chunks.push(safe);
-    this.chunkGenerations.push(generation);
     if (this.chunks.length > this.maxChunks) {
       this.chunks.shift();
-      this.chunkGenerations.shift();
     }
 
     // Stream to log file (replaces tmux pipe-pane)
@@ -190,46 +183,36 @@ export class OutputBuffer {
    */
   close(): void {
     const tail = this.pendingTail;
-    const generation = this.pendingGeneration;
     this.pendingTail = '';
-    this.pendingGeneration = 0;
     if (!tail) return;
     if (BARE_PREFIX_FRAGMENT.test(tail)) {
-      this.commit(tail, generation);
+      this.commit(tail);
     } else if (isPartialSsnMaterial(tail)) {
-      this.commit('[REDACTED_POSSIBLE_SSN_TAIL]', generation);
+      this.commit('[REDACTED_POSSIBLE_SSN_TAIL]');
     } else if (isPartialNewEntryMaterial(tail)) {
       // A partial formatted-EIN tail (`12-3`…`12-345678`) held across the
       // boundary — carries most of an EIN, mask rather than leak it.
-      this.commit('[REDACTED_POSSIBLE_EIN_TAIL]', generation);
+      this.commit('[REDACTED_POSSIBLE_EIN_TAIL]');
     } else if (/^\d{1,2}[-.\t ]?\s*$/.test(tail)) {
       // A bare 1-2 digit run, optionally with a single trailing separator and
       // whitespace (e.g. `123`-style SSN prefix is covered below; here `12`,
       // `12-`, `12 ` held only as a possible SSN/EIN prefix) — no maskable
       // secret material (no second-group digit), emit verbatim.
-      this.commit(tail, generation);
+      this.commit(tail);
     } else if (/^\d{1,3}\s*$/.test(tail)) {
       // Bare digit run (optionally newline/space-terminated, e.g. `exit 123\n`)
       // held only as a possible SSN prefix — no secret material, emit verbatim.
       // The trailing-whitespace tolerance matters because the holdback treats
       // `\s` as a separator, so an ordinary "<short number>\n" line gets held.
-      this.commit(tail, generation);
+      this.commit(tail);
     } else if (!/\d/.test(tail)) {
       // A held trailing SSN-label region with NO digits yet (e.g. `SSN: ` held
       // because the stream ended before its number arrived) — a label carries
       // no secret on its own, emit verbatim rather than mask it.
-      this.commit(tail, generation);
+      this.commit(tail);
     } else {
-      this.commit('[REDACTED_POSSIBLE_JWT_TAIL]', generation);
+      this.commit('[REDACTED_POSSIBLE_JWT_TAIL]');
     }
-  }
-
-  private getSafePendingTail(): string {
-    return isPartialSsnMaterial(this.pendingTail)
-      ? '[REDACTED_POSSIBLE_SSN_TAIL]'
-      : isPartialNewEntryMaterial(this.pendingTail)
-        ? '[REDACTED_POSSIBLE_EIN_TAIL]'
-        : redactSecrets(this.pendingTail);
   }
 
   /**
@@ -244,7 +227,12 @@ export class OutputBuffer {
     // held INCOMPLETE partial SSN (e.g. `123-45-6`) is not a complete token,
     // so it must be masked here exactly as close() does — otherwise a poller
     // (e.g. the fast-checker) would see most of an SSN.
-    return this.chunks.slice(-count).join('') + this.getSafePendingTail();
+    const safeTail = isPartialSsnMaterial(this.pendingTail)
+      ? '[REDACTED_POSSIBLE_SSN_TAIL]'
+      : isPartialNewEntryMaterial(this.pendingTail)
+        ? '[REDACTED_POSSIBLE_EIN_TAIL]'
+        : redactSecrets(this.pendingTail);
+    return this.chunks.slice(-count).join('') + safeTail;
   }
 
   /**
@@ -252,24 +240,6 @@ export class OutputBuffer {
    */
   getRecentTail(maxBytes = 4096): string {
     return this.getRecent().slice(-maxBytes);
-  }
-
-  /** Mark the current push generation without copying output into another buffer. */
-  createSafeCursor(): number {
-    return this.generation;
-  }
-
-  /**
-   * Return only output received after a cursor, using the same redacted chunks
-   * as every other OutputBuffer consumer. Pending holdback is deliberately
-   * excluded until a later push proves and commits it safely; exposing a
-   * partial token here would make prompt detection a secret side channel.
-   */
-  getSafeTailSince(cursor: number, maxBytes = 4096): string {
-    const committed = this.chunks
-      .filter((_chunk, index) => this.chunkGenerations[index] > cursor)
-      .join('');
-    return committed.slice(-maxBytes);
   }
 
   /**
@@ -311,14 +281,9 @@ export class OutputBuffer {
       // bar must appear after every blocking-dialog marker.
       const lower = cleaned.toLowerCase();
       const readyAt = cleaned.lastIndexOf(this.bootstrapPattern);
-      const continueWithoutAt = lower.lastIndexOf('continue without these permissions');
-      const continuePermissionsAt = continueWithoutAt >= 0
-        ? continueWithoutAt + 'continue without these '.length
-        : -1;
       const blockedAt = Math.max(
         lower.lastIndexOf('trust'),
         lower.lastIndexOf('no, exit'),
-        continuePermissionsAt,
         lower.lastIndexOf('bypass permissions'),
       );
       this.bootstrapped = readyAt >= 0 && readyAt > blockedAt;
@@ -377,9 +342,7 @@ export class OutputBuffer {
    */
   clear(): void {
     this.chunks = [];
-    this.chunkGenerations = [];
     this.pendingTail = '';
-    this.pendingGeneration = 0;
     this.bootstrapped = false;
   }
 }

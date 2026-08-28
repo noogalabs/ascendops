@@ -50,6 +50,7 @@ import {
   writeFileSync,
   readFileSync,
   existsSync,
+  utimesSync,
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -1044,6 +1045,149 @@ describe('FM-9: IPC reload during active catch-up — schedule change mid-flight
       const fromNow = nextFire.nextFireAt - Date.now();
       expect(fromNow).toBeGreaterThan(ONE_HOUR);
     }
+
+    scheduler.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FM-10: tick-loop crons.json mtime reload — REAL-file path (no IPC signal)
+//
+// The unit tests in tests/unit/daemon/cron-scheduler.test.ts mock
+// cronsFileMtimeMs, so they cannot exercise the real stat/read path.  These
+// integration tests write a real crons.json, force its mtime strictly forward
+// (utimesSync — deterministic regardless of filesystem mtime granularity), and
+// assert the tick loop picks the edit up within one tick with NO reload() call.
+// ---------------------------------------------------------------------------
+
+describe('FM-10: tick-loop crons.json mtime reload (real file, no IPC)', () => {
+  it('durable crons.json edit is picked up within one tick with no reload() call', async () => {
+    const agent = 'fm-mtime-pickup';
+    ensureAgentDir(agent);
+
+    const fired: string[] = [];
+    const logs: string[] = [];
+
+    // A cron far from due, so nothing fires before the edit lands.
+    addCron(agent, makeCronDef('base', '6h'));
+
+    const scheduler = buildScheduler(agent, (c) => fired.push(c.name), logs);
+    scheduler.start();
+    expect(scheduler.getNextFireTimes().map(n => n.name)).not.toContain('added');
+
+    // Durable edit straight to crons.json — NO scheduler.reload() / IPC.
+    writeCrons(agent, [makeCronDef('base', '6h'), makeCronDef('added', '1m')]);
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(cronsFilePath(agent), future, future);
+
+    // One tick: the loop must stat the file, detect the new mtime, and reload.
+    await vi.advanceTimersByTimeAsync(TICK_MS);
+    expect(scheduler.getNextFireTimes().map(n => n.name)).toContain('added');
+
+    // And the newly added cron actually fires when due.
+    await vi.advanceTimersByTimeAsync(ONE_MIN + TICK_MS);
+    expect(fired).toContain('added');
+
+    scheduler.stop();
+  });
+
+  it('prompt-only durable edit (changeKey unchanged) is applied to the live definition within one tick', async () => {
+    const agent = 'fm-mtime-prompt';
+    ensureAgentDir(agent);
+
+    const firedDefs: CronDefinition[] = [];
+    const logs: string[] = [];
+
+    // Overdue by 2m so it catch-up fires on the very first tick — after the
+    // tick-top mtime guard has already applied the durable edit.
+    addCron(agent, makeCronDef('promptcron', '1m', {
+      prompt: 'ORIGINAL',
+      last_fired_at: new Date(Date.now() - 2 * ONE_MIN).toISOString(),
+    }));
+
+    const scheduler = buildScheduler(agent, (c) => firedDefs.push({ ...c }), logs);
+    scheduler.start();
+
+    // Durable prompt-only edit: same name + schedule (changeKey unchanged),
+    // new prompt text. No reload() call.
+    writeCrons(agent, [makeCronDef('promptcron', '1m', { prompt: 'EDITED' })]);
+    const future = new Date(Date.now() + 10_000);
+    utimesSync(cronsFilePath(agent), future, future);
+
+    // One tick: the mtime guard reloads (changeKey-unchanged branch swaps in the
+    // new definition, preserving nextFireAt) BEFORE the fire loop runs, so the
+    // catch-up fire carries the EDITED prompt.
+    await vi.advanceTimersByTimeAsync(TICK_MS);
+
+    const promptFires = firedDefs.filter(d => d.name === 'promptcron');
+    expect(promptFires.length).toBeGreaterThanOrEqual(1);
+    expect(promptFires[promptFires.length - 1].prompt).toBe('EDITED');
+
+    scheduler.stop();
+  });
+
+  // CRUX PROPERTY / POSITIVE CONTROL for the mtime-guard design decision:
+  // "we deliberately do NOT refresh the tracked mtime after our own writes."
+  //
+  // A cron's own post-fire bookkeeping write (last_fired_at/fire_count) advances
+  // the real crons.json mtime.  If a future "optimization" refreshed
+  // lastLoadedCronsMtimeMs to that post-write value, an EXTERNAL edit that landed
+  // while the fire was in flight would be permanently masked (the post-fire tick
+  // would see mtime == tracked and never reload).  This test fails RED under that
+  // injection and GREEN with the shipped code, guarding the property.
+  it('a mid-fire external edit survives the post-fire bookkeeping write and is applied on the post-fire tick', async () => {
+    const agent = 'fm-postfire-external';
+    ensureAgentDir(agent);
+
+    const firedPrompts: string[] = [];
+    let resolveFire: (() => void) | null = null;
+    let blocked = false;
+
+    // Overdue by 2m so it catch-up fires on the very first tick.
+    addCron(agent, makeCronDef('pc', '1m', {
+      prompt: 'ORIGINAL',
+      last_fired_at: new Date(Date.now() - 2 * ONE_MIN).toISOString(),
+    }));
+
+    // Pin the tracked-mtime baseline strictly into the past so ANY later real
+    // write is unambiguously newer than the value captured at start() — makes
+    // the GREEN direction independent of filesystem mtime granularity. (It does
+    // NOT weaken the RED control, which turns on the post-fire refresh overwriting
+    // this baseline with the bookkeeping-write mtime.)
+    const past = new Date(Date.now() - 5 * ONE_MIN);
+    utimesSync(cronsFilePath(agent), past, past);
+
+    const scheduler = buildScheduler(agent, (c) => {
+      firedPrompts.push(c.prompt);
+      if (c.name === 'pc' && !blocked) {
+        blocked = true;
+        return new Promise<void>(res => { resolveFire = res; });
+      }
+    }, []);
+    scheduler.start();
+
+    // Tick 1: catch-up fire begins and BLOCKS (firing === true).
+    await vi.advanceTimersByTimeAsync(TICK_MS);
+    expect(firedPrompts).toEqual(['ORIGINAL']);
+    expect(resolveFire).not.toBeNull();
+
+    // EXTERNAL writer edits crons.json mid-fire: prompt-only (changeKey UNCHANGED),
+    // real write advances the real mtime.
+    writeCrons(agent, [makeCronDef('pc', '1m', { prompt: 'EDITED' })]);
+
+    // Let the fire complete. The post-success updateCron bookkeeping write
+    // read-modify-writes crons.json (preserving the EDITED prompt on disk) and
+    // advances the real mtime again.
+    resolveFire!();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Post-fire tick(s): the mtime guard must NOT treat its own bookkeeping write
+    // as "no external change" — it reloads, applies the EDITED definition, and the
+    // next scheduled fire carries it.
+    await vi.advanceTimersByTimeAsync(ONE_MIN + TICK_MS);
+
+    expect(firedPrompts.length).toBeGreaterThanOrEqual(2);
+    expect(firedPrompts[firedPrompts.length - 1]).toBe('EDITED');
 
     scheduler.stop();
   });

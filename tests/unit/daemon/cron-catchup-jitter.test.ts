@@ -4,11 +4,13 @@ const mockReadCrons = vi.fn();
 const mockUpdateCron = vi.fn();
 const mockReadCronsWithStatus = vi.fn();
 const mockAppendExecutionLog = vi.fn();
+const mockCronsFileMtimeMs = vi.fn(() => 0);
 
 vi.mock('../../../src/bus/crons.js', () => ({
   readCrons: (...a: unknown[]) => mockReadCrons(...a),
   readCronsWithStatus: (...a: unknown[]) => mockReadCronsWithStatus(...a),
   updateCron: (...a: unknown[]) => mockUpdateCron(...a),
+  cronsFileMtimeMs: (...a: unknown[]) => mockCronsFileMtimeMs(...a),
 }));
 
 vi.mock('../../../src/daemon/cron-execution-log.js', () => ({
@@ -67,7 +69,7 @@ describe('cron catch-up marking', () => {
     expect(fireLogs().filter((line) => line.includes('[catch-up]'))).toHaveLength(2);
   });
 
-  // Reviewer's instrument gap: a caught-up fire and a due fire are otherwise
+  // Nova's instrument gap: a caught-up fire and a due fire are otherwise
   // indistinguishable in the record, which is how a post-restart replay reads
   // as normal operation.
   it('TC-J3: catch-up fires are marked distinguishable from due fires', async () => {

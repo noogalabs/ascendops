@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { TelegramPoller } from '../../../src/telegram/poller';
+import { TelegramPoller, computePollBackoffMs, RETRY_AFTER_CEILING_MS } from '../../../src/telegram/poller';
 import type { TelegramAPI } from '../../../src/telegram/api';
 import type { TelegramUpdate } from '../../../src/types/index';
 
@@ -331,5 +331,156 @@ describe('TelegramPoller — offset-file collision guard', () => {
 
     expect(seenSignal!.aborted).toBe(true);
     await expect(pollPromise).rejects.toThrow(/aborted/);
+  });
+});
+
+describe('TelegramPoller — poll backoff', () => {
+  let stateDir: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), 'cortextos-poller-backoff-'));
+    // Silence the diagnostic error logging the backoff path emits.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Group A — pure function, no timers.
+  it('grows exponentially then caps at capMs', () => {
+    const delays = [1, 2, 3, 4, 5, 6, 7].map((n) =>
+      computePollBackoffMs('Telegram API request timed out after 15s: getUpdates', n, 1000, 30000),
+    );
+    expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+  });
+
+  it('honors a 429 retry_after hint regardless of attempt', () => {
+    const msg = 'Telegram API error: Too Many Requests: retry after 7';
+    expect(computePollBackoffMs(msg, 1, 1000, 30000)).toBe(7000);
+    expect(computePollBackoffMs(msg, 5, 1000, 30000)).toBe(7000);
+  });
+
+  it('floors a retry_after of 0 to 1000ms', () => {
+    expect(computePollBackoffMs('retry after 0', 3, 1000, 30000)).toBe(1000);
+  });
+
+  it('falls back to the exponential curve when there is no retry_after', () => {
+    expect(computePollBackoffMs('Telegram API request failed: boom', 3, 1000, 30000)).toBe(4000);
+  });
+
+  it('clamps a retry_after above the ceiling and honors one below it unchanged', () => {
+    const ceilingSecs = RETRY_AFTER_CEILING_MS / 1000;
+    // Above the ceiling (e.g. a hostile "retry after 3600") is clamped down to it.
+    const aboveSecs = ceilingSecs + 300;
+    expect(computePollBackoffMs(`retry after ${aboveSecs}`, 1, 1000, 30000)).toBe(RETRY_AFTER_CEILING_MS);
+    // Below the ceiling (a realistic flood-control wait that still exceeds the 30s
+    // exponential cap) is honored as-is — proving the honor path does not reuse capMs.
+    const belowSecs = ceilingSecs - 60;
+    expect(computePollBackoffMs(`retry after ${belowSecs}`, 1, 1000, 30000)).toBe(belowSecs * 1000);
+  });
+
+  // Group B — loop integration under fake timers.
+  function backoffApi(impl: () => Promise<unknown>): TelegramAPI {
+    return { getUpdates: vi.fn(impl) } as unknown as TelegramAPI;
+  }
+
+  it('backs off exponentially and caps during a sustained error storm', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const delays = () => setTimeoutSpy.mock.calls.map((c) => Number(c[1]));
+
+    const api = backoffApi(async () => {
+      throw new Error('Telegram API request timed out after 15s: getUpdates');
+    });
+    const poller = new TelegramPoller(api, stateDir);
+    const running = poller.start();
+
+    // Flush the first pollOnce rejection microtask so the first backoff sleep is scheduled.
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 1; i < 7; i++) {
+      const d = delays();
+      await vi.advanceTimersByTimeAsync(d[d.length - 1]);
+    }
+
+    expect(delays()).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+
+    poller.stop();
+    const d = delays();
+    await vi.advanceTimersByTimeAsync(d[d.length - 1]);
+    await running;
+  });
+
+  it('honors a 429 retry_after for the first backoff in the loop', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const delays = () => setTimeoutSpy.mock.calls.map((c) => Number(c[1]));
+
+    const api = backoffApi(async () => {
+      throw new Error('Telegram API error: Too Many Requests: retry after 5');
+    });
+    const poller = new TelegramPoller(api, stateDir);
+    const running = poller.start();
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(delays()[0]).toBe(5000);
+
+    poller.stop();
+    await vi.advanceTimersByTimeAsync(5000);
+    await running;
+  });
+
+  it('resets the backoff counter after a successful poll', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const delays = () => setTimeoutSpy.mock.calls.map((c) => Number(c[1]));
+
+    let call = 0;
+    const api = backoffApi(async () => {
+      call++;
+      if (call === 3) return { result: [] }; // third poll succeeds
+      throw new Error('Telegram API request timed out after 15s: getUpdates');
+    });
+    const poller = new TelegramPoller(api, stateDir);
+    const running = poller.start();
+
+    await vi.advanceTimersByTimeAsync(0); // call1 fail -> 1000
+    await vi.advanceTimersByTimeAsync(1000); // call2 fail -> 2000
+    await vi.advanceTimersByTimeAsync(2000); // call3 success -> reset -> sleep 1000
+    await vi.advanceTimersByTimeAsync(1000); // call4 fail -> attempt 1 again -> 1000
+
+    // fail(1000), fail(2000), success(1000 interval), fail(1000 — NOT 4000)
+    expect(delays()).toEqual([1000, 2000, 1000, 1000]);
+
+    poller.stop();
+    await vi.advanceTimersByTimeAsync(1000);
+    await running;
+  });
+
+  it('uses the private offset-owner cooldown for 409 without entering exponential backoff', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+    const api = backoffApi(async () => {
+      throw new Error('Telegram API error: Conflict: terminated by other getUpdates request');
+    });
+    const poller = new TelegramPoller(api, stateDir);
+    const running = poller.start();
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 10_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    poller.stop();
+    await vi.advanceTimersByTimeAsync(1000);
+    await running;
+
+    expect(poller.lastExitReason).toBe('stopped-externally');
+    expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 2000)).toBe(false);
   });
 });

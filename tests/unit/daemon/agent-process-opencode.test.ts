@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 let capturedOnExit: ((exitCode: number, signal?: number) => void) | null = null;
 
 const mockOpencodePty = {
+  sessionNonce: vi.fn().mockReturnValue(null),
   spawn: vi.fn().mockResolvedValue(undefined),
   kill: vi.fn(),
   write: vi.fn(),

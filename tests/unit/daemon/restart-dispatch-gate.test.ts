@@ -34,24 +34,24 @@ type TestSocket = {
 function dispatchRestart(
   manager: {
     inspectAgentOp: ReturnType<typeof vi.fn>;
-    restartAgent: ReturnType<typeof vi.fn>;
+    admitRestartAgent: ReturnType<typeof vi.fn>;
+    restartAgent?: ReturnType<typeof vi.fn>;
+    recordFleetStartRejection?: ReturnType<typeof vi.fn>;
   },
   request: IPCRequest,
-): { response: IPCResponse; socket: TestSocket } {
+): Promise<{ response: IPCResponse; socket: TestSocket }> {
   const socket: TestSocket = {
     write: vi.fn(),
     end: vi.fn(),
   };
   const server = new IPCServer(manager as never);
 
-  (server as unknown as {
-    handleRequest: (incoming: IPCRequest, target: TestSocket) => void;
-  }).handleRequest(request, socket);
-
-  return {
+  return (server as unknown as {
+    handleRequest: (incoming: IPCRequest, target: TestSocket) => Promise<void>;
+  }).handleRequest(request, socket).then(() => ({
     response: JSON.parse(socket.write.mock.calls[0][0]) as IPCResponse,
     socket,
-  };
+  }));
 }
 
 describe('IPC restart-agent verdict gate', () => {
@@ -59,7 +59,7 @@ describe('IPC restart-agent verdict gate', () => {
     vi.restoreAllMocks();
   });
 
-  it('does not dispatch restartAgent when inspection rejects the request', () => {
+  it('does not dispatch restartAgent when inspection rejects the request', async () => {
     const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const manager = {
       inspectAgentOp: vi.fn().mockReturnValue({
@@ -68,15 +68,16 @@ describe('IPC restart-agent verdict gate', () => {
         message: 'agent "ghost" not in registry — cannot restart',
       }),
       restartAgent: vi.fn().mockResolvedValue(undefined),
+      admitRestartAgent: vi.fn().mockResolvedValue(undefined),
     };
 
-    const { response, socket } = dispatchRestart(manager, {
+    const { response, socket } = await dispatchRestart(manager, {
       type: 'restart-agent',
       agent: 'ghost',
       source: 'test',
     });
 
-    expect(manager.restartAgent).not.toHaveBeenCalled();
+    expect(manager.admitRestartAgent).not.toHaveBeenCalled();
     expect(response).toEqual({
       success: false,
       error: 'agent "ghost" not in registry — cannot restart',
@@ -88,24 +89,49 @@ describe('IPC restart-agent verdict gate', () => {
     expect(socket.end).toHaveBeenCalledOnce();
   });
 
-  it('dispatches one normal restart when inspection passes', () => {
+  it('dispatches one normal restart when inspection passes', async () => {
     const manager = {
       inspectAgentOp: vi.fn().mockReturnValue({ ok: true }),
       restartAgent: vi.fn().mockResolvedValue(undefined),
+      admitRestartAgent: vi.fn().mockResolvedValue(undefined),
     };
 
-    const { response } = dispatchRestart(manager, {
+    const { response } = await dispatchRestart(manager, {
       type: 'restart-agent',
       agent: 'alice',
       source: 'test',
     });
 
-    expect(manager.restartAgent).toHaveBeenCalledOnce();
-    expect(manager.restartAgent).toHaveBeenCalledWith('alice', undefined);
-    expect(response).toEqual({ success: true, data: 'Restarting alice' });
+    expect(manager.admitRestartAgent).toHaveBeenCalledOnce();
+    expect(manager.admitRestartAgent).toHaveBeenCalledWith('alice', undefined);
+    expect(response).toEqual({
+      success: true,
+      data: { verdict: 'admitted', message: 'Restarting alice' },
+    });
   });
 
-  it('records a refused FLEET member through the IPC seam, and does not for a manual one', () => {
+  it('reports custody deferral truthfully instead of claiming restart complete', async () => {
+    const deferred = {
+      status: 'deferred',
+      receiptId: 'alice:operation:7',
+      record: { state: 'deferred-with-owner', hasRetryOwner: true },
+    };
+    const manager = {
+      inspectAgentOp: vi.fn().mockReturnValue({ ok: true }),
+      admitRestartAgent: vi.fn().mockResolvedValue(deferred),
+    };
+    const { response } = await dispatchRestart(manager, {
+      type: 'restart-agent', agent: 'alice', source: 'test',
+    });
+    expect(response).toMatchObject({
+      success: false,
+      code: 'ADMISSION_FAILED',
+      data: { verdict: 'deferred-with-owner', receiptId: deferred.receiptId },
+    });
+    expect(response.error).toContain('retry owner=alice:operation:7');
+  });
+
+  it('records a refused FLEET member through the IPC seam, and does not for a manual one', async () => {
     // The method-level overlap test exercises the coordinator semantics but BYPASSES the
     // seam that caused the bug. This asserts the IPC layer actually calls the accounting
     // hook on a refused FLEET request — and pointedly does not on a refused MANUAL one.
@@ -117,22 +143,23 @@ describe('IPC restart-agent verdict gate', () => {
         message: 'restart request for "alice" deduped — restart already in flight',
       }),
       restartAgent: vi.fn().mockResolvedValue(undefined),
+      admitRestartAgent: vi.fn().mockResolvedValue(undefined),
       recordFleetStartRejection: vi.fn(),
     };
 
-    dispatchRestart(manager, {
+    await dispatchRestart(manager, {
       type: 'restart-agent',
       agent: 'alice',
       source: 'cortextos bus soft-restart-all',
       data: { fleetTotal: 2, fleetIndex: 0 },
     });
     expect(manager.recordFleetStartRejection).toHaveBeenCalledWith('alice', 2);
-    expect(manager.restartAgent).not.toHaveBeenCalled();
+    expect(manager.admitRestartAgent).not.toHaveBeenCalled();
 
     manager.recordFleetStartRejection.mockClear();
-    dispatchRestart(manager, { type: 'restart-agent', agent: 'alice', source: 'test' });
+    await dispatchRestart(manager, { type: 'restart-agent', agent: 'alice', source: 'test' });
     expect(manager.recordFleetStartRejection).not.toHaveBeenCalled();
-    expect(manager.restartAgent).not.toHaveBeenCalled();
+    expect(manager.admitRestartAgent).not.toHaveBeenCalled();
   });
 });
 

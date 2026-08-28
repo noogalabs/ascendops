@@ -1,4 +1,4 @@
-// added 2026-04-29 via internal dispatch — RFC #15 Day-2 per-handler wiring tests.
+// added 2026-04-29 by moss via rex dispatch — RFC #15 Day-2 per-handler wiring tests.
 // Covers HandlerResult-driven dispatch (fire / block / escalate / undefined / throw) and
 // the basic loadHookRegistry + matchHooks paths so a regression in either surface is caught.
 
@@ -35,7 +35,7 @@ import {
 function makeEvent(overrides: Partial<Event> = {}): Event {
   return {
     id: 'evt-1',
-    agent: 'collie',
+    agent: 'moss',
     org: 'ascendops',
     timestamp: '2026-04-29T20:00:00Z',
     category: 'action',
@@ -109,20 +109,20 @@ describe('src/bus/hooks — Day-2 per-handler wiring', () => {
   describe('matchHooks', () => {
     it('matches enabled hooks by category + type', () => {
       const reg = { schema_version: '1.0', hooks: [makeHook({ id: 'a' })] };
-      const matched = matchHooks(reg, makeEvent(), 'collie');
+      const matched = matchHooks(reg, makeEvent(), 'moss');
       expect(matched).toHaveLength(1);
       expect(matched[0].id).toBe('a');
     });
 
     it('skips disabled hooks', () => {
       const reg = { schema_version: '1.0', hooks: [makeHook({ id: 'a', enabled: false })] };
-      expect(matchHooks(reg, makeEvent(), 'collie')).toHaveLength(0);
+      expect(matchHooks(reg, makeEvent(), 'moss')).toHaveLength(0);
     });
 
     it('respects agent_filter', () => {
-      const reg = { schema_version: '1.0', hooks: [makeHook({ id: 'a', agent_filter: ['blue'] })] };
-      expect(matchHooks(reg, makeEvent({ agent: 'collie' }), 'collie')).toHaveLength(0);
-      expect(matchHooks(reg, makeEvent({ agent: 'blue' }), 'blue')).toHaveLength(1);
+      const reg = { schema_version: '1.0', hooks: [makeHook({ id: 'a', agent_filter: ['indigo'] })] };
+      expect(matchHooks(reg, makeEvent({ agent: 'moss' }), 'moss')).toHaveLength(0);
+      expect(matchHooks(reg, makeEvent({ agent: 'indigo' }), 'indigo')).toHaveLength(1);
     });
 
     it('sorts matches by priority descending', () => {
@@ -130,7 +130,7 @@ describe('src/bus/hooks — Day-2 per-handler wiring', () => {
         schema_version: '1.0',
         hooks: [makeHook({ id: 'a', priority: 10 }), makeHook({ id: 'b', priority: 100 })],
       };
-      const matched = matchHooks(reg, makeEvent(), 'collie');
+      const matched = matchHooks(reg, makeEvent(), 'moss');
       expect(matched.map(h => h.id)).toEqual(['b', 'a']);
     });
 
@@ -139,12 +139,12 @@ describe('src/bus/hooks — Day-2 per-handler wiring', () => {
         schema_version: '1.0',
         hooks: [makeHook({
           id: 'a',
-          event_pattern: { category: 'action', type: 'pm_meld_completed', metadata: { tech: 'carlos' } },
+          event_pattern: { category: 'action', type: 'pm_meld_completed', metadata: { tech: 'nico' } },
         })],
       };
-      expect(matchHooks(reg, makeEvent({ metadata: { tech: 'carlos', meld: 12345 } }), 'collie'))
+      expect(matchHooks(reg, makeEvent({ metadata: { tech: 'nico', meld: 12345 } }), 'moss'))
         .toHaveLength(1);
-      expect(matchHooks(reg, makeEvent({ metadata: { tech: 'silvano' } }), 'collie'))
+      expect(matchHooks(reg, makeEvent({ metadata: { tech: 'tobin' } }), 'moss'))
         .toHaveLength(0);
     });
   });
