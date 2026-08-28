@@ -1289,7 +1289,7 @@ export class AgentManager {
       const slackJsonPathEarly = slackConfigPath(this.frameworkRoot, resolvedOrg, name);
       agentSlackRouting = loadSlackRoutingConfig(this.frameworkRoot, resolvedOrg, name);
       if (agentSlackRouting === null && existsSync(slackJsonPathEarly)) {
-        log(`WARNING: ${slackJsonPathEarly} exists but is malformed (unparseable JSON, or a field with the wrong shape — allowed_channels/allowed_users must be string arrays, channels a string map). Slack routing DISABLED for this agent — running in legacy single-channel mode. Fix the file and restart.`);
+        log(`WARNING: ${slackJsonPathEarly} exists but is malformed (unparseable JSON, or a field with the wrong shape — allowed_channels/allowed_users must be string arrays). Slack routing DISABLED for this agent — running in legacy single-channel mode. Fix the file and restart.`);
       }
 
       // Socket Mode is primary ONLY when native WebSocket is available (Node 22+);
