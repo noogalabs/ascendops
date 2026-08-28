@@ -10,6 +10,7 @@ import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { SlackAPI, type SlackMessage } from '../slack/api.js';
 import { evaluateSlackRoute, type SlackRoutingConfig } from '../slack/slack-routing.js';
+import { redactInboundText } from '../slack/slack-redact.js';
 import {
   resolveSlackIdentity,
   evaluateSlackTrust,
@@ -1760,7 +1761,7 @@ export class FastChecker {
       // "undefined" in the inbox body (the socket listener already guards this).
       deliverable.push(
         `=== SLACK from ${from} (channel:${this.slackWatch.channel} ts:${msg.ts}) ===\n` +
-        `${msg.text ?? ''}\n` +
+        `${redactInboundText(msg.text ?? '')}\n` +
         `Reply using: cortextos bus send-slack ${this.slackWatch.channel} "<reply>"`,
       );
     }

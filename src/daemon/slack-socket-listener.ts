@@ -12,6 +12,7 @@ import {
 } from '../slack/slack-identity.js';
 import { evaluateSlackRoute, type SlackRoutingConfig } from '../slack/slack-routing.js';
 import { slackDedupKey } from '../slack/slack-dispatcher.js';
+import { redactInboundText } from '../slack/slack-redact.js';
 import type { BusPaths, TeamMember } from '../types/index.js';
 
 export interface SlackSocketListenerOptions {
@@ -333,7 +334,10 @@ export class SlackSocketListener {
     // Coerce text: captionless file/photo shares deliver with no text field,
     // so interpolating event.text directly would render the literal string
     // "undefined" in the inbox body. Match the poll's empty-body behavior.
-    const body = event.text ?? '';
+    // Redact BEFORE the durable inbox write: a sensitive value (SSN, token) in
+    // an allowed inbound message must never be persisted or reach the agent in
+    // the clear — the inbound counterpart to the outbound send-path redaction.
+    const body = redactInboundText(event.text ?? '');
     // Routing mode reports the EVENT's channel (multi-channel listener);
     // legacy mode keeps the configured channel — identical output, since the
     // socket filter only passes this.channel there.
