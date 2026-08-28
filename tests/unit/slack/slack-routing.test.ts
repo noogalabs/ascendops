@@ -122,15 +122,10 @@ describe('loadSlackRoutingConfig', () => {
     expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
   });
 
-  it('non-map channels and non-string display fields are rejected as malformed', () => {
+  it('non-string display fields and non-array allowlists are rejected as malformed', () => {
     writeFileSync(
       join(agentDir(root), 'slack.json'),
-      JSON.stringify({ channels: ['C123'], allowed_channels: ['C123'] }),
-    );
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
-    writeFileSync(
-      join(agentDir(root), 'slack.json'),
-      JSON.stringify({ channels: { ops: 7 } }),
+      JSON.stringify({ allowed_channels: 'C123' }),
     );
     expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
     writeFileSync(
@@ -146,7 +141,6 @@ describe('loadSlackRoutingConfig', () => {
       JSON.stringify({
         display_name: 'alpha',
         icon_emoji: ':dog:',
-        channels: { ops: 'C123' },
         allowed_channels: ['C123'],
         allowed_users: ['T01:U01'],
       }),

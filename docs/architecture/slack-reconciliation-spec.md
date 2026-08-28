@@ -28,7 +28,6 @@ New file `orgs/<org>/agents/<name>/slack.json` (non-secret; tokens stay in
 ```json
 {
   "display_name": "sample-agent",
-  "channels": { "ops": "C123", "approvals": "C456" },
   "allowed_channels": ["C123", "C456"],
   "allowed_users": ["T01ABC:U01XYZ"]
 }

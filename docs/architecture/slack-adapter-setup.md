@@ -73,7 +73,6 @@ full multi-channel Socket Mode.
 ```json
 {
   "display_name": "sample-agent",
-  "channels": { "ops": "C0123456789" },
   "allowed_channels": ["C0123456789", "C0987654321"],
   "allowed_users": ["T0AAAAAA:U0BBBBBB"]
 }

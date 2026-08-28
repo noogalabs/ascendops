@@ -25,8 +25,6 @@ export interface SlackRoutingConfig {
   display_name?: string;
   icon_emoji?: string;
   icon_url?: string;
-  /** Purpose → channel id, for outbound addressing ("ops" → "C123"). */
-  channels?: Record<string, string>;
   /** Channel ids this agent may RECEIVE from. Empty/absent denies all. */
   allowed_channels?: string[];
   /** `"<team_id>:<user_id>"` composite senders allowed. Empty/absent denies all. */
@@ -72,11 +70,6 @@ export function isValidSlackRoutingShape(parsed: unknown): parsed is SlackRoutin
   if (!isOptionalString(cfg.icon_url)) return false;
   if (cfg.allowed_channels !== undefined && !isStringArray(cfg.allowed_channels)) return false;
   if (cfg.allowed_users !== undefined && !isStringArray(cfg.allowed_users)) return false;
-  if (cfg.channels !== undefined) {
-    const ch = cfg.channels;
-    if (ch === null || typeof ch !== 'object' || Array.isArray(ch)) return false;
-    if (!Object.values(ch).every((x) => typeof x === 'string')) return false;
-  }
   return true;
 }
 
@@ -160,7 +153,9 @@ export interface GatedDisplayIdentity {
  *
  *  - `display_name` is permitted ONLY when it equals the agent's functional
  *    name. Any other value is LOUDLY suppressed and the functional name is
- *    sent in its place — a hand-edited slack.json cannot ship a persona.
+ *    sent in its place — a hand-edited slack.json cannot ship a persona. When
+ *    `display_name` is OMITTED (a routing-only config), the functional name is
+ *    still sent, so an ordinary config is never misattributed to the app default.
  *  - `icon_emoji` / `icon_url` are never forwarded (no approved values exist);
  *    their presence is loudly logged.
  */
@@ -175,8 +170,12 @@ export function gateSlackDisplayIdentity(
       `PERSONA GATE: icon_emoji/icon_url in slack.json SUPPRESSED for '${agentName}' — no icon values are persona-review approved; icons are never sent.`,
     );
   }
-  if (config.display_name === undefined) return undefined;
-  if (config.display_name !== agentName) {
+  // A valid slack.json (routing-only or otherwise) always posts under the agent's
+  // functional name — the agent-name-only invariant holds even when display_name
+  // is omitted, so an ordinary routing config is never misattributed to the
+  // app's default identity. Only an ABSENT slack.json (config === null, handled
+  // above) keeps the back-compat no-override default.
+  if (config.display_name !== undefined && config.display_name !== agentName) {
     log(
       `PERSONA GATE: display_name '${config.display_name}' SUPPRESSED for '${agentName}' — not persona-review approved. Sending the plain functional name '${agentName}' instead.`,
     );

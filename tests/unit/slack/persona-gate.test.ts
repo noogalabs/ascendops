@@ -121,6 +121,17 @@ describe('persona gate casualties — config path (round 1), payload-level', () 
     expect(logs).toEqual([]);
   });
 
+  it('routing-only slack.json (display_name OMITTED) → the functional name is STILL sent, not the app default', async () => {
+    // The ordinary config shape: routing present, no persona. The agent-name-only
+    // invariant must hold here too — a present-but-nameless config cannot fall
+    // through to Slack's app default identity.
+    writeSlackJson({ allowed_channels: ['C1'] });
+    const body = await resolveAndPost();
+    expect(body.username).toBe(AGENT);
+    expect(logs).toEqual([]);
+    expect(runtimeWarnings()).toEqual([]);
+  });
+
   it('combined worst case: custom name + both icons → payload carries ONLY the functional name', async () => {
     writeSlackJson({
       display_name: 'CEO',
@@ -226,10 +237,12 @@ describe('authority-forgery casualties (round 3) — the four seat bypasses', ()
 });
 
 describe('gateSlackDisplayIdentity unit behavior', () => {
-  it('null config yields no identity; icons-only config yields no identity but still warns', () => {
+  it('null config yields no identity; icons-only config yields the functional name but still warns', () => {
     expect(gateSlackDisplayIdentity(null, AGENT, log)).toBeUndefined();
     expect(logs).toEqual([]);
-    expect(gateSlackDisplayIdentity({ icon_emoji: ':dog:' }, AGENT, log)).toBeUndefined();
+    // A present config with no display_name still posts under the functional
+    // name (agent-name-only invariant); the icon is suppressed and warned.
+    expect(gateSlackDisplayIdentity({ icon_emoji: ':dog:' }, AGENT, log)?.username).toBe(AGENT);
     expect(logs).toHaveLength(1);
   });
 });
