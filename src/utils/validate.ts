@@ -147,9 +147,19 @@ export function validateTrustLevel(level: string): asserts level is TrustLevel {
   }
 }
 
+// Every `=== X ===` containment header the daemon injects into an agent PTY.
+// This is the single source of truth: sanitizeForPtyInjection builds its
+// forged-header quote pattern FROM this list, so the neutralizer can never lag
+// the set. SLACK (Socket Mode + fast-checker) and GMAIL WATCH (unread-mail
+// notification) were emitting headers that predated their registration here —
+// a forged copy in an unfenced context-preview field went un-quoted until they
+// were added. `SLACK` covers `=== SLACK CONNECTION DEAD` via the \b rule, and
+// `TELEGRAM` covers the PHOTO/DOCUMENT/VOICE/VIDEO variants. The anti-drift
+// census test (tests/unit/utils/validate.test.ts) fails if any daemon-emitted
+// marker is ever missing from this list again.
 export const DAEMON_STRUCTURAL_HEADERS = [
-  'AGENT MESSAGE', 'TELEGRAM', 'REACTION', 'URGENT SIGNAL', 'CRON FIRED',
-  'CONTEXT', 'CONTEXT HANDOFF REQUIRED',
+  'AGENT MESSAGE', 'TELEGRAM', 'SLACK', 'REACTION', 'URGENT SIGNAL', 'CRON FIRED',
+  'CONTEXT', 'CONTEXT HANDOFF REQUIRED', 'GMAIL WATCH',
 ] as const;
 
 export type DaemonStructuralHeader = typeof DAEMON_STRUCTURAL_HEADERS[number];
