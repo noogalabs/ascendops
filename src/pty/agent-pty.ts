@@ -6,6 +6,7 @@ import { platform } from 'os';
 import type { AgentConfig, CtxEnv } from '../types/index.js';
 import { OutputBuffer } from './output-buffer.js';
 import { loadAdapter } from './adapters/base.js';
+import { readUnattendedConsent } from '../utils/claude-preflight.js';
 import { injectMessage as injectMessageIntoPty } from './inject.js';
 import { parseEnvFileStrict } from '../utils/env.js';
 
@@ -361,7 +362,31 @@ export class AgentPTY {
    */
   protected buildClaudeArgs(mode: 'fresh' | 'continue', prompt: string): string[] {
     const adapter = loadAdapter(this.config.vendor);
-    return adapter.buildArgs(mode, prompt, { config: this.config, env: this.env });
+    return adapter.buildArgs(mode, prompt, { config: this.resolveSkipConsentConfig(), env: this.env });
+  }
+
+  /**
+   * Resolve durable unattended-consent at spawn time when the per-agent
+   * `dangerously_skip_permissions` field is ABSENT.
+   *
+   * add-agent writes the resolved value into config for agents generated under
+   * the current version, but a LEGACY config predating that field is never
+   * re-resolved — and the Anthropic adapter treats any non-`false` value
+   * (including absent) as skip-on, so a legacy agent whose installation recorded
+   * consent=false would silently regain `--dangerously-skip-permissions`.
+   * Resolving here (only for the Claude runtime, only when the field is unset)
+   * propagates the explicit opt-out — and an unreadable record fails safe to
+   * `false` (gate ON). An ABSENT record stays unset: the historical skip-on
+   * default for unattended agents is preserved.
+   */
+  private resolveSkipConsentConfig(): AgentConfig {
+    if (this.config.dangerously_skip_permissions !== undefined) return this.config;
+    const adapterBinary = loadAdapter(this.config.vendor).binary;
+    const isClaudeRuntime = adapterBinary === 'claude' || adapterBinary === 'claude.cmd';
+    if (!isClaudeRuntime) return this.config;
+    const durable = readUnattendedConsent(this.env.frameworkRoot);
+    if (typeof durable !== 'boolean') return this.config;
+    return { ...this.config, dangerously_skip_permissions: durable };
   }
 
   /**

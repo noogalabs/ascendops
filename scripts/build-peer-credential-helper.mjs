@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,4 +18,11 @@ const args = ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', source, '-o', ou
 const result = spawnSync(compiler, args, { stdio: 'inherit' });
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
+// Fail loudly if the compiler reported success but produced no binary — a silent
+// missing helper is exactly what breaks identity/lease paths on a cold install.
+if (!existsSync(output)) {
+  console.error(`[native-helper] compiler reported success but the binary is absent: ${output}`);
+  process.exit(1);
+}
 chmodSync(output, 0o755);
+console.log(`[native-helper] built ${output}`);

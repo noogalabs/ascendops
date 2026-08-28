@@ -10,6 +10,8 @@
   "scripts": {
     "prebuild": "node scripts/prebuild-guard.mjs && npm run typecheck",
     "build": "tsup",
+    "postbuild": "node scripts/build-peer-credential-helper.mjs",
+    "postinstall": "node scripts/fix-spawn-helper-perms.mjs",
     "predev": "node scripts/prebuild-guard.mjs",
     "dev": "tsup --watch",
     "pretest": "node scripts/prebuild-guard.mjs",

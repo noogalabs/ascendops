@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -69,6 +69,43 @@ function statOf(dir: string): Record<string, string> {
   }
   return out;
 }
+
+/**
+ * Regression guard for the cold-install gap: a member install runs `npm ci`
+ * (postinstall) then `npm run build` (postbuild). The framework once shipped
+ * the two hook SCRIPTS but not the package.json hooks that invoke them, so the
+ * native credential helper was never compiled and the node-pty spawn-helper was
+ * never repaired — invisible to a warm-tree tsc/test and to post-build CI, only
+ * felt on a cold member install. These assertions fail the moment either hook is
+ * dropped or the native binary stops being produced.
+ */
+describe('install/build hook wiring — cold-install regression guard', () => {
+  const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+    scripts?: Record<string, string>;
+  };
+
+  it('postbuild compiles the native peer-credential helper', () => {
+    expect(pkg.scripts?.postbuild, 'package.json scripts.postbuild is required').toBeTruthy();
+    expect(pkg.scripts?.postbuild ?? '').toContain('build-peer-credential-helper.mjs');
+  });
+
+  it('postinstall repairs the node-pty spawn-helper permissions', () => {
+    expect(pkg.scripts?.postinstall, 'package.json scripts.postinstall is required').toBeTruthy();
+    expect(pkg.scripts?.postinstall ?? '').toContain('fix-spawn-helper-perms.mjs');
+  });
+
+  it('the postbuild script actually produces an executable native binary', { timeout: 60_000 }, () => {
+    if (process.platform === 'win32') return; // win32 measured-identity backend is intentionally skipped
+    outDir = mkdtempSync(join(tmpdir(), 'cortextos-native-'));
+    const bin = join(outDir, 'peer-credentials');
+    execFileSync('node', ['scripts/build-peer-credential-helper.mjs', bin], {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+    });
+    expect(existsSync(bin), 'compiled native helper is absent from the build output').toBe(true);
+    expect((statSync(bin).mode & 0o111) !== 0, 'native helper is not executable').toBe(true);
+  });
+});
 
 describe('tsup config — the DEFAULT path must resolve an out dir', () => {
   it('a bare config resolve carries outDir', async () => {
