@@ -85,6 +85,86 @@ describe('Sprint 5: Observability & Metrics', () => {
       expect(report.system.agents_healthy).toBe(0);
     });
 
+    it('excludes the recorded Codie false-positive shape while off-shift no_wake', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-29T09:22:00Z')); // 05:22 America/New_York
+      try {
+        writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), JSON.stringify({
+          aussie: { enabled: true, org: 'ascendops' },
+        }), 'utf-8');
+        const agentDir = join(ctxRoot, 'orgs', 'ascendops', 'agents', 'aussie');
+        mkdirSync(agentDir, { recursive: true });
+        writeFileSync(join(agentDir, 'config.json'), JSON.stringify({
+          model: 'test-model',
+          timezone: 'America/New_York',
+          shift_schedule: {
+            weekly: {
+              mon: { start: '09:00', end: '18:00' },
+              tue: { start: '09:00', end: '18:00' },
+              wed: { start: '09:00', end: '18:00' },
+              thu: { start: '09:00', end: '18:00' },
+              fri: { start: '09:00', end: '18:00' },
+              sat: { start: '09:00', end: '18:00' },
+              sun: { start: '09:00', end: '18:00' },
+            },
+          },
+        }), 'utf-8');
+        for (const personaFile of ['IDENTITY.md', 'SOUL.md', 'OPERATING_MODEL.md']) {
+          writeFileSync(join(agentDir, personaFile), '# aussie\n', 'utf-8');
+        }
+        const stateDir = join(ctxRoot, 'state', 'aussie');
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(join(stateDir, 'heartbeat.json'), JSON.stringify({
+          // The incident heartbeat was ~7h old while its cron was suppressed.
+          last_heartbeat: '2026-08-29T02:21:00Z',
+        }), 'utf-8');
+
+        const report = collectMetrics(ctxRoot, 'ascendops', ctxRoot);
+        expect(report.agents.aussie.heartbeat_stale).toBe(false);
+        expect(report.agents.aussie.heartbeat_suppressed_off_shift_no_wake).toBe(true);
+        expect(report.system.agents_healthy).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('still flags the same stale heartbeat during the agent shift', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-29T17:00:00Z')); // 13:00 America/New_York
+      try {
+        writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), JSON.stringify({
+          aussie: { enabled: true, org: 'ascendops' },
+        }), 'utf-8');
+        const agentDir = join(ctxRoot, 'orgs', 'ascendops', 'agents', 'aussie');
+        mkdirSync(agentDir, { recursive: true });
+        writeFileSync(join(agentDir, 'config.json'), JSON.stringify({
+          model: 'test-model',
+          timezone: 'America/New_York',
+          shift_schedule: {
+            weekly: Object.fromEntries(
+              ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+                .map(day => [day, { start: '09:00', end: '18:00' }]),
+            ),
+          },
+        }), 'utf-8');
+        for (const personaFile of ['IDENTITY.md', 'SOUL.md', 'OPERATING_MODEL.md']) {
+          writeFileSync(join(agentDir, personaFile), '# aussie\n', 'utf-8');
+        }
+        const stateDir = join(ctxRoot, 'state', 'aussie');
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(join(stateDir, 'heartbeat.json'), JSON.stringify({
+          last_heartbeat: '2026-08-29T02:21:00Z',
+        }), 'utf-8');
+
+        const report = collectMetrics(ctxRoot, 'ascendops', ctxRoot);
+        expect(report.agents.aussie.heartbeat_stale).toBe(true);
+        expect(report.agents.aussie.heartbeat_suppressed_off_shift_no_wake).toBe(false);
+        expect(report.system.agents_healthy).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('discovers a source agent in the requested org when its registry org is missing', () => {
       writeFileSync(join(ctxRoot, 'config', 'enabled-agents.json'), JSON.stringify({
         worker: { enabled: true },

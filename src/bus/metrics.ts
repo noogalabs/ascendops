@@ -13,6 +13,8 @@ import {
   type AgentRegistryEntry,
   type SourceAgentCandidate,
 } from '../daemon/agent-discovery.js';
+import { evaluateShift } from '../daemon/shift.js';
+import type { AgentConfig } from '../types/index.js';
 
 // --- Types ---
 
@@ -24,6 +26,7 @@ export interface AgentMetrics {
   tasks_in_progress: number;
   errors_today: number;
   heartbeat_stale: boolean;
+  heartbeat_suppressed_off_shift_no_wake: boolean;
   population_class: MetricsPopulationClass;
 }
 
@@ -136,6 +139,7 @@ interface MetricsCandidate {
   name: string;
   org: string;
   populationClass: MetricsPopulationClass;
+  config?: AgentConfig;
 }
 
 function readMetricsRegistry(ctxRoot: string): Record<string, AgentRegistryEntry> {
@@ -202,6 +206,7 @@ function getMetricsPopulation(
         name: candidate.name,
         org: candidate.org,
         populationClass: classifyMetricsCandidate(candidate),
+        config: candidate.config,
       }));
     const agentTotal = candidates.filter(candidate => candidate.populationClass === 'agent').length;
     const infrastructureTotal = candidates.length - agentTotal;
@@ -313,8 +318,13 @@ export function collectMetrics(ctxRoot: string, org?: string, frameworkRoot?: st
       }
     }
 
-    // Check heartbeat staleness (stale if >5 hours old)
+    // Check heartbeat staleness (stale if >5 hours old). A heartbeat that is
+    // old while the agent is currently off-shift in no-wake mode is expected:
+    // the daemon suppresses the heartbeat cron in exactly that state. Exclude
+    // only no-wake; emergency-only and unknown/unreadable schedules retain the
+    // stale finding so this detector cannot hide a potentially wakeable lane.
     let heartbeatStale = true;
+    let heartbeatSuppressedOffShiftNoWake = false;
     const hbFile = join(ctxRoot, 'state', agent, 'heartbeat.json');
     if (existsSync(hbFile)) {
       try {
@@ -330,12 +340,28 @@ export function collectMetrics(ctxRoot: string, org?: string, frameworkRoot?: st
       } catch { /* stale by default */ }
     }
 
+    if (heartbeatStale && candidate.config?.shift_schedule) {
+      try {
+        const shift = evaluateShift(
+          new Date(),
+          candidate.config.shift_schedule,
+          candidate.config.timezone || 'UTC',
+        );
+        if (shift.off_shift_no_wake) {
+          heartbeatStale = false;
+          heartbeatSuppressedOffShiftNoWake = true;
+          if (candidate.populationClass === 'agent') agentsHealthy++;
+        }
+      } catch { /* invalid timezone/schedule remains stale */ }
+    }
+
     agents[agent] = {
       tasks_completed: completed,
       tasks_pending: pending,
       tasks_in_progress: inProgress,
       errors_today: errorsToday,
       heartbeat_stale: heartbeatStale,
+      heartbeat_suppressed_off_shift_no_wake: heartbeatSuppressedOffShiftNoWake,
       population_class: candidate.populationClass,
     };
   }
