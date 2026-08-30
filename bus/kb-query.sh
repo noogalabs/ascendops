@@ -104,6 +104,14 @@ if [[ ! -d "$VENV_DIR" ]]; then
   exit 1
 fi
 
+# Resolve the venv Python interpreter (Windows venv uses Scripts/python.exe,
+# Unix uses bin/python3). Mirrors the platform detect in kb-setup.sh.
+if [[ -d "$VENV_DIR/Scripts" ]]; then
+  VENV_PY="$VENV_DIR/Scripts/python"
+else
+  VENV_PY="$VENV_DIR/bin/python3"
+fi
+
 export MMRAG_DIR="$KB_ROOT"
 export MMRAG_CHROMADB_DIR="$CHROMADB_DIR"
 export MMRAG_CONFIG="$KB_ROOT/config.json"
@@ -111,7 +119,7 @@ export GEMINI_API_KEY
 
 run_query() {
   local col="$1"
-  "$VENV_DIR/bin/python3" "$MMRAG_PY" query "$QUESTION" \
+  "$VENV_PY" "$MMRAG_PY" query "$QUESTION" \
     --collection "$col" \
     --top-k "$TOP_K" \
     --threshold "$THRESHOLD" \

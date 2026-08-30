@@ -57,4 +57,12 @@ export MMRAG_CHROMADB_DIR="$CHROMADB_DIR"
 export MMRAG_CONFIG="$KB_ROOT/config.json"
 export GEMINI_API_KEY="${GEMINI_API_KEY:-}"
 
-"$VENV_DIR/bin/python3" "$MMRAG_PY" collections
+# Resolve the venv Python interpreter (Windows venv uses Scripts/python.exe,
+# Unix uses bin/python3). Mirrors the platform detect in kb-setup.sh.
+if [[ -d "$VENV_DIR/Scripts" ]]; then
+  VENV_PY="$VENV_DIR/Scripts/python"
+else
+  VENV_PY="$VENV_DIR/bin/python3"
+fi
+
+"$VENV_PY" "$MMRAG_PY" collections
