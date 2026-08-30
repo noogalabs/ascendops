@@ -427,28 +427,23 @@ if (!commandExists('jq')) {
 
 installRtkAndIcm();
 
-// ─── 6. Windows: WSL check ────────────────────────────────────────────────────
+// ─── 6. Windows: bash environment ─────────────────────────────────────────────
+// Agent shell scripts (bus/*.sh) run in bash. On Windows that bash environment
+// ships with Git for Windows as Git Bash — and Git is already required above
+// (step 2), so the bash environment is present by default. WSL also works but is
+// NOT required; it's an optional alternative for operators who prefer it.
 
 if (IS_WINDOWS) {
-  log('Checking WSL (required for agent shell scripts on Windows)...');
+  log('Checking bash environment (agent shell scripts run in bash)...');
   if (commandExists('wsl')) {
-    try {
-      const wslVersion = run('wsl --version 2>&1 || wsl -l -v');
-      ok(`WSL installed`);
-    } catch {
-      ok('WSL installed');
-    }
+    ok('WSL detected — bash environment available');
   } else {
-    console.log('');
-    console.log(`${Y}  ! WSL (Windows Subsystem for Linux) is required.${R}`);
-    console.log('    Agent shell scripts run inside a bash environment.');
-    console.log('');
-    console.log(`    ${BOLD}Install WSL (requires restart):${R}`);
-    console.log(`    ${Y}  wsl --install${R}`);
-    console.log('    Run this in an Administrator PowerShell, then restart your machine.');
-    console.log('    After restart, run this installer again.');
-    console.log('');
-    warn('WSL not installed — agents will not work without it on Windows');
+    // Git for Windows (required in step 2) provides Git Bash, which the
+    // framework uses to run bus/*.sh. Not finding WSL is fine — don't alarm.
+    ok('Git Bash (from Git for Windows) provides the bash environment — WSL not required');
+    console.log('    Agent shell scripts run under Git Bash, installed with Git in step 2.');
+    console.log(`    Prefer WSL instead? It's optional: ${Y}wsl --install${R} in an`);
+    console.log('    Administrator PowerShell, then restart and re-run this installer.');
   }
 }
 
