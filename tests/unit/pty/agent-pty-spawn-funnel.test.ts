@@ -18,6 +18,6 @@ describe('AgentPTY subclass spawn funnel', () => {
       }
     }
 
-    expect(subclassCount, 'the census must find the existing AgentPTY subclasses').toBeGreaterThan(0);
+    expect(subclassCount, 'the AgentPTY subclass census changed; review every new spawn override').toBe(2);
   });
 });

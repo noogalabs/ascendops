@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CustodiedTurn } from '../../../src/pty/codex-turn-custody.js';
 
+const loaderMocks = vi.hoisted(() => ({ prepareNodePtySpawn: vi.fn() }));
+
 let spawnedPtyExitHandler: ((event: { exitCode: number; signal?: number }) => void) | null = null;
 let spawnedPtyDataHandler: ((data: string) => void) | null = null;
 const spawnedPty = {
@@ -47,6 +49,8 @@ vi.mock('../../../src/utils/atomic.js', () => ({
 vi.mock('node-pty', () => ({
   spawn: vi.fn().mockReturnValue(spawnedPty),
 }));
+
+vi.mock('../../../src/pty/node-pty-loader.js', () => loaderMocks);
 
 vi.mock('net', async () => {
   const actual = await vi.importActual<typeof import('net')>('net');
@@ -139,6 +143,7 @@ const mockEnv = {
 const mockAgentCwd = mockEnv.agentDir;
 
 beforeEach(() => {
+  loaderMocks.prepareNodePtySpawn.mockReset().mockImplementation((cached) => cached ?? (() => spawnedPty));
   fsMocks.existsSync.mockReset().mockReturnValue(false);
   fsMocks.readFileSync.mockReset();
   fsMocks.writeFileSync.mockReset();
@@ -158,6 +163,19 @@ beforeEach(() => {
   spawnedPty.onData.mockClear();
   spawnedPty.onExit.mockClear();
   spawnedPty.kill.mockReset();
+});
+
+describe('CodexAppServerPTY node-pty preparation', () => {
+  it('routes a production app-server spawn through prepareNodePtySpawn', async () => {
+    const preparedSpawn = vi.fn(() => spawnedPty);
+    loaderMocks.prepareNodePtySpawn.mockReturnValue(preparedSpawn);
+    const pty = new CodexAppServerPTY(mockEnv, {});
+
+    await (pty as unknown as { startAppServer(): Promise<void> }).startAppServer();
+
+    expect(loaderMocks.prepareNodePtySpawn).toHaveBeenCalledWith(null);
+    expect(preparedSpawn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('CodexAppServerPTY socket path policy', () => {
