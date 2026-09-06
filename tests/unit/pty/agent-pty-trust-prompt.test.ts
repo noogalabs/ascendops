@@ -11,6 +11,10 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const loaderMocks = vi.hoisted(() => ({ prepareNodePtySpawn: vi.fn() }));
+
+vi.mock('../../../src/pty/node-pty-loader.js', () => loaderMocks);
+
 // Hermetic fs: skip secrets.env / agent .env loading.
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -67,6 +71,7 @@ function newAgentPty(handle: ReturnType<typeof makeFakePty>) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  loaderMocks.prepareNodePtySpawn.mockReset().mockImplementation((cached) => cached);
 });
 
 afterEach(() => {
@@ -74,6 +79,18 @@ afterEach(() => {
 });
 
 describe('AgentPTY trust-prompt auto-accept', () => {
+  it('routes a production spawn through prepareNodePtySpawn', async () => {
+    const handle = makeFakePty();
+    const preparedSpawn = vi.fn(() => handle.fake);
+    loaderMocks.prepareNodePtySpawn.mockReturnValue(preparedSpawn);
+    const pty = new AgentPTY(TEST_ENV, { vendor: 'anthropic' });
+
+    await pty.spawn('fresh', 'hello');
+
+    expect(loaderMocks.prepareNodePtySpawn).toHaveBeenCalledWith(null);
+    expect(preparedSpawn).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a whitespace-only configured working directory', async () => {
     const handle = makeFakePty();
     const pty = new AgentPTY(TEST_ENV, { vendor: 'anthropic', working_directory: '   ' });

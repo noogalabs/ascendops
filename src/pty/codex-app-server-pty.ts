@@ -15,6 +15,7 @@ import { WsUnixJsonRpcClient, type JsonRpcResponse } from '../utils/ws-unix-clie
 import { sanitizeForInjection } from './inject.js';
 import { parseEnvFile } from '../utils/env.js';
 import { CodexTurnCustodyStore, type CustodiedTurn } from './codex-turn-custody.js';
+import { prepareNodePtySpawn } from './node-pty-loader.js';
 
 interface IPty {
   pid: number;
@@ -922,10 +923,7 @@ export class CodexAppServerPTY {
   }
 
   private async startAppServer(): Promise<void> {
-    if (!this._spawnFn) {
-      const nodePty = require('node-pty');
-      this._spawnFn = nodePty.spawn;
-    }
+    this._spawnFn = prepareNodePtySpawn(this._spawnFn);
 
     // codex-cli 0.118.0 dropped `unix://` --listen support. Allocate a free
     // ephemeral TCP port on loopback and spawn with `--listen ws://127.0.0.1:<port>`.

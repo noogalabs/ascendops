@@ -9,6 +9,7 @@ import { loadAdapter } from './adapters/base.js';
 import { readUnattendedConsent } from '../utils/claude-preflight.js';
 import { injectMessage as injectMessageIntoPty } from './inject.js';
 import { parseEnvFileStrict } from '../utils/env.js';
+import { prepareNodePtySpawn } from './node-pty-loader.js';
 
 // node-pty types
 interface IPty {
@@ -83,11 +84,7 @@ export class AgentPTY {
     // previous child's ring and latch before admitting output from the next.
     this.outputBuffer.clear();
 
-    // Lazy-load node-pty (native addon)
-    if (!this.spawnFn) {
-      const nodePty = require('node-pty');
-      this.spawnFn = nodePty.spawn;
-    }
+    this.spawnFn = prepareNodePtySpawn(this.spawnFn);
 
     const configuredCwd = this.config.working_directory;
     if (configuredCwd !== undefined && configuredCwd !== '') {

@@ -30,6 +30,25 @@ const READINESS_CASUALTY_TEST_TIMEOUT_MS =
   REAL_SUBPROCESS_DEADLINE_MS + READINESS_CASUALTY_DEADLINE_MS +
   REAL_SUBPROCESS_DEADLINE_MS + 5_000;
 
+type InstallerConsentResult = {
+  ok: boolean;
+  recorded: boolean;
+  preserved?: boolean;
+  existingState?: 'lost';
+  existingValue?: boolean;
+  existingSource?: string;
+  existingDecidedAt?: string;
+};
+
+type InstallerOutcomeCase = readonly [
+  label: string,
+  answerYes: boolean,
+  source: string,
+  result: InstallerConsentResult,
+  level: string,
+  message: string,
+];
+
 // Bound the child itself instead of relying on the later harness ceiling. The
 // production deadline is
 // deliberately loose: it targets an unbounded hang, not a slow run, so a tight
@@ -503,7 +522,7 @@ describe('installer unattended consent gate', () => {
     expect(spawnOnboarding).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
+  const installerOutcomeCases: readonly InstallerOutcomeCase[] = [
     [
       'genuine grant',
       true,
@@ -566,7 +585,9 @@ describe('installer unattended consent gate', () => {
       'warn',
       'Consent record at /tmp/ascendops/.claude-consent.json is unreadable. Agents will run with permission gates engaged until it is repaired. To repair, run: node installer/consent-gate.mjs --grant (or --revoke).',
     ],
-  ])('reports the exact installer outcome for %s', (
+  ];
+
+  it.each(installerOutcomeCases)('reports the exact installer outcome for %s', (
     _label,
     answerYes,
     source,
