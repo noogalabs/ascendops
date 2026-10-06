@@ -75,7 +75,7 @@ describe('member installation entrypoints', () => {
         writeFileSync('dist/claude-preflight.js', 'export function applyUnattendedConsent() { return { ok: true, recorded: true }; }');
       `);
       git('init', '-b', 'main');
-      git('config', 'user.name', 'Fixture Author'); git('config', 'user.email', 'fixture@example.invalid');
+      git('config', 'user.name', 'Fixture Author'); git('config', 'user.email', 'fixture@example.com');
       git('add', '.'); git('commit', '-m', 'installer fixture');
       const output = execFileSync(process.execPath, ['install.mjs'], {
         env, encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'],
