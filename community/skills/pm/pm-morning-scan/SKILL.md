@@ -16,6 +16,16 @@ is missing or ambiguous, ask the configured coordinator before dispatch; never
 substitute a person, agent or chat ID from an example. Existing emergency and
 approval rules still govern actions.
 
+For the urgent owner-send example below, resolve exactly one approved owner
+route and recipient from that configuration. Load its command prefix as the
+Bash array `PM_MAINTENANCE_OWNER_ROUTE_ARGV` (for example, the configured
+transport adapter and its send subcommand) and its recipient as
+`PM_MAINTENANCE_OWNER_RECIPIENT`. The adapter contract accepts recipient and
+message as its final two arguments. These are member-configured bindings, not
+commands inferred from the operator chat. Missing, ambiguous or incompatible
+bindings must raise `OWNER_CONTACT_BINDING_REQUIRED` and ask the configured
+coordinator before any send. Do not use `eval` or a shell command string.
+
 
 # PM Morning Scan
 
@@ -159,7 +169,12 @@ cortextos bus update-heartbeat "morning scan complete — <N> melds flagged"
 If at any point during Steps 1–3 you find a meld meeting a habitability override condition (see pm-meld-triage), message <maintenance-owner> on Telegram immediately — do not batch it into the 06:30 report.
 
 ```bash
-cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID "URGENT: <meld_id> — <condition>. <property>. Action needed now."
+# Populate the array and recipient only from the uniquely bound owner route.
+if [ "${#PM_MAINTENANCE_OWNER_ROUTE_ARGV[@]}" -eq 0 ] || [ -z "${PM_MAINTENANCE_OWNER_RECIPIENT:-}" ]; then
+  printf '%s\n' 'OWNER_CONTACT_BINDING_REQUIRED: ask the configured coordinator; no send' >&2
+  exit 1
+fi
+"${PM_MAINTENANCE_OWNER_ROUTE_ARGV[@]}" "$PM_MAINTENANCE_OWNER_RECIPIENT" "URGENT: <meld_id> — <condition>. <property>. Action needed now."
 ```
 
 ---

@@ -118,7 +118,7 @@ On success:
 ```bash
 cortextos bus log-event action pm_session_refreshed info \
   --meta '{"method":"ax-cdp","creds_path":"~/.claude/credentials/property-meld.json"}'
-cortextos bus send-message "$CTX_ORCHESTRATOR_AGENT" normal 'PM session recaptured via AX+CDP. Snapcli operations restored.'
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" normal 'PM session recaptured via AX+CDP. Snapcli operations restored.'
 ```
 
 On failure (script exits 1):
@@ -126,7 +126,7 @@ On failure (script exits 1):
 cortextos bus log-event action pm_session_recapture_failed warning \
   --meta '{"method":"ax-cdp","reason":"script exit 1"}'
 # Escalate immediately — human must intervene
-cortextos bus send-message "$CTX_ORCHESTRATOR_AGENT" urgent 'PM session recapture FAILED. Manual intervention required. PM_WEB_EMAIL/PASSWORD may be wrong, PM may have changed login flow, or Accessibility permission may be missing.'
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" urgent 'PM session recapture FAILED. Manual intervention required. PM_WEB_EMAIL/PASSWORD may be wrong, PM may have changed login flow, or Accessibility permission may be missing.'
 ```
 
 ---
