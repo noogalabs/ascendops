@@ -127,6 +127,8 @@ describe('member update real Git children and live build guard', () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('preflight'));
   });
   for (const action of ['retry', 'rollback'] as const) it(`printed ${action} command runs in upstream-only fixture`, async () => {
+    git(checkout, ['config', 'user.name', 'Example']);
+    git(checkout, ['config', 'user.email', 'fixture@example.com']);
     const packageJson = { name: 'cortextos', version: '1.0.0', scripts: { build: 'node scripts/prebuild-guard.mjs' } };
     for (const dir of [source, checkout]) {
       writeFileSync(join(dir, 'package.json'), JSON.stringify(packageJson));
