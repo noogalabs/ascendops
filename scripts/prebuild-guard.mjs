@@ -21,9 +21,6 @@
  *      the checkout is treated as isolated, which allows the build. Recorded
  *      here rather than fixed, because changing it needs its own review.
  */
-import { isDefaultBranch } from './build-branch.mjs';
-export { isDefaultBranch } from './build-branch.mjs';
-
 import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, realpathSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
@@ -103,8 +100,7 @@ export function decide({ ci, live, branch, override, mainDivergence }) {
   if (!live) {
     return { allow: true, code: 'isolated', messages: ['Build allowed in isolated checkout.'] };
   }
-  if (isDefaultBranch(branch)) {
-    const mainRef = mainDivergence?.ref || 'origin/main';
+  if (branch === 'main') {
     // The old blanket main exemption was correct when written and became false
     // when the world moved under it: main was safe because main was what shipped.
     // On 2026-08-07 local main had diverged from origin/main and no longer
@@ -124,7 +120,7 @@ export function decide({ ci, live, branch, override, mainDivergence }) {
       mainBlock = {
         code: 'live-main-undeterminable',
         messages: [
-          `BLOCKED: cannot determine whether live main contains ${mainRef}.`,
+          'BLOCKED: cannot determine whether live main contains origin/main.',
           `Reason: ${mainDivergence.reason ?? 'unknown'}`,
           'The guard fails closed here on purpose: an unknown answer is not a safe answer.',
         ],
@@ -133,9 +129,9 @@ export function decide({ ci, live, branch, override, mainDivergence }) {
       mainBlock = {
         code: 'live-main-diverged',
         messages: [
-          `BLOCKED: live main is missing ${mainDivergence.behind} commit(s) from ${mainRef}.`,
+          `BLOCKED: live main is missing ${mainDivergence.behind} commit(s) from origin/main.`,
           'Building now would deploy a daemon without them, with no error and no failing test.',
-          `Fix: merge or rebase ${mainRef} into this checkout, then build.`,
+          'Fix: merge or rebase origin/main into this checkout, then build.',
         ],
       };
     }
@@ -200,30 +196,17 @@ function currentBranch(repoRoot, errors) {
 export function computeMainDivergence(repoRoot, ref = 'origin/main') {
   const verify = run('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
   if (verify.error || verify.status !== 0) {
-    return { determinable: false, ref, reason: `${ref} not present locally (never fetched?)` };
+    return { determinable: false, reason: `${ref} not present locally (never fetched?)` };
   }
   const counts = run('git', ['-C', repoRoot, 'rev-list', '--left-right', '--count', `HEAD...${ref}`]);
   if (counts.error || counts.status !== 0) {
-    return { determinable: false, ref, reason: `rev-list failed: ${(counts.stderr || '').trim()}` };
+    return { determinable: false, reason: `rev-list failed: ${(counts.stderr || '').trim()}` };
   }
   const [ahead, behind] = counts.stdout.trim().split(/\s+/).map((n) => Number.parseInt(n, 10));
   if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
-    return { determinable: false, ref, reason: `unparseable rev-list output: ${counts.stdout.trim()}` };
+    return { determinable: false, reason: `unparseable rev-list output: ${counts.stdout.trim()}` };
   }
   return { determinable: true, ahead, behind, ref };
-}
-
-// The member updater marks its build explicitly. A fork still uses origin;
-// only a plain-clone install without that remote validates upstream/main.
-export function mainValidationRef(repoRoot, memberUpdate = false) {
-  if (memberUpdate) {
-    const origin = run('git', ['-C', repoRoot, 'remote', 'get-url', 'origin']);
-    if (!origin.error && origin.status === 2) {
-      const upstream = run('git', ['-C', repoRoot, 'remote', 'get-url', 'upstream']);
-      if (!upstream.error && upstream.status === 0) return 'upstream/main';
-    }
-  }
-  return 'origin/main';
 }
 
 /** Directory that IS the deployed artifact when this tree is the live one. */
@@ -275,9 +258,7 @@ export function main(argv = process.argv.slice(2)) {
   const branch = currentBranch(repoRoot, detection.errors);
   // Only computed for the case it gates, so isolated clones pay nothing for it.
   const mainDivergence =
-    detection.live && isDefaultBranch(branch)
-      ? computeMainDivergence(repoRoot, mainValidationRef(repoRoot, process.env.ASCENDOPS_MEMBER_UPDATE === '1'))
-      : null;
+    detection.live && branch === 'main' ? computeMainDivergence(repoRoot) : null;
   const decision = decide({
     ci: process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true',
     live: detection.live,

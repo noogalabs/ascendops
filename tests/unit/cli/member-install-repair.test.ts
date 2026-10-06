@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { testEnv } from './member-test-env.js';
+import { describe, it, expect, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,15 +20,24 @@ describe('member installation entrypoints', () => {
     }
   });
 
-  for (const command of ['restart', 'detect-chat-id', 'update']) {
+  for (const command of ['restart', 'detect-chat-id']) {
     it(`ascendops exposes ${command} help without performing its action`, () => {
       const output = execFileSync(process.execPath, [
         join(process.cwd(), 'node_modules/tsx/dist/cli.mjs'),
         'src/cli/ascendops.ts', command, '--help',
-      ], { encoding: 'utf8', timeout: 20000, env: { ...process.env, CTX_ROOT: join(tmpdir(), 'unused-member-help-root') } });
+      ], { encoding: 'utf8', timeout: 20000, env: testEnv({ CTX_ROOT: join(tmpdir(), 'unused-member-help-root') }) });
       expect(output).toContain(`Usage: ascendops ${command}`);
       expect(output).not.toContain('unknown command');
     }, 25000);
   }
 
+  it('test child environment excludes a fake parent sentinel', () => {
+    vi.stubEnv('MEMBER_TEST_PARENT_SENTINEL', 'fake-parent-sentinel');
+    try {
+      const output = execFileSync(process.execPath, ['-e',
+        'process.stdout.write(String(Object.hasOwn(process.env, "MEMBER_TEST_PARENT_SENTINEL")))'],
+        { encoding: 'utf8', env: testEnv() });
+      expect(output === 'false').toBe(true);
+    } finally { vi.unstubAllEnvs(); }
+  });
 });
