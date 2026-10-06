@@ -22,8 +22,9 @@
  */
 import { Command } from 'commander';
 import { createInterface, type Interface } from 'readline';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, realpathSync } from 'fs';
+import { basename, dirname, join } from 'path';
+import { execFileSync } from 'child_process';
 import { homedir } from 'os';
 import { checkUpstream } from '../bus/metrics.js';
 
@@ -35,16 +36,28 @@ function ask(iface: Interface, question: string): Promise<string> {
   return new Promise(resolve => iface.question(question, answer => resolve(answer.trim())));
 }
 
-function findFrameworkRoot(): string {
-  const candidates = [
-    process.env.CTX_FRAMEWORK_ROOT,
+function binaryCheckout(): string | undefined {
+  try {
+    const binary = realpathSync(process.argv[1]);
+    if (basename(binary) !== 'ascendops.js') return undefined;
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dirname(binary), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || undefined;
+  } catch { return undefined; }
+}
+
+function findFrameworkRoot(memberMode: boolean): string {
+  const candidates = (memberMode ? [
     process.env.ASCENDOPS_DIR,
+    binaryCheckout(),
     join(homedir(), 'ascendops'),
+  ] : [
+    process.env.CTX_FRAMEWORK_ROOT,
     process.env.CORTEXTOS_DIR,
     process.env.CTX_PROJECT_ROOT,
     process.cwd(),
     join(homedir(), 'cortextos'),
-  ].filter(Boolean) as string[];
+  ]).filter(Boolean) as string[];
   for (const c of candidates) {
     if (existsSync(join(c, 'package.json'))) {
       // Verify it's actually cortextos (not a random package.json).
@@ -53,6 +66,9 @@ function findFrameworkRoot(): string {
         if (pkg.name === 'cortextos' || pkg.name === 'ascendops') return c;
       } catch { /* ignore */ }
     }
+  }
+  if (memberMode) {
+    throw new Error('AscendOps checkout not found. Set ASCENDOPS_DIR to your installation directory.');
   }
   // Fall back to process.cwd anyway — let checkUpstream surface the not-a-repo error.
   return process.cwd();
@@ -63,8 +79,8 @@ interface UpdateOptions {
   check?: boolean;
 }
 
-async function runUpdate(opts: UpdateOptions): Promise<void> {
-  const frameworkRoot = findFrameworkRoot();
+async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
+  const frameworkRoot = findFrameworkRoot(command.parent?.name() === 'ascendops');
 
   // Step 1: check (no apply).
   const status = checkUpstream(frameworkRoot, { apply: false }) as any;
