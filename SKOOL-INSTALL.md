@@ -328,7 +328,7 @@ real businesses. AscendOps gets better as you do.
 | `detect-chat-id` / bot setup times out | You didn't `/start` the bot, or messaged the wrong one | Re-run it; send `/start` to the exact `@username` it prints, from your own account (not a channel/bot) |
 | Agent starts but never messages Telegram | Wrong BOT_TOKEN / CHAT_ID | Re-run `ascendops detect-chat-id --agent <name>`; confirm with `ascendops status` |
 | `add-agent` says "Created minimal agent files" | Template not on disk (fork behind upstream) | `git pull upstream main`, then re-run `add-agent` |
-| Agent boots but `/onboarding` does nothing | `.onboarded` already exists from a prior attempt | `rm ~/.cortextos/default/state/<agent-name>/.onboarded` and retry |
+| Agent boots but `/onboarding` does nothing | `.onboarded` already exists from a prior attempt | `rm ~/.cortextos/<instance>/state/<agent-name>/.onboarded` and retry |
 
 For anything else: check `~/.cortextos/<instance>/logs/<agent>/stdout.log`
 (`default` is the usual instance name), then run `ascendops bus read-all-heartbeats`.

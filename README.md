@@ -1,6 +1,6 @@
 ![npm version](https://img.shields.io/npm/v/cortextos) ![License](https://img.shields.io/badge/license-MIT-green) ![Node](https://img.shields.io/badge/node-20.19%2B-brightgreen) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-# cortextOS
+# AscendOps
 
 **Persistent 24/7 Claude Code agents you control from Telegram or your phone.**
 
