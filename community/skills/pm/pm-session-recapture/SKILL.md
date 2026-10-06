@@ -4,6 +4,18 @@ effort: medium
 description: "When pm probe returns 401/403 (session expired), automatically recapture PropertyMeld session cookies. macOS agents use the AX+CDP script; Linux/cloud agents use the Playwright headless script."
 triggers: ["pm session expired", "pm probe 401", "pm probe failed", "session recapture", "cookies expired", "recapture pm session", "pm auth broken"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
 
 # PM Session Recapture
 
@@ -26,8 +38,8 @@ Safari is preferred on Mac — it uses the native browser you are already runnin
 Run when ANY of:
 -  returns non-OK status (401, 403, or )
 - Any snapcli command returns 401/403 on a normally working operation
-- Blue receives a comms-boundary escalation message about PM session death
-- an agent explicitly requests session refresh
+- <maintenance-agent> receives a comms-boundary escalation message about PM session death
+- the configured orchestrator explicitly requests session refresh
 
 Do NOT run if:
 - Nexus API (OAuth2) is the failing component — that has its own credentials and does not use cookies
@@ -106,7 +118,7 @@ On success:
 ```bash
 cortextos bus log-event action pm_session_refreshed info \
   --meta '{"method":"ax-cdp","creds_path":"~/.claude/credentials/property-meld.json"}'
-cortextos bus send-message "$CTX_ORCHESTRATOR_AGENT" normal 'PM session recaptured via AX+CDP. Snapcli operations restored.'
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" normal 'PM session recaptured via AX+CDP. Snapcli operations restored.'
 ```
 
 On failure (script exits 1):
@@ -114,14 +126,14 @@ On failure (script exits 1):
 cortextos bus log-event action pm_session_recapture_failed warning \
   --meta '{"method":"ax-cdp","reason":"script exit 1"}'
 # Escalate immediately — human must intervene
-cortextos bus send-message "$CTX_ORCHESTRATOR_AGENT" urgent 'PM session recapture FAILED. Manual intervention required. PM_WEB_EMAIL/PASSWORD may be wrong, PM may have changed login flow, or Accessibility permission may be missing.'
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" urgent 'PM session recapture FAILED. Manual intervention required. PM_WEB_EMAIL/PASSWORD may be wrong, PM may have changed login flow, or Accessibility permission may be missing.'
 ```
 
 ---
 
 ## Comms Boundary
 
-If recapture fails, this is a hard escalation to an agent + David. Do NOT retry more than once — a failed recapture usually means credentials are wrong or PM has changed their login flow, not a transient network issue. Retry once after 60s, then escalate.
+If recapture fails, this is a hard escalation to the configured orchestrator + <maintenance-owner>. Do NOT retry more than once — a failed recapture usually means credentials are wrong or PM has changed their login flow, not a transient network issue. Retry once after 60s, then escalate.
 
 ---
 
@@ -130,7 +142,7 @@ If recapture fails, this is a hard escalation to an agent + David. Do NOT retry 
 Resume the operation that triggered the session check:
 - If triggered by a meld assignment: retry  or vendor assignment
 - If triggered by morning scan: re-run 
-- If triggered explicitly by an agent: report success and stand by
+- If triggered explicitly by the configured orchestrator: report success and stand by
 
 ---
 

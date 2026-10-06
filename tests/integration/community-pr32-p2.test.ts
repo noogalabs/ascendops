@@ -9,7 +9,8 @@ describe('community PR #32 P2 regressions', () => {
   it('routes PM session notifications to the configured orchestrator', () => {
     const skill = read('community/skills/pm/pm-session-recapture/SKILL.md');
     expect(skill).not.toContain('send-message an agent');
-    expect(skill.match(/send-message "\$CTX_ORCHESTRATOR_AGENT"/g)).toHaveLength(2);
+    expect(skill.match(/send-message "\$\{CTX_ORCHESTRATOR_AGENT:\?Configure the member orchestrator\}"/g)).toHaveLength(2);
+    expect(skill).not.toContain('send-message "$CTX_ORCHESTRATOR_AGENT"');
   });
 
   it('uses a supported event category throughout copilot-threshold', () => {

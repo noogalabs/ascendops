@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+
 export type DocSource = 'in-pm' | 'off-system' | 'late' | 'manager-backfill';
 
 export interface VendorDocPattern {
@@ -9,43 +11,46 @@ export interface VendorDocPattern {
   notes_text: string;            // short human-readable rule explanation
 }
 
-export const VENDOR_DOC_PATTERNS: VendorDocPattern[] = [
-  {
-    vendor_name: 'Stubblefield',
-    aliases: ['stubblefield plumbing', 'stubblefield'],
-    photos: 'off-system',
-    notes: 'off-system',
-    closeout_lag_minutes: 1440,
-    notes_text: 'Full off-system. Photos and notes via text/email to manager, not PM. Verify by asking manager, not by PM doc check.',
-  },
-  {
-    vendor_name: 'ZJB',
-    aliases: ['zjb', 'zjb services'],
-    photos: 'late',
-    notes: 'manager-backfill',
-    closeout_lag_minutes: 4320,
-    notes_text: 'Late-upload pattern. Photos arrive in PM 1-3 days post-completion. Notes typically backfilled by manager from vendor verbal report.',
-  },
-  {
-    vendor_name: 'Carlos',
-    aliases: ['carlos', 'carlos calel'],
-    photos: 'off-system',
-    notes: 'off-system',
-    closeout_lag_minutes: 0,
-    notes_text: 'In-house tech, no-PM-logging pattern. Photos and notes typically skipped in PM; sweep and ask if doc-grade evidence required.',
-  },
-];
+// Member-specific patterns belong in the selected organization's configuration.
+// The public distribution ships no vendor identities or documentation assumptions.
+export const VENDOR_DOC_PATTERNS: VendorDocPattern[] = [];
 
-export function vendorDocPattern(vendorName: string | undefined | null): VendorDocPattern | null {
-  if (!vendorName) return null;
-  const target = vendorName.trim().toLowerCase();
-  for (const p of VENDOR_DOC_PATTERNS) {
-    if (p.vendor_name.toLowerCase() === target) return p;
-    if (p.aliases.some(a => a.toLowerCase() === target)) return p;
+export function listVendorDocPatterns(configPath?: string): VendorDocPattern[] {
+  if (!configPath) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
   }
-  return null;
+  const rows: unknown = JSON.parse(raw);
+  const sources = new Set(['in-pm', 'off-system', 'late', 'manager-backfill']);
+  const names = new Set<string>();
+  const text = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  if (!Array.isArray(rows)) throw new Error('Vendor doc configuration must be an array');
+  for (const row of rows) {
+    if (!row || typeof row !== 'object' || !text(row.vendor_name)
+      || !Array.isArray(row.aliases) || !row.aliases.every(text)
+      || !sources.has(row.photos) || !sources.has(row.notes)
+      || !Number.isSafeInteger(row.closeout_lag_minutes) || row.closeout_lag_minutes < 0
+      || typeof row.notes_text !== 'string') {
+      throw new Error('Invalid vendor doc configuration row');
+    }
+    // An alias matching its own canonical name is harmless; cross-row ambiguity is not.
+    const keys = new Set<string>([row.vendor_name, ...row.aliases].map((name: string) => name.trim().toLowerCase()));
+    for (const key of keys) {
+      if (names.has(key)) throw new Error('Ambiguous vendor doc configuration name');
+      names.add(key);
+    }
+  }
+  return rows as VendorDocPattern[];
 }
 
-export function listVendorDocPatterns(): VendorDocPattern[] {
-  return [...VENDOR_DOC_PATTERNS];
+export function vendorDocPattern(vendorName: string | undefined | null, configPath?: string): VendorDocPattern | null {
+  if (!vendorName) return null;
+  const target = vendorName.trim().toLowerCase();
+  return listVendorDocPatterns(configPath).find(pattern =>
+    [pattern.vendor_name, ...pattern.aliases].some(name => name.trim().toLowerCase() === target)
+  ) ?? null;
 }

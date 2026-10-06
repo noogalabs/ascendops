@@ -2734,14 +2734,23 @@ activeThreadsCommand
 
 busCommand.addCommand(activeThreadsCommand);
 
+function vendorPatternsConfigPath(configOverride?: string): string | undefined {
+  if (configOverride) return configOverride;
+  const { env, paths } = resolveAgentBusPaths();
+  if (!env.org) return undefined;
+  if (!/^[a-zA-Z0-9_-]+$/.test(env.org)) throw new Error('Invalid organization name');
+  return join(dirname(paths.taskDir), 'vendor-doc-patterns.json');
+}
+
 const vendorPatternsCommand = new Command('vendor-patterns')
   .description('Look up vendor-specific documentation and closeout behavior');
 
 vendorPatternsCommand
   .command('list')
   .option('--format <fmt>', 'Output format: json or table', 'table')
-  .action((opts: { format?: string }) => {
-    const patterns = listVendorDocPatterns();
+  .option('--config <path>', 'Member vendor-doc-patterns JSON; defaults to the current organization')
+  .action((opts: { format?: string; config?: string }) => {
+    const patterns = listVendorDocPatterns(vendorPatternsConfigPath(opts.config));
 
     if (opts.format === 'json') {
       console.log(JSON.stringify(patterns, null, 2));
@@ -2768,8 +2777,9 @@ vendorPatternsCommand
   .command('lookup')
   .argument('<vendor_name>', 'Vendor name or alias')
   .option('--json', 'Emit raw JSON instead of formatted text')
-  .action((vendorName: string, opts: { json?: boolean }) => {
-    const pattern = vendorDocPattern(vendorName);
+  .option('--config <path>', 'Member vendor-doc-patterns JSON; defaults to the current organization')
+  .action((vendorName: string, opts: { json?: boolean; config?: string }) => {
+    const pattern = vendorDocPattern(vendorName, vendorPatternsConfigPath(opts.config));
     if (!pattern) {
       const payload = { error: `no pattern for ${vendorName}` };
       console.error(JSON.stringify(payload));

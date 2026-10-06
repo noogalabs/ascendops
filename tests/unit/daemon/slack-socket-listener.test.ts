@@ -69,20 +69,20 @@ describe('SlackSocketListener.handleMessage', () => {
     getUserInfoMock.mockReset();
     getBotUserIdMock.mockReset();
     // Default: identity resolves to a handle + display name, no network.
-    getUserInfoMock.mockResolvedValue({ handle: 'nico.calel', displayName: 'Nico Calel' });
+    getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     // Default: own bot id unknown (auth.test "fails") -> own-id check skipped,
     // so existing cases behave exactly as before the self-echo guard.
     getBotUserIdMock.mockResolvedValue(null);
   });
 
   it('happy path: resolves display name + handle and writes one inbox message', async () => {
-    getUserInfoMock.mockResolvedValue({ handle: 'nico.calel', displayName: 'Nico Calel' });
+    getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     const listener = makeListener();
 
     await listener.handleMessage(makeEvent());
 
     const expectedText =
-      '=== SLACK from Nico Calel (@nico.calel) (channel:C123 ts:1700000000.000100) ===\n' +
+      '=== SLACK from Maren Ellis (@maren.ellis) (channel:C123 ts:1700000000.000100) ===\n' +
       'hello team\n' +
       'Reply using: cortextos bus send-slack C123 "<reply>"';
 
@@ -96,7 +96,7 @@ describe('SlackSocketListener.handleMessage', () => {
     );
     // Spot-check the load-bearing substrings.
     const actualText = sendMessageMock.mock.calls[0][4];
-    expect(actualText).toContain('from Nico Calel (@nico.calel)');
+    expect(actualText).toContain('from Maren Ellis (@maren.ellis)');
     expect(actualText).toContain('ts:1700000000.000100');
     expect(actualText).toContain('channel:C123');
   });
@@ -156,7 +156,7 @@ describe('SlackSocketListener.handleMessage', () => {
   });
 
   it('loud-open warning logged once when trustedSlackUsers unset', async () => {
-    getUserInfoMock.mockResolvedValue({ handle: 'nico.calel', displayName: 'Nico Calel' });
+    getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     const logSpy = vi.fn();
     const listener = makeListener(logSpy); // no trustedSlackUsers
 
@@ -172,14 +172,14 @@ describe('SlackSocketListener.handleMessage', () => {
   });
 
   it('exact formatted string shape: header, body line, reply line', async () => {
-    getUserInfoMock.mockResolvedValue({ handle: 'nico.calel', displayName: 'Nico Calel' });
+    getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     const listener = makeListener();
 
     await listener.handleMessage(makeEvent());
 
     const text = sendMessageMock.mock.calls[0][4] as string;
     const lines = text.split('\n');
-    expect(lines[0]).toBe('=== SLACK from Nico Calel (@nico.calel) (channel:C123 ts:1700000000.000100) ===');
+    expect(lines[0]).toBe('=== SLACK from Maren Ellis (@maren.ellis) (channel:C123 ts:1700000000.000100) ===');
     expect(lines[1]).toBe('hello team');
     expect(lines[2]).toBe('Reply using: cortextos bus send-slack C123 "<reply>"');
   });
@@ -187,7 +187,7 @@ describe('SlackSocketListener.handleMessage', () => {
   // A captionless file/photo share has no text field — the body must be empty,
   // NOT the literal string "undefined".
   it('captionless share (no text) renders an empty body, never "undefined"', async () => {
-    getUserInfoMock.mockResolvedValue({ handle: 'nico.calel', displayName: 'Nico Calel' });
+    getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     const listener = makeListener();
 
     await listener.handleMessage(makeEvent({ text: undefined as unknown as string }));
@@ -195,7 +195,7 @@ describe('SlackSocketListener.handleMessage', () => {
     const text = sendMessageMock.mock.calls[0][4] as string;
     expect(text).not.toContain('undefined');
     const lines = text.split('\n');
-    expect(lines[0]).toBe('=== SLACK from Nico Calel (@nico.calel) (channel:C123 ts:1700000000.000100) ===');
+    expect(lines[0]).toBe('=== SLACK from Maren Ellis (@maren.ellis) (channel:C123 ts:1700000000.000100) ===');
     expect(lines[1]).toBe('');
     expect(lines[2]).toBe('Reply using: cortextos bus send-slack C123 "<reply>"');
   });
@@ -219,7 +219,7 @@ describe('SlackSocketListener.handleMessage', () => {
   it('drops a message authored by our own bot user id (self-echo)', async () => {
     getBotUserIdMock.mockResolvedValue('UBOTSELF');
     const logSpy = vi.fn();
-    const listener = makeListener(logSpy, { trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(logSpy, { trustedSlackUsers: ['maren.ellis'] });
 
     await listener.handleMessage(makeEvent({ user: 'UBOTSELF', text: 'my own reply' }));
 
@@ -229,7 +229,7 @@ describe('SlackSocketListener.handleMessage', () => {
 
   it('resolves own bot id once and caches it across messages (single auth.test)', async () => {
     getBotUserIdMock.mockResolvedValue('UBOTSELF');
-    const listener = makeListener(() => {}, { trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(() => {}, { trustedSlackUsers: ['maren.ellis'] });
 
     await listener.handleMessage(makeEvent({ user: 'U999' }));
     await listener.handleMessage(makeEvent({ user: 'U999' }));
@@ -242,7 +242,7 @@ describe('SlackSocketListener.handleMessage', () => {
 
   it('auth.test unavailable (null own id) does not block a real user (graceful skip)', async () => {
     getBotUserIdMock.mockResolvedValue(null);
-    const listener = makeListener(() => {}, { trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(() => {}, { trustedSlackUsers: ['maren.ellis'] });
 
     await listener.handleMessage(makeEvent({ user: 'U999' }));
 
@@ -258,7 +258,7 @@ describe('SlackSocketListener.handleMessage', () => {
         resolveAuth = resolve;
       }),
     );
-    const listener = makeListener(() => {}, { trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(() => {}, { trustedSlackUsers: ['maren.ellis'] });
 
     const p1 = listener.handleMessage(makeEvent({ ts: '1700000000.000100' }));
     const p2 = listener.handleMessage(makeEvent({ ts: '1700000000.000200' }));
@@ -278,7 +278,7 @@ describe('SlackSocketListener.handleMessage', () => {
     try {
       vi.setSystemTime(new Date('2026-06-10T12:00:00Z'));
       getBotUserIdMock.mockResolvedValue(null);
-      const listener = makeListener(() => {}, { trustedSlackUsers: ['nico.calel'] });
+      const listener = makeListener(() => {}, { trustedSlackUsers: ['maren.ellis'] });
 
       await listener.handleMessage(makeEvent({ user: 'U999' }));
       await listener.handleMessage(makeEvent({ user: 'U999' }));
@@ -376,14 +376,14 @@ describe('SlackSocketListener.handleMessage', () => {
   });
 
   it('sendMessage throwing does not throw out of handleMessage and is logged', async () => {
-    getUserInfoMock.mockResolvedValue({ handle: 'nico.calel', displayName: 'Nico Calel' });
+    getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     sendMessageMock.mockImplementation(() => {
       throw new Error('disk full');
     });
     const logSpy = vi.fn();
     // Configure the allowlist (with this sender) so the loud-open warning does
     // not also fire — isolating the write-failure log.
-    const listener = makeListener(logSpy, { trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(logSpy, { trustedSlackUsers: ['maren.ellis'] });
 
     await expect(listener.handleMessage(makeEvent())).resolves.toBeUndefined();
 
@@ -411,7 +411,7 @@ describe('routing-mode dedup reservation (TOCTOU)', () => {
     getUserInfoMock.mockReset();
     getBotUserIdMock.mockReset();
     getAuthIdentityMock.mockReset();
-    getUserInfoMock.mockResolvedValue({ handle: 'nico.calel', displayName: 'Nico Calel' });
+    getUserInfoMock.mockResolvedValue({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
     getBotUserIdMock.mockResolvedValue(null);
     // Routing mode resolves team + own id via auth.test.
     getAuthIdentityMock.mockResolvedValue({ userId: 'UBOT', teamId: 'T01' });
@@ -424,11 +424,11 @@ describe('routing-mode dedup reservation (TOCTOU)', () => {
     getUserInfoMock.mockImplementation(
       () =>
         new Promise((resolve) => {
-          releaseIdentity = () => resolve({ handle: 'nico.calel', displayName: 'Nico Calel' });
+          releaseIdentity = () => resolve({ handle: 'maren.ellis', displayName: 'Maren Ellis' });
         }),
     );
     const logSpy = vi.fn();
-    const listener = makeListener(logSpy, { routing: ROUTING, trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(logSpy, { routing: ROUTING, trustedSlackUsers: ['maren.ellis'] });
 
     const first = listener.handleMessage(makeEvent());
     // Let the first copy pass the gate and reserve its key, then park on the
@@ -447,7 +447,7 @@ describe('routing-mode dedup reservation (TOCTOU)', () => {
 
   it('MUST-PASS CONTROL: sequential redelivery of the same event dedupes after a successful write', async () => {
     const logSpy = vi.fn();
-    const listener = makeListener(logSpy, { routing: ROUTING, trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(logSpy, { routing: ROUTING, trustedSlackUsers: ['maren.ellis'] });
 
     await listener.handleMessage(makeEvent());
     await listener.handleMessage(makeEvent());
@@ -463,7 +463,7 @@ describe('routing-mode dedup reservation (TOCTOU)', () => {
       throw new Error('disk full');
     });
     const logSpy = vi.fn();
-    const listener = makeListener(logSpy, { routing: ROUTING, trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(logSpy, { routing: ROUTING, trustedSlackUsers: ['maren.ellis'] });
 
     await listener.handleMessage(makeEvent());
     expect(
@@ -476,7 +476,7 @@ describe('routing-mode dedup reservation (TOCTOU)', () => {
   });
 
   it('distinct events are never collapsed by the reservation (polarity control)', async () => {
-    const listener = makeListener(() => {}, { routing: ROUTING, trustedSlackUsers: ['nico.calel'] });
+    const listener = makeListener(() => {}, { routing: ROUTING, trustedSlackUsers: ['maren.ellis'] });
 
     await listener.handleMessage(makeEvent({ ts: '1700000000.000100' }));
     await listener.handleMessage(makeEvent({ ts: '1700000000.000200' }));

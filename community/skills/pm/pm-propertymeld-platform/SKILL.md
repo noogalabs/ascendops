@@ -1,13 +1,25 @@
 ---
 name: pm-propertymeld-platform
 effort: low
-description: "Property Meld platform deep reference for Blue. Full feature coverage: Projects, make-ready/turnover lifecycle, workflow automation, three-way chat, vendor portal, integrations, KPIs, MAX On-Call, resident portal, scheduling."
+description: "Property Meld platform deep reference for <maintenance-agent>. Full feature coverage: Projects, make-ready/turnover lifecycle, workflow automation, three-way chat, vendor portal, integrations, KPIs, MAX On-Call, resident portal, scheduling."
 triggers: ["property meld", "meld status", "how does meld work", "vendor portal", "three-way chat", "meld workflow", "what does pending mean", "meld lifecycle", "projects", "make ready", "turnover", "workflow automation"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
 
 # Property Meld Platform Reference — Full Feature Coverage
 
-> Operational deep reference for Blue. Sources: Property Meld help center + product documentation.
+> Operational deep reference for <maintenance-agent>. Sources: Property Meld help center + product documentation.
 
 ---
 
@@ -418,12 +430,12 @@ All integrations included at no extra charge.
 | Resident retention | 46% of move-outs cite maintenance; 31% say it was primary reason |
 | Cost per work order | Track by category; use for owner reporting |
 
-### Blue's Age-Based Escalation Rules (derived from KPI benchmarks)
+### <maintenance-agent>'s Age-Based Escalation Rules (derived from KPI benchmarks)
 
 | Meld age | Flag | Action |
 |----------|------|--------|
-| ≥ 4 days | Approaching critical | Include in morning scan report; message an agent if no vendor assigned |
-| ≥ 5.5 days | Critical threshold | Message an agent immediately, any time of day |
+| ≥ 4 days | Approaching critical | Include in morning scan report; message the configured orchestrator if no vendor assigned |
+| ≥ 5.5 days | Critical threshold | Message the configured orchestrator immediately, any time of day |
 
 ---
 

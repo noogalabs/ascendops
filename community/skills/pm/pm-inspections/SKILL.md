@@ -4,6 +4,18 @@ effort: low
 description: "Property Meld inspection workflows — integration partners (zInspector, Inspectify, Seek Now), inspection types, scheduling, templates, completion workflow, move-in/move-out comparison, resident and owner visibility, and connection to turnover Melds. No native PM inspection module — all inspection tools are third-party via the Nexus program."
 triggers: ["inspection", "move-in inspection", "move-out inspection", "zInspector", "inspect", "condition report", "tenant sign-off", "property walkthrough", "inspection template", "inspection findings", "meld from inspection"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
 
 # Property Meld Inspections — Full Reference
 
@@ -149,7 +161,7 @@ The integration eliminates manual re-entry — inspection findings land directly
 
 ## 7. TENANT-COMPLETED MOVE-IN INSPECTIONS
 
-Blue should know this workflow — it shifts documentation burden to the tenant and creates a legally signed baseline.
+<maintenance-agent> should know this workflow — it shifts documentation burden to the tenant and creates a legally signed baseline.
 
 ### How to Invite Tenant
 1. In zInspector web, go to Tenants page
