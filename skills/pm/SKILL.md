@@ -102,7 +102,7 @@ pm properties list --limit 5000 --json             # Set --limit above your tota
 
 ### Tech Assignment (browser backend)
 ```bash
-pm assign-tech --work-order-id <id> --tech Carlos --json
+pm assign-tech --work-order-id <id> --tech "<configured-tech-name>" --json
 ```
 
 ### Health Check
@@ -126,3 +126,14 @@ All Nexus API commands require the three Nexus env vars from the Credentials sec
 ## Source
 
 Tool repo: https://github.com/noogalabs/cli-anything-pm
+
+### Member vendor documentation patterns
+
+The public package ships an empty vendor-pattern registry. Configure your organization's
+`vendor-doc-patterns.json` under `~/.cortextos/<instance>/orgs/<org>/`, or pass
+`--config <path>` to `bus vendor-patterns list` or `lookup`. The selected file is
+a JSON array of `{vendor_name, aliases, photos, notes, closeout_lag_minutes, notes_text}`.
+`photos` and `notes` accept `in-pm`, `off-system`, `late`, or `manager-backfill`;
+lag is a nonnegative integer in minutes. Missing configuration means no patterns;
+invalid or ambiguous configuration fails rather than assigning another vendor's rule.
+Keep real member identities in organization configuration, outside the public repository.

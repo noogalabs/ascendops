@@ -27,7 +27,7 @@ Before classifying any meld, pull comments:
 python3 scripts/pm-get-comments.py <meld_id>
 ```
 
-A meld that looks unhandled from the subject may already have a vendor reply, scheduled appointment, or Brittany note in the thread. **Triage on thread state, not title.**
+A meld that looks unhandled from the subject may already have a vendor reply, scheduled appointment, or staff note in the thread. **Triage on thread state, not title.**
 
 ---
 
@@ -44,11 +44,11 @@ A meld that looks unhandled from the subject may already have a vendor reply, sc
 
 ## Routing Rules
 
-### Nashville Melds → Brittany
-Any meld tagged to a Nashville property goes to Brittany, not the standard vendor dispatch queue.
+### Configured Property Routing → Designated Contact
+Consult the member-maintained property routing configuration before dispatch. If the property has a designated contact, route to that contact. If routing is missing or ambiguous, ask the configured coordinator before dispatch; do not infer a contact from an area name.
 
 ```
-→ cortextos bus send-message an agent normal "Nashville meld <id> — routing to Brittany per protocol"
+→ cortextos bus send-message <configured-coordinator-agent> normal "Meld <id> — designated property contact <configured-contact>; routing per member configuration"
 ```
 
 ### Standard Portfolio → Vendor Dispatch
@@ -67,7 +67,7 @@ Suppress pest control meld alerts **while a vendor search is open** for that mel
 ### Routine Follow-ups
 Do not re-alert on a meld that has:
 - An assigned vendor AND a scheduled date
-- A Brittany note marked "handled" or "scheduled"
+- A configured staff member's note marked "handled" or "scheduled"
 - A comment from Blue within the last 6h
 
 ---
@@ -135,7 +135,7 @@ Make-ready melds (unit turnover prep) are time-sensitive when:
 - Move-in date is within 5 days
 - Lease is already signed
 
-Treat as **High** urgency. Route to Brittany if Nashville; otherwise escalate to an agent with move-in date.
+Treat as **High** urgency. Use the member-configured designated property contact when present; otherwise escalate to the configured coordinator with the move-in date.
 
 ---
 
@@ -144,7 +144,7 @@ Treat as **High** urgency. Route to Brittany if Nashville; otherwise escalate to
 ```
 Read thread
   → Already handled (vendor assigned + date set)?  → Log only, no action
-  → Nashville property?                            → Route to Brittany
+  → Designated contact in property routing?        → Route to configured contact
   → Habitability override condition?               → Telegram David immediately
   → Pest control + vendor search open?             → Suppress alert
   → Age ≥ 5.5 days?                               → Critical flag, message an agent immediately
@@ -182,7 +182,7 @@ Examples: `["leak", "flooding"]`, `["no heat", "40F outside"]`, `["gas smell"]`
 Standard path:
 ```
 "habitability_override:no|yes"
-"nashville_property:no|yes"
+"configured_property_route:none|designated|unresolved"
 "pest_control_suppressed:no|yes"
 "age_days:<N>"
 "age_flag:none|approaching_critical|critical"

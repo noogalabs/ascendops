@@ -51,7 +51,7 @@ From the full list, keep only melds that meet at least one condition:
 
 Skip melds that have:
 - Vendor assigned AND scheduled date set
-- A Brittany note or Blue comment within last 6h
+- A configured staff member's note or maintenance agent comment within last 6h
 - Pest control classification with vendor search open
 
 ---
@@ -66,7 +66,7 @@ python3 scripts/pm-get-comments.py <meld_id>
 
 After reading thread, classify with pm-meld-triage rules:
 - Is it actually unhandled, or does the thread show it's in progress?
-- Nashville property? → route to Brittany
+- Designated property contact in member routing configuration? → route to that contact; ask the configured coordinator if routing is missing or ambiguous
 - Habitability override condition? → escalate immediately, don't wait for report
 
 Discard any candidate where thread reveals it is already actively managed.
@@ -102,7 +102,7 @@ Flagged for action: <N>
 
 <report lines>
 
-Nashville items (route to Brittany): <count>
+Designated-contact items (routed per member configuration): <count>
 Emergencies: <count or 'none'>
 ---
 Ready for dispatch decisions."
@@ -117,7 +117,7 @@ cortextos bus send-message an agent normal "Morning Meld Scan — $(date +%Y-%m-
 
 ## Step 6: Log Escalation Outcomes (an agent Cycle 7)
 
-For each meld that was escalated in a **previous** scan and now has a confirmed resolution (status changed, vendor assigned, David/an agent/Brittany acted), append one JSON line to the outcomes surface:
+For each meld that was escalated in a **previous** scan and now has a confirmed resolution (status changed, vendor assigned, owner/coordinator/configured staff member acted), append one JSON line to the outcomes surface:
 
 ```bash
 OUTCOME_FILE="${CTX_ROOT}/orgs/${CTX_ORG}/agents/an agent/experiments/surfaces/blue-quality-outcomes.jsonl"
@@ -158,7 +158,7 @@ Before sending the report to an agent, verify:
 
 - [ ] Did I read the thread for every flagged meld (not just the title)?
 - [ ] Did I suppress pest control melds with open vendor searches?
-- [ ] Did I route Nashville items to Brittany, not the standard queue?
+- [ ] Did I apply the member-configured property routing and resolve any missing or ambiguous contact before dispatch?
 - [ ] Are zero genuinely-handled melds in the flagged list?
 - [ ] Did any habitability conditions get caught and escalated already?
 

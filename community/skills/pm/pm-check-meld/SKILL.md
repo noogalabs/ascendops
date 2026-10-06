@@ -29,7 +29,7 @@ From the output, note:
 |-------|-----------------|----------------|
 | Current status | `status` field | Is it already assigned, scheduled, or resolved? |
 | Vendor assigned | `vendor` or `assigned_to` | Is someone already on it? |
-| Last comment author | Last entry in `comments[]` | Did Brittany or a vendor already respond? |
+| Last comment author | Last entry in `comments[]` | Did a configured staff member or a vendor already respond? |
 | Last comment timestamp | `comments[-1].created_at` | How recent is the last activity? |
 | Tenant last message | Scan `comments[]` for tenant author | Is tenant escalating, or satisfied? |
 | Scheduled date | `scheduled_date` or comment mention | Is an appointment already booked? |
