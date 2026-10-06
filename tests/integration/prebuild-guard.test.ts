@@ -33,6 +33,7 @@ function git(root: string, args: string[]): string {
 function makeRepo(branch = 'feature/test', marker = false): { root: string; script: string } {
   const root = tempRoot('prebuild-guard-repo-');
   mkdirSync(join(root, 'scripts'), { recursive: true });
+  copyFileSync(join(SOURCE_ROOT, 'scripts', 'build-branch.mjs'), join(root, 'scripts', 'build-branch.mjs'));
   copyFileSync(GUARD_SOURCE, join(root, 'scripts', 'prebuild-guard.mjs'));
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'cortextos' }));
   git(root, ['init', '-b', branch]);
@@ -199,7 +200,7 @@ describe('prebuild live-tree guard', () => {
 
   it('keeps a linked worktree isolated from the live checkout marker', () => {
     const { root } = makeRepo('main', true);
-    git(root, ['add', 'package.json', 'scripts/prebuild-guard.mjs']);
+    git(root, ['add', 'package.json', 'scripts/prebuild-guard.mjs', 'scripts/build-branch.mjs']);
     git(root, ['-c', 'user.name=Guard Test', '-c', 'user.email=guard@localhost', 'commit', '-m', 'fixture']);
     const worktreeRoot = join(dirname(root), `${root.split('/').at(-1)}-worktree`);
     tempRoots.push(worktreeRoot);

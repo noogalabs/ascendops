@@ -23,6 +23,16 @@ describe('member update apply and chat-ID checkout', () => {
   let savedArgv: string[];
   const previous = 'a'.repeat(40);
   function run(binary = 'ascendops') {
+    const implementation = mocks.exec.getMockImplementation();
+    mocks.exec.mockImplementation((bin, args, options) => {
+      if (bin === 'git' && !existsSync(join(checkout, '.git'))) {
+        if (args[0] === 'symbolic-ref') return 'main';
+        if (args[0] === 'remote') return 'fixture';
+        if (args.includes('@{upstream}')) return 'origin/main';
+        if (args.includes('--git-path')) return join(root, 'no-operation');
+      }
+      return implementation?.(bin, args, options);
+    });
     updateCommand.setOptionValue('check', false);
     return new Command(binary).addCommand(updateCommand).parseAsync(['node', binary, 'update', '--yes']);
   }
@@ -91,7 +101,7 @@ describe('member update apply and chat-ID checkout', () => {
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`${expected} failed.`));
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining('merged but the runtime is not rebuilt'));
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`git reset --hard ${previous}`));
-      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('retry npm'));
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('retry with ascendops update'));
       expect(vi.mocked(console.log).mock.calls.some(([text]) => String(text).includes('Updates applied'))).toBe(false);
       if (failure === 'ci') expect(npmCalls().map(([, args]) => args)).toEqual([['ci']]);
     });
@@ -107,19 +117,19 @@ describe('member update apply and chat-ID checkout', () => {
     vi.stubEnv('CTX_HEARTBEAT_SESSION', 'worker:planted-session-nonce');
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
     const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8', env: testEnv() });
-    git(['init', '-q']);
+    git(['init', '-qb', 'main']);
     git(['config', 'user.name', 'Example Contributors']);
     git(['config', 'user.email', 'fixture@example.com']);
     writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
     git(['add', '.']);
-    git(['commit', '-qm', 'fixture']);
+    git(['commit', '-qm', 'fixture']); git(['remote', 'add', 'origin', '.']); git(['update-ref', 'refs/remotes/origin/main', 'HEAD']); git(['branch', '--set-upstream-to=origin/main', 'main']);
     const before = git(['rev-parse', 'HEAD']).trim();
     git(['checkout', '-qb', 'next']);
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// upstream template change\n');
     git(['add', 'ecosystem.config.js']);
     git(['commit', '-qm', 'new template']);
-    git(['checkout', '-q', '--detach', before]);
+    git(['checkout', '-q', 'main']);
     mkdirSync(join(checkout, 'orgs', 'example-org', 'agents', 'worker'), { recursive: true });
     generateEcosystem({ instance: 'other', org: 'example-org', output: join(checkout, 'ecosystem.config.js') }, checkout);
     const generated = readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8');
@@ -202,10 +212,10 @@ describe('member update apply and chat-ID checkout', () => {
   it('hand-edited generated config is refused and preserved (real generator, real git)', async () => {
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
     const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8', env: testEnv() });
-    git(['init', '-q']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
+    git(['init', '-qb', 'main']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
     writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
-    git(['add', '.']); git(['commit', '-qm', 'fixture']);
+    git(['add', '.']); git(['commit', '-qm', 'fixture']); git(['remote', 'add', 'origin', '.']); git(['update-ref', 'refs/remotes/origin/main', 'HEAD']); git(['branch', '--set-upstream-to=origin/main', 'main']);
     mkdirSync(join(checkout, 'orgs', 'example-org', 'agents', 'worker'), { recursive: true });
     generateEcosystem({ instance: 'other', org: 'example-org', output: join(checkout, 'ecosystem.config.js') }, checkout);
     const edited = readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8') + '// member edit\n';
@@ -220,10 +230,10 @@ describe('member update apply and chat-ID checkout', () => {
   it('backup-directory symlink refuses and preserves config and outside data', async () => {
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
     const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8', env: testEnv() });
-    git(['init', '-q']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
+    git(['init', '-qb', 'main']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
     writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
-    git(['add', '.']); git(['commit', '-qm', 'fixture']);
+    git(['add', '.']); git(['commit', '-qm', 'fixture']); git(['remote', 'add', 'origin', '.']); git(['update-ref', 'refs/remotes/origin/main', 'HEAD']); git(['branch', '--set-upstream-to=origin/main', 'main']);
     mkdirSync(join(checkout, 'orgs', 'example-org', 'agents', 'worker'), { recursive: true });
     generateEcosystem({ instance: 'other', org: 'example-org', output: join(checkout, 'ecosystem.config.js'), quiet: true }, checkout);
     const generated = readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8');

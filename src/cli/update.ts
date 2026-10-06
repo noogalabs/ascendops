@@ -21,6 +21,7 @@
  *   --yes / -y       skip the confirmation prompt (for scripted use)
  *   --check          only check; never apply (alias for the daily cron)
  */
+import { isDefaultBranch } from '../../scripts/build-branch.mjs';
 import { Command } from 'commander';
 import { createInterface, type Interface } from 'readline';
 import { existsSync, readFileSync, mkdtempSync, mkdirSync, lstatSync, chmodSync, writeFileSync, rmSync, copyFileSync } from 'fs';
@@ -71,6 +72,15 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   const memberMode = command.parent?.name() === 'ascendops';
   const frameworkRoot = findFrameworkRoot(memberMode);
 
+  const backupRoot = join(frameworkRoot, '.ascendops-update-backups');
+  const pendingBuild = join(backupRoot, 'merged-not-built.json');
+  let retryBuild = false;
+  try {
+    if (existsSync(pendingBuild) && !lstatSync(backupRoot).isSymbolicLink() && !lstatSync(pendingBuild).isSymbolicLink()) {
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: frameworkRoot, encoding: 'utf8', env: stripSessionCredentialFromEnv(process.env) }).trim();
+      retryBuild = JSON.parse(readFileSync(pendingBuild, 'utf8')).head === head;
+    }
+  } catch { /* A missing or invalid marker cannot authorize a rebuild. */ }
   // Step 1: check (no apply).
   const status = checkUpstream(frameworkRoot, { apply: false }) as any;
 
@@ -82,7 +92,8 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
 
   if (status.status === 'up_to_date') {
     console.log('Already up to date — no upstream changes available.');
-    process.exit(0);
+    if (opts.check || !retryBuild) process.exit(0);
+    console.log('Reinstalling and rebuilding the current checkout.');
   }
 
   // Updates available.
@@ -136,6 +147,20 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   const onSigterm = () => interrupt('SIGTERM');
   try {
   try {
+    if (memberMode) {
+      const branch = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], execOptions).trim();
+      let hasOrigin = false;
+      try { execFileSync('git', ['remote', 'get-url', 'origin'], execOptions); hasOrigin = true; } catch { /* upstream-only install */ }
+      const expectedTracking = hasOrigin ? 'origin/main' : 'upstream/main';
+      const tracking = execFileSync('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], execOptions).trim();
+      const operationPending = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply'].some(name =>
+        existsSync(execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-path', name], execOptions).trim()));
+      if (!isDefaultBranch(branch) || tracking !== expectedTracking || operationPending) {
+        throw new Error(`Member updates require main tracking ${expectedTracking}, with no merge or rebase in progress. Finish your current work and switch to the tracked main branch before retrying.`);
+      }
+    }
+    if (existsSync(backupRoot) && (!lstatSync(backupRoot).isDirectory() || lstatSync(backupRoot).isSymbolicLink())) throw new Error('invalid backup directory');
+    if (existsSync(pendingBuild) && (!lstatSync(pendingBuild).isFile() || lstatSync(pendingBuild).isSymbolicLink())) throw new Error('invalid rebuild marker');
     const dirt = execFileSync('git', ['status', '--porcelain'], execOptions).trimEnd();
     if (dirt === ' M ecosystem.config.js') {
       // Only exact generator output is disposable; edited or staged configs are work.
@@ -145,7 +170,6 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
       if (instanceMatch && orgMatch) {
         const instance: string = JSON.parse(instanceMatch[1]);
         const org: string = JSON.parse(orgMatch[1]);
-        const backupRoot = join(frameworkRoot, '.ascendops-update-backups');
         if (!existsSync(backupRoot)) mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
         if (!lstatSync(backupRoot).isDirectory() || lstatSync(backupRoot).isSymbolicLink()) throw new Error('invalid backup directory');
         chmodSync(backupRoot, 0o700);
@@ -172,7 +196,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   } catch (error) {
     restoreGeneratedConfig();
     if (generatedConfig) console.error(`Your generated PM2 config is saved at ${generatedConfig.backup}.`);
-    console.error(`Update preflight failed. Verify this checkout is a Git repository and retry update.${generatedConfig ? ` Saved PM2 config backup: ${generatedConfig.backup}.` : ''}`);
+    console.error(`Update refused during preflight: ${error instanceof Error ? error.message : "invalid checkout"}. Verify the checkout and retry update.${generatedConfig ? ` Saved PM2 config backup: ${generatedConfig.backup}.` : ''}`);
     process.exit(1);
   }
   // checkUpstream's apply path gates on CORTEXTOS_CONFIRM_UPSTREAM_MERGE — the
@@ -182,18 +206,18 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   let applied: any;
   try {
     process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = 'yes';
-    applied = checkUpstream(frameworkRoot, { apply: true });
+    applied = status.status === 'up_to_date' ? { status: 'merged' } : checkUpstream(frameworkRoot, { apply: true });
   } catch {
     applied = { status: 'error' };
   } finally {
     if (previousConfirmation === undefined) delete process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE;
     else process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = previousConfirmation;
   }
-  function recovery(stage: string, retry: string): void {
+  function recovery(stage: string, detail: string): void {
     restoreGeneratedConfig();
     const state = applied.status !== 'merged' ? 'The update merge did not complete.' : stage === 'PM2 config regeneration' ? 'The runtime is rebuilt but the PM2 config was not regenerated.' : 'The checkout is merged but the runtime is not rebuilt.';
     if (generatedConfig) console.error(`Your generated PM2 config is saved at ${generatedConfig.backup}.`);
-    console.error(`${stage} failed. ${state} In ${frameworkRoot}, ${retry}. To roll back, first save any new work, then run git reset --hard ${previousHead}, npm ci, and npm run build. Do not restart agents until the build succeeds.${generatedConfig ? ` Saved PM2 config backup: ${generatedConfig.backup}.` : ''}`);
+    console.error(`${stage} failed. ${state} In ${frameworkRoot}, ${detail}; retry with ${memberMode ? "ascendops" : "cortextos"} update. To roll back, first save any new work, then run: git reset --hard ${previousHead}. This returns source only; no rollback build is instructed. The rolled-back checkout is behind upstream until the next update. The installed build and dependencies may be inconsistent, including after source rollback. Do not restart your agents until a successful retry finishes installation and rebuild. Saved update state directory: ${backupRoot}.${generatedConfig ? ` Saved PM2 config backup: ${generatedConfig.backup}.` : ''}`);
   }
   if (applied.status !== 'merged') {
     if (applied.status === 'conflict') {
@@ -203,18 +227,27 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
     recovery('Upstream merge', 'resolve the merge error and retry update');
     process.exit(1);
   }
+  try {
+    if (!existsSync(backupRoot)) mkdirSync(backupRoot, { mode: 0o700 });
+    chmodSync(backupRoot, 0o700);
+    const mergedHead = execFileSync('git', ['rev-parse', 'HEAD'], execOptions).trim();
+    writeFileSync(pendingBuild, JSON.stringify({ head: mergedHead }), { mode: 0o600 });
+  } catch {
+    recovery('Rebuild checkpoint', 'restore write access to the member update backup directory');
+    process.exit(1);
+  }
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const npmOptions = { cwd: frameworkRoot, stdio: 'inherit' as const, shell: process.platform === 'win32', env: { ...stripSessionCredentialFromEnv(process.env), ASCENDOPS_MEMBER_UPDATE: memberMode ? '1' : '' } };
   try {
     execFileSync(npm, ['ci'], npmOptions);
   } catch {
-    recovery('Dependency installation', 'retry npm ci followed by npm run build');
+    recovery('Dependency installation', 'fix the dependency installation error');
     process.exit(1);
   }
   try {
     execFileSync(npm, ['run', 'build'], npmOptions);
   } catch {
-    recovery('Build', 'fix the build error and retry npm run build');
+    recovery('Build', 'fix the build error');
     process.exit(1);
   }
   if (generatedConfig) {
@@ -232,6 +265,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
       process.exit(1);
     }
   }
+  rmSync(pendingBuild, { force: true });
   const cli = command.parent?.name() === 'ascendops' ? 'ascendops' : 'cortextos';
   console.log(`Updates applied, dependencies installed, and runtime rebuilt. Restart your agents with ${cli} restart <agent> and restart the daemon (for PM2: pm2 restart cortextos-daemon) to use the new runtime.`);
   } finally {

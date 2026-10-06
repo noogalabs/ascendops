@@ -21,6 +21,9 @@
  *      the checkout is treated as isolated, which allows the build. Recorded
  *      here rather than fixed, because changing it needs its own review.
  */
+import { isDefaultBranch } from './build-branch.mjs';
+export { isDefaultBranch } from './build-branch.mjs';
+
 import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, realpathSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
@@ -100,7 +103,7 @@ export function decide({ ci, live, branch, override, mainDivergence }) {
   if (!live) {
     return { allow: true, code: 'isolated', messages: ['Build allowed in isolated checkout.'] };
   }
-  if (branch === 'main') {
+  if (isDefaultBranch(branch)) {
     const mainRef = mainDivergence?.ref || 'origin/main';
     // The old blanket main exemption was correct when written and became false
     // when the world moved under it: main was safe because main was what shipped.
@@ -272,7 +275,7 @@ export function main(argv = process.argv.slice(2)) {
   const branch = currentBranch(repoRoot, detection.errors);
   // Only computed for the case it gates, so isolated clones pay nothing for it.
   const mainDivergence =
-    detection.live && branch === 'main'
+    detection.live && isDefaultBranch(branch)
       ? computeMainDivergence(repoRoot, mainValidationRef(repoRoot, process.env.ASCENDOPS_MEMBER_UPDATE === '1'))
       : null;
   const decision = decide({
