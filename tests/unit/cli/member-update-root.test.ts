@@ -1,3 +1,4 @@
+import { testEnv } from './member-update-test-env.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -75,7 +76,7 @@ describe('member update checkout resolution', () => {
   });
   it('prefers the symlinked binary realpath git checkout over the home default', async () => {
     const expected = checkout('custom-install');
-    execFileSync('git', ['init', expected], { stdio: 'ignore' });
+    execFileSync('git', ['init', expected], { stdio: 'ignore', env: testEnv() });
     mkdirSync(join(expected, 'dist'));
     writeFileSync(join(expected, 'dist', 'ascendops.js'), '');
     const { symlinkSync } = await import('node:fs');
@@ -90,7 +91,7 @@ describe('member update checkout resolution', () => {
   });
   it('honors the member override ahead of the binary-owned checkout', async () => {
     const binaryRoot = checkout('binary-install');
-    execFileSync('git', ['init', binaryRoot], { stdio: 'ignore' });
+    execFileSync('git', ['init', binaryRoot], { stdio: 'ignore', env: testEnv() });
     mkdirSync(join(binaryRoot, 'dist'));
     writeFileSync(join(binaryRoot, 'dist', 'ascendops.js'), '');
     process.argv[1] = join(binaryRoot, 'dist', 'ascendops.js');

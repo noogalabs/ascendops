@@ -1,3 +1,4 @@
+import { testEnv } from './member-update-test-env.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, symlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -105,7 +106,7 @@ describe('member update apply and chat-ID checkout', () => {
   for (const outcome of ['success', 'regeneration-failure', 'install-failure', 'build-failure', 'merge-failure', 'interrupt', 'other-dirt', 'untracked-dirt'] as const) it(`real generated config ${outcome}: saved and restored before merge`, async () => {
     vi.stubEnv('CTX_HEARTBEAT_SESSION', 'worker:planted-session-nonce');
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
-    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8' });
+    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8', env: testEnv() });
     git(['init', '-q']);
     git(['config', 'user.name', 'Example Contributors']);
     git(['config', 'user.email', 'fixture@example.com']);
@@ -129,7 +130,7 @@ describe('member update apply and chat-ID checkout', () => {
       expect(Boolean(options.env)).toBe(true);
       expect(options.env?.CTX_HEARTBEAT_SESSION).toBeUndefined();
       if (bin === 'npm' && ((outcome === 'install-failure' && args[0] === 'ci') || (outcome === 'build-failure' && args[1] === 'build'))) throw new Error('fixture npm failure');
-      if (bin === 'git') return realExec(bin, args, options);
+      if (bin === 'git') return realExec(bin, args, { ...options, env: testEnv({ CTX_HEARTBEAT_SESSION: options.env.CTX_HEARTBEAT_SESSION }) });
       if (bin === process.execPath) {
         if (outcome === 'regeneration-failure') throw new Error('fixture regeneration failure');
         expect(args.slice(1, 6)).toEqual(['ecosystem', '--instance', 'other', '--org', 'example-org']);
@@ -200,7 +201,7 @@ describe('member update apply and chat-ID checkout', () => {
   });
   it('hand-edited generated config is refused and preserved (real generator, real git)', async () => {
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
-    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8' });
+    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8', env: testEnv() });
     git(['init', '-q']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
     writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
@@ -210,7 +211,7 @@ describe('member update apply and chat-ID checkout', () => {
     const edited = readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8') + '// member edit\n';
     writeFileSync(join(checkout, 'ecosystem.config.js'), edited);
     expect(git(['status', '--porcelain'])).toBe(' M ecosystem.config.js\n');
-    mocks.exec.mockImplementation((bin, args, options) => bin === 'git' ? realExec(bin, args, options) : '');
+    mocks.exec.mockImplementation((bin, args, options) => bin === 'git' ? realExec(bin, args, { ...options, env: testEnv({ CTX_HEARTBEAT_SESSION: options.env.CTX_HEARTBEAT_SESSION }) }) : '');
     mocks.check.mockImplementation((_r, o) => o.apply ? { status: 'merged' } : { status: 'updates_available', commits: 1 });
     await expect(run()).rejects.toThrow('exit:1');
     expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe(edited);
@@ -218,7 +219,7 @@ describe('member update apply and chat-ID checkout', () => {
   });
   it('backup-directory symlink refuses and preserves config and outside data', async () => {
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
-    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8' });
+    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8', env: testEnv() });
     git(['init', '-q']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
     writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
@@ -229,7 +230,7 @@ describe('member update apply and chat-ID checkout', () => {
     const outside = join(root, 'outside'); mkdirSync(outside);
     symlinkSync(outside, join(checkout, '.ascendops-update-backups'), 'dir');
     expect(git(['status', '--porcelain'])).toBe(' M ecosystem.config.js\n');
-    mocks.exec.mockImplementation((bin, args, options) => bin === 'git' ? realExec(bin, args, options) : '');
+    mocks.exec.mockImplementation((bin, args, options) => bin === 'git' ? realExec(bin, args, { ...options, env: testEnv({ CTX_HEARTBEAT_SESSION: options.env.CTX_HEARTBEAT_SESSION }) }) : '');
     await expect(run()).rejects.toThrow('exit:1');
     expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe(generated);
     expect(readdirSync(outside)).toEqual([]);
