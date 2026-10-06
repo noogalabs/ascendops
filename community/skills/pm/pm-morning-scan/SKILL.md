@@ -16,15 +16,20 @@ is missing or ambiguous, ask the configured coordinator before dispatch; never
 substitute a person, agent or chat ID from an example. Existing emergency and
 approval rules still govern actions.
 
-For the urgent owner-send example below, resolve exactly one approved owner
-route and recipient from that configuration. Load its command prefix as the
-Bash array `PM_MAINTENANCE_OWNER_ROUTE_ARGV` (for example, the configured
-transport adapter and its send subcommand) and its recipient as
-`PM_MAINTENANCE_OWNER_RECIPIENT`. The adapter contract accepts recipient and
-message as its final two arguments. These are member-configured bindings, not
-commands inferred from the operator chat. Missing, ambiguous or incompatible
-bindings must raise `OWNER_CONTACT_BINDING_REQUIRED` and ask the configured
-coordinator before any send. Do not use `eval` or a shell command string.
+The reader `community/skills/pm/scripts/send-owner-route.py` loads exactly one
+member-approved owner binding from `PM_OWNER_BINDING_PATH`: a JSON object with
+only `argv` (an array of command-prefix strings, starting with the absolute sender
+executable) and `recipient` (a non-empty string). The adapter appends recipient
+and message as the final two arguments; bind only an approved transport adapter
+with that contract. No exported scalar command, shell string or inferred route
+is accepted. Duplicate/unknown keys or multiple routes refuse as ambiguous.
+Run the example from the framework checkout, or set `PM_OWNER_ROUTE_ADAPTER` to
+the installed reader's absolute path. Its strict UTF-8 decoder rejects malformed
+bytes, BOM and NUL. It never echoes the binding or sender output. Exit 20 means
+unbound/invalid; 21 means delivery outcome unknown; 0 means sender success.
+The shell caller independently alarms the configured coordinator on any reader
+or delivery failure, including a missing or broken reader. Never auto-retry an
+unknown delivery outcome.
 
 
 # PM Morning Scan
@@ -166,15 +171,19 @@ cortextos bus update-heartbeat "morning scan complete — <N> melds flagged"
 
 ## Emergencies: Don't Wait for the Report
 
-If at any point during Steps 1–3 you find a meld meeting a habitability override condition (see pm-meld-triage), message <maintenance-owner> on Telegram immediately — do not batch it into the 06:30 report.
+If at any point during Steps 1–3 you find a meld meeting a habitability override condition (see pm-meld-triage), message <maintenance-owner> via the configured owner route immediately — do not batch it into the 06:30 report.
 
 ```bash
-# Populate the array and recipient only from the uniquely bound owner route.
-if [ "${#PM_MAINTENANCE_OWNER_ROUTE_ARGV[@]}" -eq 0 ] || [ -z "${PM_MAINTENANCE_OWNER_RECIPIENT:-}" ]; then
-  printf '%s\n' 'OWNER_CONTACT_BINDING_REQUIRED: ask the configured coordinator; no send' >&2
-  exit 1
+owner_route_status=0
+python3 "${PM_OWNER_ROUTE_ADAPTER:-community/skills/pm/scripts/send-owner-route.py}" "${PM_OWNER_BINDING_PATH:-}" "URGENT: <meld_id> — <condition>. <property>. Action needed now." || owner_route_status=$?
+if [ "$owner_route_status" -ne 0 ]; then
+  case "$owner_route_status" in
+    20) owner_route_error=OWNER_CONTACT_BINDING_REQUIRED ;;
+    *) owner_route_error="OWNER_CONTACT_SEND_OUTCOME_UNKNOWN (outcome unknown)" ;;
+  esac
+  cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" urgent "$owner_route_error: URGENT: <meld_id> — <condition>. <property>. Action needed now. Check binding and delivery receipts; do not assume no delivery." || printf '%s\n' 'OWNER_COORDINATOR_ALARM_FAILED' >&2
+  exit "$owner_route_status"
 fi
-"${PM_MAINTENANCE_OWNER_ROUTE_ARGV[@]}" "$PM_MAINTENANCE_OWNER_RECIPIENT" "URGENT: <meld_id> — <condition>. <property>. Action needed now."
 ```
 
 ---

@@ -16,15 +16,20 @@ is missing or ambiguous, ask the configured coordinator before dispatch; never
 substitute a person, agent or chat ID from an example. Existing emergency and
 approval rules still govern actions.
 
-For the urgent owner-send example below, resolve exactly one approved owner
-route and recipient from that configuration. Load its command prefix as the
-Bash array `PM_MAINTENANCE_OWNER_ROUTE_ARGV` (for example, the configured
-transport adapter and its send subcommand) and its recipient as
-`PM_MAINTENANCE_OWNER_RECIPIENT`. The adapter contract accepts recipient and
-message as its final two arguments. These are member-configured bindings, not
-commands inferred from the operator chat. Missing, ambiguous or incompatible
-bindings must raise `OWNER_CONTACT_BINDING_REQUIRED` and ask the configured
-coordinator before any send. Do not use `eval` or a shell command string.
+The reader `community/skills/pm/scripts/send-owner-route.py` loads exactly one
+member-approved owner binding from `PM_OWNER_BINDING_PATH`: a JSON object with
+only `argv` (an array of command-prefix strings, starting with the absolute sender
+executable) and `recipient` (a non-empty string). The adapter appends recipient
+and message as the final two arguments; bind only an approved transport adapter
+with that contract. No exported scalar command, shell string or inferred route
+is accepted. Duplicate/unknown keys or multiple routes refuse as ambiguous.
+Run the example from the framework checkout, or set `PM_OWNER_ROUTE_ADAPTER` to
+the installed reader's absolute path. Its strict UTF-8 decoder rejects malformed
+bytes, BOM and NUL. It never echoes the binding or sender output. Exit 20 means
+unbound/invalid; 21 means delivery outcome unknown; 0 means sender success.
+The shell caller independently alarms the configured coordinator on any reader
+or delivery failure, including a missing or broken reader. Never auto-retry an
+unknown delivery outcome.
 
 
 # PM Meld Triage Playbook
@@ -57,7 +62,7 @@ A meld that looks unhandled from the subject may already have a vendor reply, sc
 
 | Level | Definition | Response |
 |-------|-----------|----------|
-| **Emergency** | Active safety/habitability threat | Telegram <maintenance-owner> immediately, any hour |
+| **Emergency** | Active safety/habitability threat | Notify <maintenance-owner> via the configured owner route immediately, any hour |
 | **High** | No heat, sewage, lock-out, water intrusion | Escalate to the configured orchestrator during day hours; wake <maintenance-owner> only if containment risk |
 | **Normal** | Routine repair, appliance, cosmetic | Standard dispatch, SLA applies |
 | **Low** | Cosmetic, non-functional (e.g. paint, landscaping) | Batch in next morning scan |
@@ -107,12 +112,16 @@ The following conditions **bypass all suppression rules** and escalate immediate
 
 **Override action:**
 ```bash
-# Populate the array and recipient only from the uniquely bound owner route.
-if [ "${#PM_MAINTENANCE_OWNER_ROUTE_ARGV[@]}" -eq 0 ] || [ -z "${PM_MAINTENANCE_OWNER_RECIPIENT:-}" ]; then
-  printf '%s\n' 'OWNER_CONTACT_BINDING_REQUIRED: ask the configured coordinator; no send' >&2
-  exit 1
+owner_route_status=0
+python3 "${PM_OWNER_ROUTE_ADAPTER:-community/skills/pm/scripts/send-owner-route.py}" "${PM_OWNER_BINDING_PATH:-}" "URGENT: <meld_id> — <condition>. <property>. Immediate action needed." || owner_route_status=$?
+if [ "$owner_route_status" -ne 0 ]; then
+  case "$owner_route_status" in
+    20) owner_route_error=OWNER_CONTACT_BINDING_REQUIRED ;;
+    *) owner_route_error="OWNER_CONTACT_SEND_OUTCOME_UNKNOWN (outcome unknown)" ;;
+  esac
+  cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" urgent "$owner_route_error: URGENT: <meld_id> — <condition>. <property>. Immediate action needed. Check binding and delivery receipts; do not assume no delivery." || printf '%s\n' 'OWNER_COORDINATOR_ALARM_FAILED' >&2
+  exit "$owner_route_status"
 fi
-"${PM_MAINTENANCE_OWNER_ROUTE_ARGV[@]}" "$PM_MAINTENANCE_OWNER_RECIPIENT" "URGENT: <meld_id> — <condition>. <property>. Immediate action needed."
 ```
 
 ---
@@ -172,11 +181,11 @@ Treat as **High** urgency. Use the member-configured designated property contact
 Read thread
   → Already handled (vendor assigned + date set)?  → Log only, no action
   → Designated contact in property routing?        → Route to configured contact
-  → Habitability override condition?               → Telegram <maintenance-owner> immediately
+  → Habitability override condition?               → Notify <maintenance-owner> via the configured owner route immediately
   → Pest control + vendor search open?             → Suppress alert
   → Age ≥ 5.5 days?                               → Critical flag, message the configured orchestrator immediately
   → Age ≥ 4 days?                                 → Approaching critical, include in report
-  → Emergency priority + no vendor 4h+?            → RULE_R2: Telegram <maintenance-owner>
+  → Emergency priority + no vendor 4h+?            → RULE_R2: notify <maintenance-owner> via the configured owner route
   → High priority?                                 → Message the configured orchestrator (day hours only)
   → Normal/Low?                                    → Standard dispatch or batch
 ```
