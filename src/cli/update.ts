@@ -22,7 +22,7 @@
  */
 import { Command } from 'commander';
 import { createInterface, type Interface } from 'readline';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { checkUpstream } from '../bus/metrics.js';
@@ -38,6 +38,8 @@ function ask(iface: Interface, question: string): Promise<string> {
 function findFrameworkRoot(): string {
   const candidates = [
     process.env.CTX_FRAMEWORK_ROOT,
+    process.env.ASCENDOPS_DIR,
+    join(homedir(), 'ascendops'),
     process.env.CORTEXTOS_DIR,
     process.env.CTX_PROJECT_ROOT,
     process.cwd(),
@@ -47,7 +49,7 @@ function findFrameworkRoot(): string {
     if (existsSync(join(c, 'package.json'))) {
       // Verify it's actually cortextos (not a random package.json).
       try {
-        const pkg = JSON.parse(require('fs').readFileSync(join(c, 'package.json'), 'utf-8'));
+        const pkg = JSON.parse(readFileSync(join(c, 'package.json'), 'utf-8'));
         if (pkg.name === 'cortextos' || pkg.name === 'ascendops') return c;
       } catch { /* ignore */ }
     }
