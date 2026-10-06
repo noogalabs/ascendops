@@ -16,17 +16,20 @@ is missing or ambiguous, ask the configured coordinator before dispatch; never
 substitute a person, agent or chat ID from an example. Existing emergency and
 approval rules still govern actions.
 
-The reader `community/skills/pm/scripts/send-owner-route.py` loads exactly one
+The bundled reader `scripts/send-owner-route.py` loads exactly one
 member-approved owner binding from `PM_OWNER_BINDING_PATH`: a JSON object with
 only `argv` (an array of command-prefix strings, starting with the absolute sender
 executable) and `recipient` (a non-empty string). The adapter appends recipient
 and message as the final two arguments; bind only an approved transport adapter
 with that contract. No exported scalar command, shell string or inferred route
 is accepted. Duplicate/unknown keys or multiple routes refuse as ambiguous.
-Run the example from the framework checkout, or set `PM_OWNER_ROUTE_ADAPTER` to
-the installed reader's absolute path. Its strict UTF-8 decoder rejects malformed
+Set `PM_SKILL_DIR` to the absolute directory containing this loaded `SKILL.md`
+(for a catalog install, use the returned skill target directory). The reader ships
+inside that directory and is resolved there, independently of the working directory.
+An explicit `PM_OWNER_ROUTE_ADAPTER` may override it with an absolute path. Its strict UTF-8 decoder rejects malformed
 bytes, BOM and NUL. It never echoes the binding or sender output. Exit 20 means
-unbound/invalid; 21 means delivery outcome unknown; 0 means sender success.
+unbound/invalid (not sent); 22 means a pre-launch failure (not sent); 21 means
+delivery outcome unknown; 0 means sender success.
 The shell caller independently alarms the configured coordinator on any reader
 or delivery failure, including a missing or broken reader. Never auto-retry an
 unknown delivery outcome.
@@ -175,11 +178,22 @@ If at any point during Steps 1–3 you find a meld meeting a habitability overri
 
 ```bash
 owner_route_status=0
-python3 "${PM_OWNER_ROUTE_ADAPTER:-community/skills/pm/scripts/send-owner-route.py}" "${PM_OWNER_BINDING_PATH:-}" "URGENT: <meld_id> — <condition>. <property>. Action needed now." || owner_route_status=$?
+case "${PM_SKILL_DIR:-}" in
+  /*) owner_route_adapter="${PM_OWNER_ROUTE_ADAPTER:-$PM_SKILL_DIR/scripts/send-owner-route.py}" ;;
+  *) owner_route_adapter=""; owner_route_status=22 ;;
+esac
+case "$owner_route_adapter" in
+  /*) ;;
+  *) owner_route_status=22 ;;
+esac
+if [ "$owner_route_status" -eq 0 ]; then
+python3 "$owner_route_adapter" "${PM_OWNER_BINDING_PATH:-}" "URGENT: <meld_id> — <condition>. <property>. Action needed now." || owner_route_status=$?
+fi
 if [ "$owner_route_status" -ne 0 ]; then
   case "$owner_route_status" in
-    20) owner_route_error=OWNER_CONTACT_BINDING_REQUIRED ;;
-    *) owner_route_error="OWNER_CONTACT_SEND_OUTCOME_UNKNOWN (outcome unknown)" ;;
+    20) owner_route_error="OWNER_CONTACT_BINDING_REQUIRED (not sent)" ;;
+    21) owner_route_error="OWNER_CONTACT_SEND_OUTCOME_UNKNOWN (outcome unknown)" ;;
+    *) owner_route_error="OWNER_CONTACT_NOT_SENT (not sent)" ;;
   esac
   cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" urgent "$owner_route_error: URGENT: <meld_id> — <condition>. <property>. Action needed now. Check binding and delivery receipts; do not assume no delivery." || printf '%s\n' 'OWNER_COORDINATOR_ALARM_FAILED' >&2
   exit "$owner_route_status"
