@@ -13,7 +13,8 @@
  *      - up_to_date: print a one-liner, exit 0
  *      - error: print error + hint, exit 1 (preserves operator awareness)
  *      - updates_available: print commit count + diff stat, prompt y/N
- *   3. On y, re-invoke check-upstream with --apply, print result, exit.
+ *   3. On y, require a clean checkout, merge, install locked dependencies,
+ *      and rebuild before reporting success. Failures retain recovery guidance.
  *   4. On N or anything else, exit 0 without applying.
  *
  * Flags:
@@ -22,11 +23,12 @@
  */
 import { Command } from 'commander';
 import { createInterface, type Interface } from 'readline';
-import { existsSync, readFileSync, realpathSync } from 'fs';
-import { basename, dirname, join } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { execFileSync } from 'child_process';
 import { homedir } from 'os';
 import { checkUpstream } from '../bus/metrics.js';
+import { resolveMemberCheckout } from './member-checkout.js';
 
 function rl(): Interface {
   return createInterface({ input: process.stdin, output: process.stdout });
@@ -36,28 +38,15 @@ function ask(iface: Interface, question: string): Promise<string> {
   return new Promise(resolve => iface.question(question, answer => resolve(answer.trim())));
 }
 
-function binaryCheckout(): string | undefined {
-  try {
-    const binary = realpathSync(process.argv[1]);
-    if (basename(binary) !== 'ascendops.js') return undefined;
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: dirname(binary), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim() || undefined;
-  } catch { return undefined; }
-}
-
 function findFrameworkRoot(memberMode: boolean): string {
-  const candidates = (memberMode ? [
-    process.env.ASCENDOPS_DIR,
-    binaryCheckout(),
-    join(homedir(), 'ascendops'),
-  ] : [
+  if (memberMode) return resolveMemberCheckout();
+  const candidates = [
     process.env.CTX_FRAMEWORK_ROOT,
     process.env.CORTEXTOS_DIR,
     process.env.CTX_PROJECT_ROOT,
     process.cwd(),
     join(homedir(), 'cortextos'),
-  ]).filter(Boolean) as string[];
+  ].filter(Boolean) as string[];
   for (const c of candidates) {
     if (existsSync(join(c, 'package.json'))) {
       // Verify it's actually cortextos (not a random package.json).
@@ -66,9 +55,6 @@ function findFrameworkRoot(memberMode: boolean): string {
         if (pkg.name === 'cortextos' || pkg.name === 'ascendops') return c;
       } catch { /* ignore */ }
     }
-  }
-  if (memberMode) {
-    throw new Error('AscendOps checkout not found. Set ASCENDOPS_DIR to your installation directory.');
   }
   // Fall back to process.cwd anyway — let checkUpstream surface the not-a-repo error.
   return process.cwd();
@@ -127,20 +113,61 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
 
   console.log('');
   console.log('Applying upstream updates...');
+  const execOptions = { cwd: frameworkRoot, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  let previousHead: string;
+  try {
+    if (execFileSync('git', ['status', '--porcelain'], execOptions).trim()) {
+      console.error('Update refused: checkout has uncommitted changes. Commit or stash your work, then retry update.');
+      process.exit(1);
+    }
+    previousHead = execFileSync('git', ['rev-parse', 'HEAD'], execOptions).trim();
+    if (!/^[0-9a-f]{40}$/.test(previousHead)) throw new Error('invalid HEAD');
+  } catch (error) {
+    console.error('Update preflight failed. Verify this checkout is a Git repository and retry update.');
+    process.exit(1);
+  }
   // checkUpstream's apply path gates on CORTEXTOS_CONFIRM_UPSTREAM_MERGE — the
   // customer's interactive `y` (or --yes flag) IS that confirmation, so set it
   // here before calling. Without this, apply short-circuits with a refusal.
-  process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = 'yes';
-  const applied = checkUpstream(frameworkRoot, { apply: true }) as any;
-  console.log(JSON.stringify(applied, null, 2));
-
-  if (applied.status === 'error') {
+  const previousConfirmation = process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE;
+  let applied: any;
+  try {
+    process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = 'yes';
+    applied = checkUpstream(frameworkRoot, { apply: true });
+  } catch {
+    applied = { status: 'error' };
+  } finally {
+    if (previousConfirmation === undefined) delete process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE;
+    else process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = previousConfirmation;
+  }
+  function recovery(stage: string, retry: string): void {
+    const state = applied.status === 'merged' ? 'The checkout is merged but the runtime is not rebuilt.' : 'The update merge did not complete.';
+    console.error(`${stage} failed. ${state} In ${frameworkRoot}, ${retry}. To roll back, first save any new work, then run git reset --hard ${previousHead}, npm ci, and npm run build. Do not restart agents until the build succeeds.`);
+  }
+  if (applied.status !== 'merged') {
+    if (applied.status === 'conflict') {
+      // checkUpstream already attempts abort; retry for a caller that left a merge pending.
+      try { execFileSync('git', ['merge', '--abort'], execOptions); } catch { /* may already be aborted */ }
+    }
+    recovery('Upstream merge', 'resolve the merge error and retry update');
     process.exit(1);
   }
-  if (applied.status === 'applied') {
-    console.log('');
-    console.log('Updates applied. You may need to: cortextos stop && cortextos start');
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const npmOptions = { cwd: frameworkRoot, stdio: 'inherit' as const, shell: process.platform === 'win32' };
+  try {
+    execFileSync(npm, ['ci'], npmOptions);
+  } catch {
+    recovery('Dependency installation', 'retry npm ci followed by npm run build');
+    process.exit(1);
   }
+  try {
+    execFileSync(npm, ['run', 'build'], npmOptions);
+  } catch {
+    recovery('Build', 'fix the build error and retry npm run build');
+    process.exit(1);
+  }
+  const cli = command.parent?.name() === 'ascendops' ? 'ascendops' : 'cortextos';
+  console.log(`Updates applied, dependencies installed, and runtime rebuilt. Restart your agents with ${cli} restart <agent> and restart the daemon (for PM2: pm2 restart cortextos-daemon) to use the new runtime.`);
 }
 
 export const updateCommand = new Command('update')

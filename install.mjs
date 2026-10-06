@@ -174,8 +174,8 @@ console.log('');
 log('Checking Node.js...');
 const nodeVersion = run('node --version').replace('v', '');
 const [nodeMajor, nodeMinor] = nodeVersion.split('.').map(Number);
-// Intersection of the locked runtime dependency engines (not the legacy
-// package.json >=20.0.0 metadata): noble/chokidar, inquirer, and mute-stream.
+// Intersection of the locked runtime dependency engines, also reflected in
+// package.json: noble/chokidar, inquirer, and mute-stream.
 const supportedNode = (nodeMajor === 20 && nodeMinor >= 19)
   || (nodeMajor === 22 && nodeMinor >= 13)
   || (nodeMajor === 23 && nodeMinor >= 5)
