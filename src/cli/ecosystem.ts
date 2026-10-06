@@ -4,7 +4,7 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
-export function generateEcosystem(options: { instance: string; org?: string; output: string }, resolvedRoot?: string): void {
+export function generateEcosystem(options: { instance: string; org?: string; output: string; quiet?: boolean }, resolvedRoot?: string): void {
     const ctxRoot = join(homedir(), '.cortextos', options.instance);
     // BUG-035 (companion fix): same project-root discovery as enable-agent.ts
     // so `cortextos ecosystem` works from outside ~/cortextos.
@@ -38,7 +38,7 @@ export function generateEcosystem(options: { instance: string; org?: string; out
     }
 
     if (agents.length === 0) {
-      console.log('No agents found. Add agents first: cortextos add-agent <name>');
+      if (!options.quiet) console.log('No agents found. Add agents first: cortextos add-agent <name>');
       return;
     }
 
@@ -138,15 +138,18 @@ module.exports = {
 `;
 
     writeFileSync(options.output, content, 'utf-8');
-    console.log(`Generated ${options.output} with daemon (manages ${agents.length} agents)${hasDashboard ? ' + dashboard' : ''}`);
-    console.log('\nStart with:');
-    console.log(`  pm2 start ${options.output}`);
-    console.log('  pm2 save');
+    if (!options.quiet) {
+      console.log(`Generated ${options.output} with daemon (manages ${agents.length} agents)${hasDashboard ? ' + dashboard' : ''}`);
+      console.log('\nStart with:');
+      console.log(`  pm2 start ${options.output}`);
+      console.log('  pm2 save');
+    }
 }
 
 export const ecosystemCommand = new Command('ecosystem')
   .option('--instance <id>', 'Instance ID', 'default')
   .option('--org <name>', 'Organization name (auto-detected if not specified)')
   .option('--output <path>', 'Output file', 'ecosystem.config.js')
+  .option('--quiet', 'Suppress generation and PM2 start instructions')
   .description('Generate PM2 ecosystem.config.js from agent configs')
   .action(options => generateEcosystem(options));

@@ -23,10 +23,10 @@
  */
 import { Command } from 'commander';
 import { createInterface, type Interface } from 'readline';
-import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync, copyFileSync } from 'fs';
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, lstatSync, chmodSync, writeFileSync, rmSync, copyFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { execFileSync } from 'child_process';
-import { homedir, tmpdir } from 'os';
+import { homedir } from 'os';
 import { generateEcosystem } from './ecosystem.js';
 import { checkUpstream } from '../bus/metrics.js';
 import { resolveMemberCheckout } from './member-checkout.js';
@@ -125,6 +125,14 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
       console.error(`Could not restore the generated PM2 config. Restore it from ${generatedConfig.backup} before restarting.`);
     }
   }
+  function interrupt(signal: 'SIGINT' | 'SIGTERM'): void {
+    restoreGeneratedConfig();
+    console.error(`Update interrupted (${signal}). Saved PM2 config backup: ${generatedConfig?.backup}. Recover the checkout before restarting agents.`);
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  }
+  const onSigint = () => interrupt('SIGINT');
+  const onSigterm = () => interrupt('SIGTERM');
+  try {
   try {
     const dirt = execFileSync('git', ['status', '--porcelain'], execOptions).trimEnd();
     if (dirt === ' M ecosystem.config.js') {
@@ -135,13 +143,20 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
       if (instanceMatch && orgMatch) {
         const instance: string = JSON.parse(instanceMatch[1]);
         const org: string = JSON.parse(orgMatch[1]);
-        const savedDir = mkdtempSync(join(tmpdir(), 'ascendops-update-config-'));
+        const backupRoot = join(frameworkRoot, '.ascendops-update-backups');
+        mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+        if (!lstatSync(backupRoot).isDirectory() || lstatSync(backupRoot).isSymbolicLink()) throw new Error('invalid backup directory');
+        chmodSync(backupRoot, 0o700);
+        const savedDir = mkdtempSync(join(backupRoot, 'update-'));
         const probe = join(savedDir, 'generated.js');
-        generateEcosystem({ instance, org, output: probe }, frameworkRoot);
+        generateEcosystem({ instance, org, output: probe, quiet: true }, frameworkRoot);
         if (existsSync(probe) && readFileSync(probe, 'utf8') === original) {
           const backup = join(savedDir, 'ecosystem.config.js');
           writeFileSync(backup, original, { mode: 0o600 });
           generatedConfig = { instance, org, backup };
+          console.log(`Saved generated PM2 config before update: ${backup}`);
+          process.once('SIGINT', onSigint);
+          process.once('SIGTERM', onSigterm);
           execFileSync('git', ['restore', '--source=HEAD', '--worktree', '--', 'ecosystem.config.js'], execOptions);
         } else rmSync(savedDir, { recursive: true, force: true });
       }
@@ -155,7 +170,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   } catch (error) {
     restoreGeneratedConfig();
     if (generatedConfig) console.error(`Your generated PM2 config is saved at ${generatedConfig.backup}.`);
-    console.error('Update preflight failed. Verify this checkout is a Git repository and retry update.');
+    console.error(`Update preflight failed. Verify this checkout is a Git repository and retry update.${generatedConfig ? ` Saved PM2 config backup: ${generatedConfig.backup}.` : ''}`);
     process.exit(1);
   }
   // checkUpstream's apply path gates on CORTEXTOS_CONFIRM_UPSTREAM_MERGE — the
@@ -176,7 +191,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
     restoreGeneratedConfig();
     const state = applied.status !== 'merged' ? 'The update merge did not complete.' : stage === 'PM2 config regeneration' ? 'The runtime is rebuilt but the PM2 config was not regenerated.' : 'The checkout is merged but the runtime is not rebuilt.';
     if (generatedConfig) console.error(`Your generated PM2 config is saved at ${generatedConfig.backup}.`);
-    console.error(`${stage} failed. ${state} In ${frameworkRoot}, ${retry}. To roll back, first save any new work, then run git reset --hard ${previousHead}, npm ci, and npm run build. Do not restart agents until the build succeeds.`);
+    console.error(`${stage} failed. ${state} In ${frameworkRoot}, ${retry}. To roll back, first save any new work, then run git reset --hard ${previousHead}, npm ci, and npm run build. Do not restart agents until the build succeeds.${generatedConfig ? ` Saved PM2 config backup: ${generatedConfig.backup}.` : ''}`);
   }
   if (applied.status !== 'merged') {
     if (applied.status === 'conflict') {
@@ -203,7 +218,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   if (generatedConfig) {
     try {
       const regenerated = join(dirname(generatedConfig.backup), 'regenerated.js');
-      execFileSync(process.execPath, [join(frameworkRoot, 'dist', 'cli.js'), 'ecosystem', '--instance', generatedConfig.instance, '--org', generatedConfig.org, '--output', regenerated], {
+      execFileSync(process.execPath, [join(frameworkRoot, 'dist', 'cli.js'), 'ecosystem', '--instance', generatedConfig.instance, '--org', generatedConfig.org, '--output', regenerated, '--quiet'], {
         ...npmOptions,
         env: { ...process.env, CTX_FRAMEWORK_ROOT: frameworkRoot, CTX_PROJECT_ROOT: frameworkRoot },
       });
@@ -217,6 +232,10 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   }
   const cli = command.parent?.name() === 'ascendops' ? 'ascendops' : 'cortextos';
   console.log(`Updates applied, dependencies installed, and runtime rebuilt. Restart your agents with ${cli} restart <agent> and restart the daemon (for PM2: pm2 restart cortextos-daemon) to use the new runtime.`);
+  } finally {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+  }
 }
 
 export const updateCommand = new Command('update')
