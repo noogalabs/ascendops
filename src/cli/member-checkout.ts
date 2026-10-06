@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { execFileSync } from 'child_process';
 import { homedir } from 'os';
+import { stripSessionCredentialFromEnv } from '../utils/env.js';
 
 function binaryCheckout(): string | undefined {
   try {
@@ -9,6 +10,7 @@ function binaryCheckout(): string | undefined {
     if (basename(binary) !== 'ascendops.js') return undefined;
     return execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd: dirname(binary), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      env: stripSessionCredentialFromEnv(process.env),
     }).trim() || undefined;
   } catch { return undefined; }
 }

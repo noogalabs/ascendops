@@ -85,6 +85,8 @@ describe('session credential does not cross non-session boundaries', () => {
       'cli/dashboard.ts': 'STRIPS',
       'cli/setup.ts': 'STRIPS',
       'cli/update.ts': 'STRIPS',             // Git, dependency install, build, ecosystem regeneration
+      'cli/member-checkout.ts': 'STRIPS',    // binary-bound checkout discovery
+      'bus/metrics.ts': 'STRIPS',            // upstream Git fetch/merge for every caller
       'daemon/watchdog.ts': 'STRIPS',        // the original motivating on-behalf write
       'hooks/hook-skill-autopr.ts': 'STRIPS',
       'daemon/agent-process.ts': 'DAEMON',
@@ -333,14 +335,16 @@ describe('session credential does not cross non-session boundaries', () => {
   it('the strip removes the credential and leaves everything else untouched', () => {
     const env = { PATH: '/bin', [HEARTBEAT_SESSION_ENV]: 'alpha:nonce-value-long-enough' };
     const out = stripSessionCredentialFromEnv(env);
-    expect(out).toEqual({ PATH: '/bin' });
+    expect(out[HEARTBEAT_SESSION_ENV]).toBeUndefined();
+    expect(out.PATH).toBe('/bin');
+    expect(Object.keys(out)).toEqual(['PATH']);
     // The input is not mutated — callers spread the RESULT.
     expect(env[HEARTBEAT_SESSION_ENV]).toBe('alpha:nonce-value-long-enough');
   });
 
   it('the strip is a no-op when there is nothing to strip', () => {
     const env = { PATH: '/bin' };
-    expect(stripSessionCredentialFromEnv(env)).toBe(env);
+    expect(stripSessionCredentialFromEnv(env) === env).toBe(true);
   });
 
   it('sessionCredentialAgent treats an explicit empty override exactly like an absent key', () => {

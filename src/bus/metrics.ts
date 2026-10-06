@@ -7,6 +7,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, m
 import { join, basename, dirname } from 'path';
 import { execSync } from 'child_process';
 import { ensureDir } from '../utils/atomic.js';
+import { stripSessionCredentialFromEnv } from '../utils/env.js';
 import {
   discoverSourceAgentCandidates,
   isAgentStartCandidate,
@@ -458,7 +459,7 @@ export function checkUpstream(
   frameworkRoot: string,
   options: { apply?: boolean } = {},
 ): UpstreamResult {
-  const execOpts = { cwd: frameworkRoot, encoding: 'utf-8' as const, timeout: 30000 };
+  const execOpts = { cwd: frameworkRoot, encoding: 'utf-8' as const, timeout: 30000, env: stripSessionCredentialFromEnv(process.env) };
 
   // Check if it's a git repo
   try {

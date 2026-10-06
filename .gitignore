@@ -11,7 +11,7 @@ node_modules
 dist/
 ecosystem.config.js
 # Persistent member update recovery copies; retain across dependency installs/builds.
-.ascendops-update-backups/
+/.ascendops-update-backups
 
 # User-created org data (not part of the framework)
 orgs/

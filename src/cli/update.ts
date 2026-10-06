@@ -68,7 +68,8 @@ interface UpdateOptions {
 }
 
 async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
-  const frameworkRoot = findFrameworkRoot(command.parent?.name() === 'ascendops');
+  const memberMode = command.parent?.name() === 'ascendops';
+  const frameworkRoot = findFrameworkRoot(memberMode);
 
   // Step 1: check (no apply).
   const status = checkUpstream(frameworkRoot, { apply: false }) as any;
@@ -145,7 +146,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
         const instance: string = JSON.parse(instanceMatch[1]);
         const org: string = JSON.parse(orgMatch[1]);
         const backupRoot = join(frameworkRoot, '.ascendops-update-backups');
-        mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+        if (!existsSync(backupRoot)) mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
         if (!lstatSync(backupRoot).isDirectory() || lstatSync(backupRoot).isSymbolicLink()) throw new Error('invalid backup directory');
         chmodSync(backupRoot, 0o700);
         const savedDir = mkdtempSync(join(backupRoot, 'update-'));
@@ -203,7 +204,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
     process.exit(1);
   }
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const npmOptions = { cwd: frameworkRoot, stdio: 'inherit' as const, shell: process.platform === 'win32', env: stripSessionCredentialFromEnv(process.env) };
+  const npmOptions = { cwd: frameworkRoot, stdio: 'inherit' as const, shell: process.platform === 'win32', env: { ...stripSessionCredentialFromEnv(process.env), ASCENDOPS_MEMBER_UPDATE: memberMode ? '1' : '' } };
   try {
     execFileSync(npm, ['ci'], npmOptions);
   } catch {

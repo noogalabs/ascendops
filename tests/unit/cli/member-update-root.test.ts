@@ -52,7 +52,7 @@ describe('member update checkout resolution', () => {
     vi.stubEnv('CORTEXTOS_DIR', checkout('legacy-configured'));
     checkout('cortextos');
     await expect(run()).rejects.toThrow('exit');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(expected, { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[expected, false]]);
     expect(console.log).toHaveBeenCalledWith('Already up to date — no upstream changes available.');
   });
   it('prefers ASCENDOPS_DIR to the default home checkout', async () => {
@@ -60,18 +60,18 @@ describe('member update checkout resolution', () => {
     const expected = checkout('configured');
     vi.stubEnv('ASCENDOPS_DIR', expected);
     await expect(run()).rejects.toThrow('exit');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(expected, { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[expected, false]]);
   });
   it('resolves the default install with no other checkout (A)', async () => {
     const expected = checkout('ascendops');
     await expect(run()).rejects.toThrow('exit');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(expected, { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[expected, false]]);
   });
   it('keeps the inside-checkout control on the member install', async () => {
     const expected = checkout('ascendops');
     vi.mocked(process.cwd).mockReturnValue(expected);
     await expect(run()).rejects.toThrow('exit');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(expected, { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[expected, false]]);
   });
   it('prefers the symlinked binary realpath git checkout over the home default', async () => {
     const expected = checkout('custom-install');
@@ -86,7 +86,7 @@ describe('member update checkout resolution', () => {
     process.argv[1] = link;
     // A non-default HOME install still follows the executable that npm linked.
     await expect(run()).rejects.toThrow('exit');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(realpathSync(expected), { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[realpathSync(expected), false]]);
   });
   it('honors the member override ahead of the binary-owned checkout', async () => {
     const binaryRoot = checkout('binary-install');
@@ -97,7 +97,7 @@ describe('member update checkout resolution', () => {
     const expected = checkout('override-install');
     vi.stubEnv('ASCENDOPS_DIR', expected);
     await expect(run()).rejects.toThrow('exit');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(expected, { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[expected, false]]);
   });
   it('refuses legacy-only member mode even from inside the legacy checkout', async () => {
     const legacy = checkout('cortextos');
@@ -112,6 +112,6 @@ describe('member update checkout resolution', () => {
     const expected = checkout('cortextos');
     vi.stubEnv('CORTEXTOS_DIR', expected);
     await expect(run('cortextos')).rejects.toThrow('exit');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(expected, { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[expected, false]]);
   });
 });

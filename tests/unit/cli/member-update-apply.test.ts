@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, symlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Command } from 'commander';
@@ -61,7 +61,7 @@ describe('member update apply and chat-ID checkout', () => {
     await expect(run()).resolves.toBeDefined();
     expect(npmCalls().map(([, args]) => args)).toEqual([['ci'], ['run', 'build']]);
     for (const [, , options] of mocks.exec.mock.calls) expect(options.cwd).toBe(checkout);
-    expect(mocks.check.mock.calls).toEqual([[checkout, { apply: false }], [checkout, { apply: true }]]);
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[checkout, false], [checkout, true]]);
     const buildOrder = mocks.exec.mock.invocationCallOrder[npmCalls().length + 1];
     expect(console.log).toHaveBeenLastCalledWith(expect.stringContaining('Restart your agents'));
     expect(console.log).toHaveBeenLastCalledWith(expect.stringContaining('ascendops restart <agent>'));
@@ -74,8 +74,8 @@ describe('member update apply and chat-ID checkout', () => {
     await run();
     expect(mocks.exec.mock.calls.length).toBeGreaterThanOrEqual(4);
     for (const [, , options] of mocks.exec.mock.calls) {
-      expect(options.env).toBeDefined();
-      expect(options.env).not.toHaveProperty('CTX_HEARTBEAT_SESSION');
+      expect(Boolean(options.env)).toBe(true);
+      expect(options.env?.CTX_HEARTBEAT_SESSION).toBeUndefined();
       expect(options.env.PATH).toBe(process.env.PATH);
     }
     expect(process.env.CTX_HEARTBEAT_SESSION).toBe('worker:planted-session-nonce');
@@ -98,7 +98,7 @@ describe('member update apply and chat-ID checkout', () => {
   it('dirty checkout refuses before merge or npm commands', async () => {
     mocks.exec.mockImplementation((bin, args) => bin === 'git' && args[0] === 'status' ? ' M local-file' : previous);
     await expect(run()).rejects.toThrow('exit:1');
-    expect(mocks.check).toHaveBeenCalledExactlyOnceWith(checkout, { apply: false });
+    expect(mocks.check.mock.calls.map(([dir, options]) => [dir, options.apply])).toEqual([[checkout, false]]);
     expect(npmCalls()).toHaveLength(0);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Commit or stash'));
   });
@@ -109,7 +109,7 @@ describe('member update apply and chat-ID checkout', () => {
     git(['init', '-q']);
     git(['config', 'user.name', 'Example Contributors']);
     git(['config', 'user.email', 'fixture@example.com']);
-    writeFileSync(join(checkout, '.gitignore'), 'orgs/\n.ascendops-update-backups/\n');
+    writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
     git(['add', '.']);
     git(['commit', '-qm', 'fixture']);
@@ -126,8 +126,8 @@ describe('member update apply and chat-ID checkout', () => {
     if (outcome === 'other-dirt') writeFileSync(join(checkout, 'package.json'), JSON.stringify({ name: 'cortextos', local: true }));
     if (outcome === 'untracked-dirt') writeFileSync(join(checkout, 'notes.txt'), 'local work');
     mocks.exec.mockImplementation((bin, args, options) => {
-      expect(options.env).toBeDefined();
-      expect(options.env).not.toHaveProperty('CTX_HEARTBEAT_SESSION');
+      expect(Boolean(options.env)).toBe(true);
+      expect(options.env?.CTX_HEARTBEAT_SESSION).toBeUndefined();
       if (bin === 'npm' && ((outcome === 'install-failure' && args[0] === 'ci') || (outcome === 'build-failure' && args[1] === 'build'))) throw new Error('fixture npm failure');
       if (bin === 'git') return realExec(bin, args, options);
       if (bin === process.execPath) {
@@ -142,18 +142,23 @@ describe('member update apply and chat-ID checkout', () => {
       return '';
     });
     const signalsBefore = { SIGINT: process.listenerCount('SIGINT'), SIGTERM: process.listenerCount('SIGTERM') };
+    let observation: { sigint: number; sigterm: number; porcelain: string; template: string } | undefined;
+    let interruptObservation: { exit: string; bytes: string; message: string } | undefined;
     mocks.check.mockImplementation((_root, options) => {
       if (!options.apply) return { status: 'updates_available' };
-      expect(process.listenerCount('SIGINT')).toBe(signalsBefore.SIGINT + 1);
-      expect(process.listenerCount('SIGTERM')).toBe(signalsBefore.SIGTERM + 1);
-      expect(git(['status', '--porcelain'])).toBe('');
-      expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe('// tracked template\n');
+      observation = {
+        sigint: process.listenerCount('SIGINT'), sigterm: process.listenerCount('SIGTERM'),
+        porcelain: git(['status', '--porcelain']),
+        template: readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8'),
+      };
       if (outcome === 'interrupt') {
-        expect(() => process.emit('SIGINT')).toThrow('exit:130');
-        expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe(generated);
-        const interruption = vi.mocked(console.error).mock.calls.find(([text]) => String(text).startsWith('Update interrupted (SIGINT)'))?.[0];
-        expect(interruption).toContain(join(checkout, '.ascendops-update-backups'));
-        return { status: 'error' }; // the test catches process.exit; the real process stops at 130
+        let exit = '';
+        try { process.emit('SIGINT'); } catch (error) { exit = String(error); }
+        interruptObservation = {
+          exit, bytes: readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8'),
+          message: String(vi.mocked(console.error).mock.calls.find(([text]) => String(text).startsWith('Update interrupted (SIGINT)'))?.[0]),
+        };
+        return { status: 'error' }; // process.exit is intercepted by the fixture
       }
       if (outcome === 'merge-failure') return { status: 'error' };
       git(['merge', '--ff-only', 'next']);
@@ -168,6 +173,14 @@ describe('member update apply and chat-ID checkout', () => {
       const step = { 'regeneration-failure': 'PM2 config regeneration failed', 'install-failure': 'Dependency installation failed', 'build-failure': 'Build failed', 'merge-failure': 'Upstream merge failed', 'interrupt': 'Update interrupted (SIGINT)', 'other-dirt': 'Update refused', 'untracked-dirt': 'Update refused' }[outcome];
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining(step));
       expect(vi.mocked(console.log).mock.calls.some(([text]) => String(text).includes('Updates applied'))).toBe(false);
+    }
+    if (outcome !== 'other-dirt' && outcome !== 'untracked-dirt') {
+      expect(observation).toEqual({ sigint: signalsBefore.SIGINT + 1, sigterm: signalsBefore.SIGTERM + 1, porcelain: '', template: '// tracked template\n' });
+    }
+    if (outcome === 'interrupt') {
+      expect(interruptObservation?.exit).toContain('exit:130');
+      expect(interruptObservation?.bytes).toBe(generated);
+      expect(interruptObservation?.message).toContain(join(checkout, '.ascendops-update-backups'));
     }
     expect(process.listenerCount('SIGINT')).toBe(signalsBefore.SIGINT);
     expect(process.listenerCount('SIGTERM')).toBe(signalsBefore.SIGTERM);
@@ -189,7 +202,7 @@ describe('member update apply and chat-ID checkout', () => {
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
     const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8' });
     git(['init', '-q']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
-    writeFileSync(join(checkout, '.gitignore'), 'orgs/\n.ascendops-update-backups/\n');
+    writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
     git(['add', '.']); git(['commit', '-qm', 'fixture']);
     mkdirSync(join(checkout, 'orgs', 'example-org', 'agents', 'worker'), { recursive: true });
@@ -203,6 +216,26 @@ describe('member update apply and chat-ID checkout', () => {
     expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe(edited);
     expect(npmCalls()).toHaveLength(0);
   });
+  it('backup-directory symlink refuses and preserves config and outside data', async () => {
+    const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
+    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8' });
+    git(['init', '-q']); git(['config', 'user.name', 'Example']); git(['config', 'user.email', 'fixture@example.com']);
+    writeFileSync(join(checkout, '.gitignore'), 'orgs/\n/.ascendops-update-backups\n');
+    writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
+    git(['add', '.']); git(['commit', '-qm', 'fixture']);
+    mkdirSync(join(checkout, 'orgs', 'example-org', 'agents', 'worker'), { recursive: true });
+    generateEcosystem({ instance: 'other', org: 'example-org', output: join(checkout, 'ecosystem.config.js'), quiet: true }, checkout);
+    const generated = readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8');
+    const outside = join(root, 'outside'); mkdirSync(outside);
+    symlinkSync(outside, join(checkout, '.ascendops-update-backups'), 'dir');
+    expect(git(['status', '--porcelain'])).toBe(' M ecosystem.config.js\n');
+    mocks.exec.mockImplementation((bin, args, options) => bin === 'git' ? realExec(bin, args, options) : '');
+    await expect(run()).rejects.toThrow('exit:1');
+    expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe(generated);
+    expect(readdirSync(outside)).toEqual([]);
+    expect(npmCalls()).toHaveLength(0);
+    expect(mocks.check.mock.calls).toHaveLength(1);
+  });
   it('a handwritten config change is refused and preserved', async () => {
     writeFileSync(join(checkout, 'ecosystem.config.js'), '// personal changes\n');
     mocks.exec.mockImplementation((_bin, args) => args[0] === 'status' ? ' M ecosystem.config.js\n' : previous);
@@ -213,7 +246,7 @@ describe('member update apply and chat-ID checkout', () => {
   it('merge conflict aborts and exits nonzero with no install/build/success', async () => {
     mocks.check.mockImplementation((_root, options) => options.apply ? { status: 'conflict' } : { status: 'updates_available' });
     await expect(run()).rejects.toThrow('exit:1');
-    expect(mocks.exec).toHaveBeenCalledWith('git', ['merge', '--abort'], expect.objectContaining({ cwd: checkout }));
+    expect(mocks.exec.mock.calls.map(([bin, args, options]) => [bin, args, options.cwd])).toContainEqual(['git', ['merge', '--abort'], checkout]);
     expect(npmCalls()).toHaveLength(0);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Upstream merge failed'));
     expect(vi.mocked(console.log).mock.calls.some(([text]) => String(text).includes('Updates applied'))).toBe(false);
