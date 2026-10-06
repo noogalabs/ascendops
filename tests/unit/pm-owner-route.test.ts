@@ -70,29 +70,36 @@ describe('member owner route examples', () => {
       expect(readFileSync(join(target, 'scripts/send-owner-route.py'))).toEqual(readFileSync(adapter));
       writeFileSync(binding, valid());
       const installedSource = readFileSync(join(target, 'SKILL.md'), 'utf8');
+      const installedEnv: NodeJS.ProcessEnv = { ...process.env, CTX_AGENT_DIR: join(dir, 'agent'),
+        PM_OWNER_BINDING_PATH: binding, OWNER_TEST_RECORD: record,
+        CTX_ORCHESTRATOR_AGENT: 'configured-coordinator' };
+      delete installedEnv.PM_SKILL_DIR;
+      delete installedEnv.PM_OWNER_ROUTE_ADAPTER;
       const r = spawnSync('bash', ['-u', '-c', 'owner_route_status=0' + installedSource.split('owner_route_status=0')[1].split('```')[0]], {
-        cwd: dir, encoding: 'utf8', env: { ...process.env, PM_SKILL_DIR: target,
-          PM_OWNER_ROUTE_ADAPTER: '', PM_OWNER_BINDING_PATH: binding, OWNER_TEST_RECORD: record,
-          CTX_ORCHESTRATOR_AGENT: 'configured-coordinator' },
+        cwd: dir, encoding: 'utf8', env: installedEnv,
       });
       expect(r.status, r.stderr).toBe(0);
       expect(JSON.parse(readFileSync(record, 'utf8'))[0]).toBe('configured-owner');
     });
     for (const shell of ['bash', 'zsh']) {
-      for (const scenario of ['missing', 'scalar', 'broken-reader', 'missing-skill-dir', 'missing-sender', 'send-failed', 'valid']) {
+      for (const scenario of ['missing', 'scalar', 'broken-reader', 'missing-context', 'missing-sender', 'send-failed', 'valid']) {
         it.skipIf(shell === 'zsh' && !zshAvailable)(skill + ' ' + shell + ' -u: ' + scenario + ' preserves visibility and bound routing' + (shell === 'zsh' && !zshAvailable ? ' (' + zshSkipReason + ')' : ''), () => {
           const alarms = join(dir, 'alarms.json'); const bus = join(dir, 'cortextos');
           writeFileSync(bus, '#!/usr/bin/env python3\nimport json,sys,os\nopen(os.environ["OWNER_TEST_ALARMS"],"w").write(json.dumps(sys.argv[1:]))\n'); chmodSync(bus, 0o700);
           if (scenario === 'scalar') writeFileSync(binding, JSON.stringify({ argv: sender, recipient: 'configured-owner' }));
           else if (scenario === 'missing-sender') writeFileSync(binding, JSON.stringify({ argv: [join(dir, 'absent-sender')], recipient: 'configured-owner' }));
           else if (scenario !== 'missing') writeFileSync(binding, valid());
-          const r = spawnSync(shell, ['-u', '-c', 'owner_route_status=0' + snippet()], {
-            encoding: 'utf8', env: { ...process.env, PATH: dir + ':' + process.env.PATH,
-              PM_SKILL_DIR: scenario === 'missing-skill-dir' ? '' : skillDir, PM_OWNER_BINDING_PATH: binding, PM_OWNER_ROUTE_ADAPTER: scenario === 'broken-reader' ? join(dir, 'absent.py') : adapter,
+          const callerEnv: NodeJS.ProcessEnv = { ...process.env, PATH: dir + ':' + process.env.PATH,
+              PM_SKILL_DIR: skillDir, PM_OWNER_BINDING_PATH: binding, PM_OWNER_ROUTE_ADAPTER: scenario === 'broken-reader' ? join(dir, 'absent.py') : adapter,
               CTX_ORCHESTRATOR_AGENT: 'configured-coordinator', OWNER_TEST_RECORD: record, OWNER_TEST_ALARMS: alarms,
               OWNER_TEST_RC: scenario === 'send-failed' ? '1' : '0',
               PM_MAINTENANCE_OWNER_ROUTE_ARGV: 'poisoned scalar command',
-            },
+          };
+          if (scenario === 'missing-context') {
+            delete callerEnv.CTX_AGENT_DIR; delete callerEnv.PM_SKILL_DIR; delete callerEnv.PM_OWNER_ROUTE_ADAPTER;
+          }
+          const r = spawnSync(shell, ['-u', '-c', 'owner_route_status=0' + snippet()], {
+            encoding: 'utf8', env: callerEnv,
           });
           if (r.error && shell === 'zsh') throw r.error;
           if (scenario === 'valid') { expect(r.status).toBe(0); expect(() => readFileSync(alarms)).toThrow(); }
@@ -101,7 +108,7 @@ describe('member owner route examples', () => {
             expect(args.slice(0, 4)).toEqual(['bus', 'send-message', 'configured-coordinator', 'urgent']);
             expect(args[4]).toContain('URGENT:');
             if (scenario === 'send-failed') expect(args[4]).toContain('outcome unknown');
-            expect(args[4]).toContain(['missing', 'scalar'].includes(scenario) ? 'OWNER_CONTACT_BINDING_REQUIRED' : ['broken-reader', 'missing-skill-dir', 'missing-sender'].includes(scenario) ? 'OWNER_CONTACT_NOT_SENT' : 'OWNER_CONTACT_SEND_OUTCOME_UNKNOWN');
+            expect(args[4]).toContain(['missing', 'scalar'].includes(scenario) ? 'OWNER_CONTACT_BINDING_REQUIRED' : ['broken-reader', 'missing-context', 'missing-sender'].includes(scenario) ? 'OWNER_CONTACT_NOT_SENT' : 'OWNER_CONTACT_SEND_OUTCOME_UNKNOWN');
             if (scenario !== 'send-failed') expect(args[4]).toContain('not sent');
           }
         });

@@ -23,10 +23,12 @@ executable) and `recipient` (a non-empty string). The adapter appends recipient
 and message as the final two arguments; bind only an approved transport adapter
 with that contract. No exported scalar command, shell string or inferred route
 is accepted. Duplicate/unknown keys or multiple routes refuse as ambiguous.
-Set `PM_SKILL_DIR` to the absolute directory containing this loaded `SKILL.md`
-(for a catalog install, use the returned skill target directory). The reader ships
-inside that directory and is resolved there, independently of the working directory.
-An explicit `PM_OWNER_ROUTE_ADAPTER` may override it with an absolute path. Its strict UTF-8 decoder rejects malformed
+The daemon and PTY set `CTX_AGENT_DIR`; a catalog install bundles the default
+reader at `.claude/skills/pm-morning-scan/scripts/send-owner-route.py`
+under that agent directory. No member environment setup or working-directory
+assumption is needed. For a differently loaded skill, `PM_SKILL_DIR` may name the
+absolute directory containing its `SKILL.md`; `PM_OWNER_ROUTE_ADAPTER` may name
+an absolute reader path. Missing runtime context and overrides alarms the coordinator. Its strict UTF-8 decoder rejects malformed
 bytes, BOM and NUL. It never echoes the binding or sender output. Exit 20 means
 unbound/invalid (not sent); 22 means a pre-launch failure (not sent); 21 means
 delivery outcome unknown; 0 means sender success.
@@ -178,10 +180,16 @@ If at any point during Steps 1–3 you find a meld meeting a habitability overri
 
 ```bash
 owner_route_status=0
-case "${PM_SKILL_DIR:-}" in
-  /*) owner_route_adapter="${PM_OWNER_ROUTE_ADAPTER:-$PM_SKILL_DIR/scripts/send-owner-route.py}" ;;
-  *) owner_route_adapter=""; owner_route_status=22 ;;
-esac
+owner_route_adapter="${PM_OWNER_ROUTE_ADAPTER:-}"
+if [ -z "$owner_route_adapter" ]; then
+  case "${PM_SKILL_DIR:-}" in
+    /*) owner_route_adapter="$PM_SKILL_DIR/scripts/send-owner-route.py" ;;
+    "")
+      case "${CTX_AGENT_DIR:-}" in
+        /*) owner_route_adapter="$CTX_AGENT_DIR/.claude/skills/pm-morning-scan/scripts/send-owner-route.py" ;;
+      esac ;;
+  esac
+fi
 case "$owner_route_adapter" in
   /*) ;;
   *) owner_route_status=22 ;;
