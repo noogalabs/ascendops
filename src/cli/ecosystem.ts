@@ -4,17 +4,14 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
-export const ecosystemCommand = new Command('ecosystem')
-  .option('--instance <id>', 'Instance ID', 'default')
-  .option('--org <name>', 'Organization name (auto-detected if not specified)')
-  .option('--output <path>', 'Output file', 'ecosystem.config.js')
-  .description('Generate PM2 ecosystem.config.js from agent configs')
-  .action(async (options: { instance: string; org?: string; output: string }) => {
+export function generateEcosystem(options: { instance: string; org?: string; output: string }, resolvedRoot?: string): void {
     const ctxRoot = join(homedir(), '.cortextos', options.instance);
     // BUG-035 (companion fix): same project-root discovery as enable-agent.ts
     // so `cortextos ecosystem` works from outside ~/cortextos.
     let projectRoot: string;
-    if (process.env.CTX_FRAMEWORK_ROOT) {
+    if (resolvedRoot) {
+      projectRoot = resolvedRoot;
+    } else if (process.env.CTX_FRAMEWORK_ROOT) {
       projectRoot = process.env.CTX_FRAMEWORK_ROOT;
     } else if (process.env.CTX_PROJECT_ROOT) {
       projectRoot = process.env.CTX_PROJECT_ROOT;
@@ -145,4 +142,11 @@ module.exports = {
     console.log('\nStart with:');
     console.log(`  pm2 start ${options.output}`);
     console.log('  pm2 save');
-  });
+}
+
+export const ecosystemCommand = new Command('ecosystem')
+  .option('--instance <id>', 'Instance ID', 'default')
+  .option('--org <name>', 'Organization name (auto-detected if not specified)')
+  .option('--output <path>', 'Output file', 'ecosystem.config.js')
+  .description('Generate PM2 ecosystem.config.js from agent configs')
+  .action(options => generateEcosystem(options));

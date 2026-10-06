@@ -12,6 +12,7 @@ vi.mock('../../../src/telegram/api.js', () => ({ TelegramAPI: class {
   async getMe() { return { result: { username: 'example_bot', id: 1 } }; }
   async getUpdates() { return { result: [{ message: { text: '/start', chat: { id: 2 }, from: { id: 3 } } }] }; }
 } }));
+import { generateEcosystem } from '../../../src/cli/ecosystem.js';
 import { updateCommand } from '../../../src/cli/update.js';
 import { detectChatIdCommand } from '../../../src/cli/detect-chat-id.js';
 
@@ -89,6 +90,74 @@ describe('member update apply and chat-ID checkout', () => {
     expect(mocks.check).toHaveBeenCalledExactlyOnceWith(checkout, { apply: false });
     expect(npmCalls()).toHaveLength(0);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Commit or stash'));
+  });
+  for (const outcome of ['success', 'regeneration-failure', 'install-failure', 'build-failure', 'merge-failure', 'other-dirt', 'untracked-dirt'] as const) it(`real generated config ${outcome}: saved and restored before merge`, async () => {
+    const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
+    const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8' });
+    git(['init', '-q']);
+    git(['config', 'user.name', 'Example Contributors']);
+    git(['config', 'user.email', 'fixture@example.com']);
+    writeFileSync(join(checkout, '.gitignore'), 'orgs/\n');
+    writeFileSync(join(checkout, 'ecosystem.config.js'), '// tracked template\n');
+    git(['add', '.']);
+    git(['commit', '-qm', 'fixture']);
+    const before = git(['rev-parse', 'HEAD']).trim();
+    git(['checkout', '-qb', 'next']);
+    writeFileSync(join(checkout, 'ecosystem.config.js'), '// upstream template change\n');
+    git(['add', 'ecosystem.config.js']);
+    git(['commit', '-qm', 'new template']);
+    git(['checkout', '-q', '--detach', before]);
+    mkdirSync(join(checkout, 'orgs', 'example-org', 'agents', 'worker'), { recursive: true });
+    generateEcosystem({ instance: 'other', org: 'example-org', output: join(checkout, 'ecosystem.config.js') }, checkout);
+    const generated = readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8');
+    expect(git(['status', '--porcelain'])).toBe(' M ecosystem.config.js\n');
+    if (outcome === 'other-dirt') writeFileSync(join(checkout, 'package.json'), JSON.stringify({ name: 'cortextos', local: true }));
+    if (outcome === 'untracked-dirt') writeFileSync(join(checkout, 'notes.txt'), 'local work');
+    mocks.exec.mockImplementation((bin, args, options) => {
+      if (bin === 'npm' && ((outcome === 'install-failure' && args[0] === 'ci') || (outcome === 'build-failure' && args[1] === 'build'))) throw new Error('fixture npm failure');
+      if (bin === 'git') return realExec(bin, args, options);
+      if (bin === process.execPath) {
+        if (outcome === 'regeneration-failure') throw new Error('fixture regeneration failure');
+        expect(args.slice(1, 6)).toEqual(['ecosystem', '--instance', 'other', '--org', 'example-org']);
+        expect(args[6]).toBe('--output');
+        generateEcosystem({ instance: 'other', org: 'example-org', output: args[7] }, checkout);
+      }
+      return '';
+    });
+    mocks.check.mockImplementation((_root, options) => {
+      if (!options.apply) return { status: 'updates_available' };
+      expect(git(['status', '--porcelain'])).toBe('');
+      expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe('// tracked template\n');
+      if (outcome === 'merge-failure') return { status: 'error' };
+      git(['merge', '--ff-only', 'next']);
+      return { status: 'merged' };
+    });
+    if (outcome === 'success') {
+      await expect(run()).resolves.toBeDefined();
+      expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe(generated);
+    } else {
+      await expect(run()).rejects.toThrow('exit:1');
+      expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe(generated);
+      const step = { 'regeneration-failure': 'PM2 config regeneration failed', 'install-failure': 'Dependency installation failed', 'build-failure': 'Build failed', 'merge-failure': 'Upstream merge failed', 'other-dirt': 'Update refused', 'untracked-dirt': 'Update refused' }[outcome];
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(step));
+      expect(vi.mocked(console.log).mock.calls.some(([text]) => String(text).includes('Updates applied'))).toBe(false);
+    }
+    const expectedNpm = ['other-dirt', 'untracked-dirt', 'merge-failure'].includes(outcome) ? [] : outcome === 'install-failure' ? [['ci']] : [['ci'], ['run', 'build']];
+    expect(npmCalls().map(([, args]) => args)).toEqual(expectedNpm);
+    if (outcome === 'other-dirt' || outcome === 'untracked-dirt') return;
+    if (outcome !== 'merge-failure') expect(git(['show', 'HEAD:ecosystem.config.js'])).toBe('// upstream template change\n');
+    const calls = outcome === 'success' ? vi.mocked(console.log).mock.calls : vi.mocked(console.error).mock.calls;
+    const message = calls.find(([text]) => String(text).includes('config is saved at '))?.[0] as string;
+    const backup = message.split('saved at ')[1].slice(0, -1);
+    expect(readFileSync(backup, 'utf8')).toBe(generated);
+    rmSync(join(backup, '..'), { recursive: true, force: true });
+  });
+  it('a handwritten config change is refused and preserved', async () => {
+    writeFileSync(join(checkout, 'ecosystem.config.js'), '// personal changes\n');
+    mocks.exec.mockImplementation((_bin, args) => args[0] === 'status' ? ' M ecosystem.config.js\n' : previous);
+    await expect(run()).rejects.toThrow('exit:1');
+    expect(readFileSync(join(checkout, 'ecosystem.config.js'), 'utf8')).toBe('// personal changes\n');
+    expect(npmCalls()).toHaveLength(0);
   });
   it('merge conflict aborts and exits nonzero with no install/build/success', async () => {
     mocks.check.mockImplementation((_root, options) => options.apply ? { status: 'conflict' } : { status: 'updates_available' });

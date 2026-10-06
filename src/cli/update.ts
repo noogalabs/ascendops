@@ -23,10 +23,11 @@
  */
 import { Command } from 'commander';
 import { createInterface, type Interface } from 'readline';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync, copyFileSync } from 'fs';
+import { join, dirname } from 'path';
 import { execFileSync } from 'child_process';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
+import { generateEcosystem } from './ecosystem.js';
 import { checkUpstream } from '../bus/metrics.js';
 import { resolveMemberCheckout } from './member-checkout.js';
 
@@ -115,14 +116,45 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   console.log('Applying upstream updates...');
   const execOptions = { cwd: frameworkRoot, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   let previousHead: string;
+  let generatedConfig: { instance: string; org: string; backup: string } | undefined;
+  function restoreGeneratedConfig(): void {
+    if (!generatedConfig) return;
+    try {
+      copyFileSync(generatedConfig.backup, join(frameworkRoot, 'ecosystem.config.js'));
+    } catch {
+      console.error(`Could not restore the generated PM2 config. Restore it from ${generatedConfig.backup} before restarting.`);
+    }
+  }
   try {
-    if (execFileSync('git', ['status', '--porcelain'], execOptions).trim()) {
+    const dirt = execFileSync('git', ['status', '--porcelain'], execOptions).trimEnd();
+    if (dirt === ' M ecosystem.config.js') {
+      // Only exact generator output is disposable; edited or staged configs are work.
+      const original = readFileSync(join(frameworkRoot, 'ecosystem.config.js'), 'utf8');
+      const instanceMatch = original.match(/args: '--instance ' \+ \(process\.env\.CTX_INSTANCE_ID \|\| ("(?:[^"\\]|\\.)*")\)/);
+      const orgMatch = original.match(/CTX_ORG: process\.env\.CTX_ORG \|\| ("(?:[^"\\]|\\.)*")/);
+      if (instanceMatch && orgMatch) {
+        const instance: string = JSON.parse(instanceMatch[1]);
+        const org: string = JSON.parse(orgMatch[1]);
+        const savedDir = mkdtempSync(join(tmpdir(), 'ascendops-update-config-'));
+        const probe = join(savedDir, 'generated.js');
+        generateEcosystem({ instance, org, output: probe }, frameworkRoot);
+        if (existsSync(probe) && readFileSync(probe, 'utf8') === original) {
+          const backup = join(savedDir, 'ecosystem.config.js');
+          writeFileSync(backup, original, { mode: 0o600 });
+          generatedConfig = { instance, org, backup };
+          execFileSync('git', ['restore', '--source=HEAD', '--worktree', '--', 'ecosystem.config.js'], execOptions);
+        } else rmSync(savedDir, { recursive: true, force: true });
+      }
+    }
+    if (dirt.trim() && !generatedConfig) {
       console.error('Update refused: checkout has uncommitted changes. Commit or stash your work, then retry update.');
       process.exit(1);
     }
     previousHead = execFileSync('git', ['rev-parse', 'HEAD'], execOptions).trim();
     if (!/^[0-9a-f]{40}$/.test(previousHead)) throw new Error('invalid HEAD');
   } catch (error) {
+    restoreGeneratedConfig();
+    if (generatedConfig) console.error(`Your generated PM2 config is saved at ${generatedConfig.backup}.`);
     console.error('Update preflight failed. Verify this checkout is a Git repository and retry update.');
     process.exit(1);
   }
@@ -141,7 +173,9 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
     else process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = previousConfirmation;
   }
   function recovery(stage: string, retry: string): void {
-    const state = applied.status === 'merged' ? 'The checkout is merged but the runtime is not rebuilt.' : 'The update merge did not complete.';
+    restoreGeneratedConfig();
+    const state = applied.status !== 'merged' ? 'The update merge did not complete.' : stage === 'PM2 config regeneration' ? 'The runtime is rebuilt but the PM2 config was not regenerated.' : 'The checkout is merged but the runtime is not rebuilt.';
+    if (generatedConfig) console.error(`Your generated PM2 config is saved at ${generatedConfig.backup}.`);
     console.error(`${stage} failed. ${state} In ${frameworkRoot}, ${retry}. To roll back, first save any new work, then run git reset --hard ${previousHead}, npm ci, and npm run build. Do not restart agents until the build succeeds.`);
   }
   if (applied.status !== 'merged') {
@@ -165,6 +199,21 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   } catch {
     recovery('Build', 'fix the build error and retry npm run build');
     process.exit(1);
+  }
+  if (generatedConfig) {
+    try {
+      const regenerated = join(dirname(generatedConfig.backup), 'regenerated.js');
+      execFileSync(process.execPath, [join(frameworkRoot, 'dist', 'cli.js'), 'ecosystem', '--instance', generatedConfig.instance, '--org', generatedConfig.org, '--output', regenerated], {
+        ...npmOptions,
+        env: { ...process.env, CTX_FRAMEWORK_ROOT: frameworkRoot, CTX_PROJECT_ROOT: frameworkRoot },
+      });
+      if (!existsSync(regenerated)) throw new Error('config missing');
+      copyFileSync(regenerated, join(frameworkRoot, 'ecosystem.config.js'));
+      console.log(`Regenerated PM2 config; previous generated config is saved at ${generatedConfig.backup}.`);
+    } catch {
+      recovery('PM2 config regeneration', 'retry the ecosystem command before restarting');
+      process.exit(1);
+    }
   }
   const cli = command.parent?.name() === 'ascendops' ? 'ascendops' : 'cortextos';
   console.log(`Updates applied, dependencies installed, and runtime rebuilt. Restart your agents with ${cli} restart <agent> and restart the daemon (for PM2: pm2 restart cortextos-daemon) to use the new runtime.`);

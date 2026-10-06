@@ -598,15 +598,15 @@ if (!existsSync(consentGatePath)) {
   fail(`Required installer file is missing: ${consentGatePath}\n    Restore the checkout or remove ${INSTALL_DIR} and rerun the installer.`);
 }
 
-// ─── 8. npm install ───────────────────────────────────────────────────────────
+// ─── 8. npm ci ───────────────────────────────────────────────────────────
 
 log('Installing dependencies (this may take a minute)...');
 try {
-  runVisible('npm install', { cwd: INSTALL_DIR });
+  runVisible('npm ci', { cwd: INSTALL_DIR });
   ok('Dependencies installed');
 } catch (err) {
   console.error('');
-  console.error(`${RED}  npm install failed.${R}`);
+  console.error(`${RED}  npm ci failed.${R}`);
   if (IS_MAC) {
     console.error('  If you see C++ compilation errors, install Xcode CLI tools:');
     console.error('    xcode-select --install');
