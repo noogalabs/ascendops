@@ -84,6 +84,7 @@ describe('session credential does not cross non-session boundaries', () => {
       'cli/start.ts': 'STRIPS',              // PTY -> daemon, and both pm2 invocations
       'cli/dashboard.ts': 'STRIPS',
       'cli/setup.ts': 'STRIPS',
+      'cli/update.ts': 'STRIPS',             // Git, dependency install, build, ecosystem regeneration
       'daemon/watchdog.ts': 'STRIPS',        // the original motivating on-behalf write
       'hooks/hook-skill-autopr.ts': 'STRIPS',
       'daemon/agent-process.ts': 'DAEMON',

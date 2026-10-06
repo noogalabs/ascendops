@@ -69,6 +69,17 @@ describe('member update apply and chat-ID checkout', () => {
     expect(vi.mocked(console.log).mock.invocationCallOrder.at(-1)).toBeGreaterThan(buildOrder);
     expect(process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE).toBe('');
   });
+  it('update Git, dependency install and build do not inherit a planted session credential', async () => {
+    vi.stubEnv('CTX_HEARTBEAT_SESSION', 'worker:planted-session-nonce');
+    await run();
+    expect(mocks.exec.mock.calls.length).toBeGreaterThanOrEqual(4);
+    for (const [, , options] of mocks.exec.mock.calls) {
+      expect(options.env).toBeDefined();
+      expect(options.env).not.toHaveProperty('CTX_HEARTBEAT_SESSION');
+      expect(options.env.PATH).toBe(process.env.PATH);
+    }
+    expect(process.env.CTX_HEARTBEAT_SESSION).toBe('worker:planted-session-nonce');
+  });
   for (const [failure, expected] of [['ci', 'Dependency installation'], ['build', 'Build']] as const) {
     it(`${failure} failure exits nonzero without success and gives retry and rollback`, async () => {
       mocks.exec.mockImplementation((bin, args) => {
@@ -92,6 +103,7 @@ describe('member update apply and chat-ID checkout', () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Commit or stash'));
   });
   for (const outcome of ['success', 'regeneration-failure', 'install-failure', 'build-failure', 'merge-failure', 'interrupt', 'other-dirt', 'untracked-dirt'] as const) it(`real generated config ${outcome}: saved and restored before merge`, async () => {
+    vi.stubEnv('CTX_HEARTBEAT_SESSION', 'worker:planted-session-nonce');
     const { execFileSync: realExec } = await vi.importActual<typeof import('child_process')>('child_process');
     const git = (args: string[]) => realExec('git', args, { cwd: checkout, encoding: 'utf8' });
     git(['init', '-q']);
@@ -114,6 +126,8 @@ describe('member update apply and chat-ID checkout', () => {
     if (outcome === 'other-dirt') writeFileSync(join(checkout, 'package.json'), JSON.stringify({ name: 'cortextos', local: true }));
     if (outcome === 'untracked-dirt') writeFileSync(join(checkout, 'notes.txt'), 'local work');
     mocks.exec.mockImplementation((bin, args, options) => {
+      expect(options.env).toBeDefined();
+      expect(options.env).not.toHaveProperty('CTX_HEARTBEAT_SESSION');
       if (bin === 'npm' && ((outcome === 'install-failure' && args[0] === 'ci') || (outcome === 'build-failure' && args[1] === 'build'))) throw new Error('fixture npm failure');
       if (bin === 'git') return realExec(bin, args, options);
       if (bin === process.execPath) {
@@ -121,6 +135,8 @@ describe('member update apply and chat-ID checkout', () => {
         expect(args.slice(1, 6)).toEqual(['ecosystem', '--instance', 'other', '--org', 'example-org']);
         expect(args[6]).toBe('--output');
         expect(args).toContain('--quiet');
+        expect(options.env.CTX_FRAMEWORK_ROOT).toBe(checkout);
+        expect(options.env.CTX_PROJECT_ROOT).toBe(checkout);
         generateEcosystem({ instance: 'other', org: 'example-org', output: args[7], quiet: true }, checkout);
       }
       return '';

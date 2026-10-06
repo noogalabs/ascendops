@@ -30,6 +30,7 @@ import { homedir } from 'os';
 import { generateEcosystem } from './ecosystem.js';
 import { checkUpstream } from '../bus/metrics.js';
 import { resolveMemberCheckout } from './member-checkout.js';
+import { stripSessionCredentialFromEnv } from '../utils/env.js';
 
 function rl(): Interface {
   return createInterface({ input: process.stdin, output: process.stdout });
@@ -114,7 +115,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
 
   console.log('');
   console.log('Applying upstream updates...');
-  const execOptions = { cwd: frameworkRoot, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  const execOptions = { cwd: frameworkRoot, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], env: stripSessionCredentialFromEnv(process.env) };
   let previousHead: string;
   let generatedConfig: { instance: string; org: string; backup: string } | undefined;
   function restoreGeneratedConfig(): void {
@@ -202,7 +203,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
     process.exit(1);
   }
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const npmOptions = { cwd: frameworkRoot, stdio: 'inherit' as const, shell: process.platform === 'win32' };
+  const npmOptions = { cwd: frameworkRoot, stdio: 'inherit' as const, shell: process.platform === 'win32', env: stripSessionCredentialFromEnv(process.env) };
   try {
     execFileSync(npm, ['ci'], npmOptions);
   } catch {
@@ -220,7 +221,7 @@ async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
       const regenerated = join(dirname(generatedConfig.backup), 'regenerated.js');
       execFileSync(process.execPath, [join(frameworkRoot, 'dist', 'cli.js'), 'ecosystem', '--instance', generatedConfig.instance, '--org', generatedConfig.org, '--output', regenerated, '--quiet'], {
         ...npmOptions,
-        env: { ...process.env, CTX_FRAMEWORK_ROOT: frameworkRoot, CTX_PROJECT_ROOT: frameworkRoot },
+        env: { ...stripSessionCredentialFromEnv(process.env), CTX_FRAMEWORK_ROOT: frameworkRoot, CTX_PROJECT_ROOT: frameworkRoot },
       });
       if (!existsSync(regenerated)) throw new Error('config missing');
       copyFileSync(regenerated, join(frameworkRoot, 'ecosystem.config.js'));
