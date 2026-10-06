@@ -19,7 +19,7 @@ describe('member installation entrypoints', () => {
     }
   });
 
-  for (const command of ['restart', 'detect-chat-id']) {
+  for (const command of ['restart', 'detect-chat-id', 'update']) {
     it(`ascendops exposes ${command} help without performing its action`, () => {
       const output = execFileSync(process.execPath, [
         join(process.cwd(), 'node_modules/tsx/dist/cli.mjs'),
