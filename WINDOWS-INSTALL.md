@@ -45,14 +45,14 @@ This is the blocker from the pre-call checklist.
 
 ## Step 2 — Install Node.js (the engine)
 
-AscendOps runs on Node.js. You need **version 20 or higher**.
+AscendOps runs on Node.js. You need **20.19+ on Node 20, 22.13+ on Node 22, or 23.5+**.
 
 1. Check what you have. In PowerShell, run:
    ```powershell
    node --version
    ```
-   - If it prints `v20.x` or higher (e.g. `v22.x`), skip to Step 3.
-   - If it says "not recognized" or a number below 20, install it next.
+   - If it prints a version in one of those ranges, skip to Step 3.
+   - If it says "not recognized" or a version outside those ranges, install it next.
 
 2. Go to **https://nodejs.org** and download the **LTS** installer (the big green
    button on the left). Run the downloaded `.msi`.
@@ -66,7 +66,7 @@ AscendOps runs on Node.js. You need **version 20 or higher**.
    ```powershell
    node --version
    ```
-   You should now see `v20+`.
+   You should now see a supported version.
 
 ---
 
@@ -146,11 +146,17 @@ checklist. Approve it, then come back to the terminal.
 ## Step 6 — Run the AscendOps installer
 
 Still in the **Developer PowerShell for VS 2022** (Administrator) window, run the
-one-line installer:
+installer commands:
 
 ```powershell
-node -e "$(irm https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs)"
+$installer = Join-Path $env:TEMP ("ascendops-install-" + [guid]::NewGuid() + ".mjs")
+Invoke-WebRequest https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs -OutFile $installer -ErrorAction Stop
+node $installer
 ```
+
+The downloaded `.mjs` file works with supported Node versions and keeps terminal input available
+for installer prompts. Do not pipe the downloaded source into `node` or run it
+with bare `node -e`; those forms depend on version-specific module detection.
 
 This will:
 - fork AscendOps into your GitHub account (so you get updates and can contribute back),
@@ -166,7 +172,9 @@ that's the most common cause.
 > the call, tell the installer where it lives instead of letting it clone again:
 > ```powershell
 > $env:ASCENDOPS_DIR = "C:\path\to\your\ascendops"
-> node -e "$(irm https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs)"
+> $installer = Join-Path $env:TEMP ("ascendops-install-" + [guid]::NewGuid() + ".mjs")
+> Invoke-WebRequest https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs -OutFile $installer -ErrorAction Stop
+> node $installer
 > ```
 > Otherwise it installs fresh to `~\ascendops` and your manual clone just sits unused.
 

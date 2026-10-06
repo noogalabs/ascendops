@@ -415,7 +415,7 @@ describe('installer unattended consent gate', () => {
       writeFileSync(file, `#!/bin/sh\n${body}\n`);
       chmodSync(file, 0o755);
     };
-    fake('node', 'echo v22.0.0');
+    fake('node', 'echo v22.13.0');
     fake('npm', `touch ${JSON.stringify(fakeNpmMarker)}; if [ "$1" = "--version" ]; then echo 10.0.0; else touch ${JSON.stringify(npmMarker)}; fi`);
     fake('git', 'case "$1 $2 $3" in "--version  ") echo "git version 2.50.0";; "remote get-url upstream") echo upstream;; "pull upstream main") exit 1;; *) exit 0;; esac');
     fake('xcode-select', 'echo /Library/Developer/CommandLineTools');
