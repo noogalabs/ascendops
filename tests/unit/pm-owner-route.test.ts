@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const adapter = join(process.cwd(), 'community/skills/pm/scripts/send-owner-route.py');
+const zshAvailable = spawnSync('zsh', ['-c', 'exit 0']).status === 0;
+const zshSkipReason = 'skipped: zsh is unavailable; equivalent Bash -u scenarios remain mandatory';
 let dir: string;
 let sender: string;
 let binding: string;
@@ -56,7 +58,7 @@ describe('member owner route examples', () => {
     const snippet = () => source().split('owner_route_status=0')[1].split('```')[0];
     for (const shell of ['bash', 'zsh']) {
       for (const scenario of ['missing', 'scalar', 'broken-reader', 'send-failed', 'valid']) {
-        it(skill + ' ' + shell + ' -u: ' + scenario + ' preserves visibility and bound routing', () => {
+        it.skipIf(shell === 'zsh' && !zshAvailable)(skill + ' ' + shell + ' -u: ' + scenario + ' preserves visibility and bound routing' + (shell === 'zsh' && !zshAvailable ? ' (' + zshSkipReason + ')' : ''), () => {
           const alarms = join(dir, 'alarms.json'); const bus = join(dir, 'cortextos');
           writeFileSync(bus, '#!/usr/bin/env python3\nimport json,sys,os\nopen(os.environ["OWNER_TEST_ALARMS"],"w").write(json.dumps(sys.argv[1:]))\n'); chmodSync(bus, 0o700);
           if (scenario === 'scalar') writeFileSync(binding, JSON.stringify({ argv: sender, recipient: 'configured-owner' }));
