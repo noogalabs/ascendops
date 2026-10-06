@@ -4,16 +4,28 @@ effort: medium
 description: "Morning meld review workflow. Pull all open melds, apply triage rules, check threads for genuinely unhandled items, surface only what needs action."
 triggers: ["morning scan", "morning meld review", "run morning scan", "check open melds", "what needs attention"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
 
 # PM Morning Scan
 
-> Run once per morning before the 07:30 briefing. Output goes to an agent, not David directly (unless emergency).
+> Run once per morning before the 07:30 briefing. Output goes to the configured orchestrator, not <maintenance-owner> directly (unless emergency).
 
 ---
 
 ## When to Run
 
-Triggered by morning cron at 06:30 ET, or manually on demand. Results feed an agent's 07:30 morning review.
+Triggered by morning cron at 06:30 ET, or manually on demand. Results feed the configured orchestrator's 07:30 morning review.
 
 ---
 
@@ -92,10 +104,10 @@ Group by priority: Emergency → High → Normal → Low.
 
 ---
 
-## Step 5: Send to an agent
+## Step 5: Send to the configured orchestrator
 
 ```bash
-cortextos bus send-message an agent normal "Morning Meld Scan — $(date +%Y-%m-%d)
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" normal "Morning Meld Scan — $(date +%Y-%m-%d)
 
 Open melds reviewed: <total>
 Flagged for action: <N>
@@ -110,19 +122,19 @@ Ready for dispatch decisions."
 
 If zero items flagged:
 ```bash
-cortextos bus send-message an agent normal "Morning Meld Scan — $(date +%Y-%m-%d): All <N> open melds accounted for. No unhandled items."
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" normal "Morning Meld Scan — $(date +%Y-%m-%d): All <N> open melds accounted for. No unhandled items."
 ```
 
 ---
 
-## Step 6: Log Escalation Outcomes (an agent Cycle 7)
+## Step 6: Log Escalation Outcomes (the configured orchestrator Cycle 7)
 
 For each meld that was escalated in a **previous** scan and now has a confirmed resolution (status changed, vendor assigned, owner/coordinator/configured staff member acted), append one JSON line to the outcomes surface:
 
 ```bash
-OUTCOME_FILE="${CTX_ROOT}/orgs/${CTX_ORG}/agents/an agent/experiments/surfaces/blue-quality-outcomes.jsonl"
+OUTCOME_FILE="${CTX_ROOT}/orgs/${CTX_ORG}/agents/${CTX_AGENT_NAME}/experiments/surfaces/maintenance-quality-outcomes.jsonl"
 
-echo '{"timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","escalation_id":"<meld_id>","outcome_type":"acted_as_recommended","surface":"morning_scan","actor":"david","resolution_time_minutes":null,"notes":"<brief context>"}' >> $OUTCOME_FILE
+echo '{"timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","escalation_id":"<meld_id>","outcome_type":"acted_as_recommended","surface":"morning_scan","actor":"<maintenance-owner>","resolution_time_minutes":null,"notes":"<brief context>"}' >> $OUTCOME_FILE
 ```
 
 **outcome_type values:** `acted_as_recommended` | `modified` | `dismissed`
@@ -144,7 +156,7 @@ cortextos bus update-heartbeat "morning scan complete — <N> melds flagged"
 
 ## Emergencies: Don't Wait for the Report
 
-If at any point during Steps 1–3 you find a meld meeting a habitability override condition (see pm-meld-triage), message David on Telegram immediately — do not batch it into the 06:30 report.
+If at any point during Steps 1–3 you find a meld meeting a habitability override condition (see pm-meld-triage), message <maintenance-owner> on Telegram immediately — do not batch it into the 06:30 report.
 
 ```bash
 cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID "URGENT: <meld_id> — <condition>. <property>. Action needed now."
@@ -154,7 +166,7 @@ cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID "URGENT: <meld_id> — <condit
 
 ## Self-Check Before Sending
 
-Before sending the report to an agent, verify:
+Before sending the report to the configured orchestrator, verify:
 
 - [ ] Did I read the thread for every flagged meld (not just the title)?
 - [ ] Did I suppress pest control melds with open vendor searches?
