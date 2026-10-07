@@ -21,6 +21,8 @@ import {
 import { createExperiment, runExperiment, evaluateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
 import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunityItem } from '../bus/catalog.js';
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, checkUpstreamAsOwner, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
+import { runCheckoutUpdate } from './update.js';
+import { resolveMemberCheckout } from './member-checkout.js';
 import { createApproval, updateApproval } from '../bus/approval.js';
 import { listActiveThreads, addActiveThread, updateActiveThread, removeActiveThread, clearActiveThreads } from '../bus/active-threads.js';
 import { listVendorDocPatterns, vendorDocPattern } from '../bus/vendor-patterns.js';
@@ -1596,9 +1598,27 @@ busCommand
   .option('--apply', 'Merge upstream changes (requires user approval)')
   .option('--owner-only', 'Require this agent to own the shared canonical upstream check')
   .option('--cron-invocation', 'Return a clean skip for a non-owner cron (manual non-owner runs fail)')
-  .action((opts: { apply?: boolean; ownerOnly?: boolean; cronInvocation?: boolean }) => {
+  .action(async (opts: { apply?: boolean; ownerOnly?: boolean; cronInvocation?: boolean }, command: Command) => {
+    const memberMode = command.parent?.parent?.name() === 'ascendops';
+    if (memberMode && opts.apply) {
+      if (opts.ownerOnly) {
+        const env = resolveEnv();
+        const ownership = checkUpstreamAsOwner(resolveMemberCheckout(), {
+          ctxRoot: env.ctxRoot, org: env.org, agentName: env.agentName,
+          orchestrator: env.orchestrator ?? '', invocation: opts.cronInvocation ? 'cron' : 'manual',
+        }, {}, () => ({ status: 'up_to_date' }));
+        if (ownership.status !== 'up_to_date') { emitResult(ownership); return; }
+      }
+      if (process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE !== 'yes') {
+        emitResult({ status: 'error', error: 'Member apply requires CORTEXTOS_CONFIRM_UPSTREAM_MERGE=yes' });
+        return;
+      }
+      await runCheckoutUpdate({ yes: true }, true, resolveMemberCheckout());
+      emitResult({ status: 'applied', message: 'Member source, dependencies and runtime updated' });
+      return;
+    }
     const env = resolveEnv();
-    const frameworkRoot = env.frameworkRoot || env.projectRoot || process.cwd();
+    const frameworkRoot = memberMode ? resolveMemberCheckout() : env.frameworkRoot || env.projectRoot || process.cwd();
     const result = opts.ownerOnly
       ? checkUpstreamAsOwner(frameworkRoot, {
           ctxRoot: env.ctxRoot,

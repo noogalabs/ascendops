@@ -14,6 +14,7 @@ import { tmpdir } from 'os';
 import { delimiter, dirname, join, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { testEnv } from '../unit/cli/member-test-env.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const SOURCE_ROOT = resolve(TEST_DIR, '..', '..');
@@ -27,13 +28,14 @@ function tempRoot(prefix: string): string {
 }
 
 function git(root: string, args: string[]): string {
-  return execFileSync('git', ['-C', root, ...args], { encoding: 'utf-8' }).trim();
+  return execFileSync('git', ['-C', root, ...args], { encoding: 'utf-8', env: testEnv() }).trim();
 }
 
 function makeRepo(branch = 'feature/test', marker = false): { root: string; script: string } {
   const root = tempRoot('prebuild-guard-repo-');
   mkdirSync(join(root, 'scripts'), { recursive: true });
   copyFileSync(GUARD_SOURCE, join(root, 'scripts', 'prebuild-guard.mjs'));
+  copyFileSync(join(SOURCE_ROOT, 'scripts', 'build-branch.mjs'), join(root, 'scripts', 'build-branch.mjs'));
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'cortextos' }));
   git(root, ['init', '-b', branch]);
   if (marker) writeFileSync(join(root, '.cortextos-live-tree'), '');
@@ -56,7 +58,7 @@ function setOriginMainToHead(root: string): void {
 }
 
 function strippedEnv(extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
-  const env = { ...process.env, ...extra };
+  const env = testEnv(extra);
   if (!Object.prototype.hasOwnProperty.call(extra, 'CI')) delete env.CI;
   if (!Object.prototype.hasOwnProperty.call(extra, 'GITHUB_ACTIONS')) delete env.GITHUB_ACTIONS;
   if (!Object.prototype.hasOwnProperty.call(extra, 'ALLOW_FEATURE_BUILD')) {
@@ -199,7 +201,7 @@ describe('prebuild live-tree guard', () => {
 
   it('keeps a linked worktree isolated from the live checkout marker', () => {
     const { root } = makeRepo('main', true);
-    git(root, ['add', 'package.json', 'scripts/prebuild-guard.mjs']);
+    git(root, ['add', 'package.json', 'scripts/prebuild-guard.mjs', 'scripts/build-branch.mjs']);
     git(root, ['-c', 'user.name=Guard Test', '-c', 'user.email=guard@localhost', 'commit', '-m', 'fixture']);
     const worktreeRoot = join(dirname(root), `${root.split('/').at(-1)}-worktree`);
     tempRoots.push(worktreeRoot);
@@ -331,7 +333,7 @@ describe('outDir keying — the guard applies to the DESTINATION, not the caller
     // right proves nothing about whether main() consults it.
     const scratch = mkdtempSync(join(tmpdir(), 'outdir-'));
     const result = spawnSync('node', [GUARD_SOURCE, '--out-dir', scratch], {
-      cwd: SOURCE_ROOT, encoding: 'utf-8',
+      cwd: SOURCE_ROOT, encoding: 'utf-8', env: testEnv(),
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('EXEMPT_NON_LIVE_OUTDIR');

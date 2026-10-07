@@ -85,6 +85,9 @@ describe('session credential does not cross non-session boundaries', () => {
       'cli/dashboard.ts': 'STRIPS',
       'cli/setup.ts': 'STRIPS',
       'cli/member-checkout.ts': 'STRIPS',    // binary-bound checkout discovery
+      'cli/update.ts': 'STRIPS',
+      'cli/member-runtime.ts': 'STRIPS',
+      'bus/metrics.ts': 'STRIPS',
       'daemon/watchdog.ts': 'STRIPS',        // the original motivating on-behalf write
       'hooks/hook-skill-autopr.ts': 'STRIPS',
       'daemon/agent-process.ts': 'DAEMON',

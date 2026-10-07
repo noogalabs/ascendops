@@ -598,6 +598,10 @@ if (!existsSync(consentGatePath)) {
   fail(`Required installer file is missing: ${consentGatePath}\n    Restore the checkout or remove ${INSTALL_DIR} and rerun the installer.`);
 }
 
+// Explicit installer authorization also lets later manual member builds use
+// upstream/main in a plain clone. Forks and operator checkouts keep origin/main.
+run('git config --local ascendops.memberCheckout true', { cwd: INSTALL_DIR });
+
 // ─── 8. npm ci ───────────────────────────────────────────────────────────
 
 log('Installing dependencies (this may take a minute)...');

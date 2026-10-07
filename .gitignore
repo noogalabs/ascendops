@@ -9,6 +9,7 @@ node_modules
 !templates/**/.claude/
 !templates/**/.claude/**
 dist/
+/.ascendops-update-backups
 ecosystem.config.js
 
 # User-created org data (not part of the framework)
