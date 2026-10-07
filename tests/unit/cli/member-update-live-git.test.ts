@@ -304,6 +304,45 @@ describe('member update real Git children and live build guard', () => {
     expect(existsSync(join(checkout, 'node_modules'))).toBe(true);
     expect(existsSync(join(state, retained[0], 'previous-runtime', 'node_modules'))).toBe(true);
   }, 35000);
+  for (const production of ['NODE_ENV', 'npm_config_omit', 'NPM_CONFIG_OMIT', 'npm_config_production'] as const) it(`real member update builds and publishes dev tools with ${production}`, () => {
+    const cache = process.env.npm_config_cache || join(home, 'cache');
+    const pkg = {
+      name: 'cortextos', version: '1.0.0',
+      devDependencies: { typescript: '6.0.2', tsup: '8.5.1' },
+      scripts: { build: 'node -e "if(process.env.MEMBER_BUILD_SETTING !== \'fake-member-config\')throw Error(\'member env lost\')" && tsc --noEmit --project tsconfig.json && tsup main.ts --format cjs --out-dir dist --clean' },
+    };
+    writeFileSync(join(source, 'package.json'), JSON.stringify(pkg));
+    writeFileSync(join(source, 'main.ts'), 'export const version: number = 42;');
+    writeFileSync(join(source, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2022', skipLibCheck: true }, include: ['main.ts'] }));
+    realExec('npm', ['install', '--package-lock-only', '--include=dev', '--ignore-scripts'], {
+      cwd: source, env: testEnv({ npm_config_cache: cache, npm_config_audit: 'false', npm_config_fund: 'false', TMPDIR: home }), timeout: 60000, stdio: 'pipe',
+    });
+    git(source, ['add', '.']); git(source, ['commit', '-qm', 'real dev-tool build']);
+    const productionEnv = { [production]: production === 'NODE_ENV' ? 'production' : production === 'npm_config_production' ? 'true' : 'dev' };
+    let output = '';
+    let failure: string | undefined;
+    try { output = realExec(process.execPath, [resolve('node_modules/tsx/dist/cli.mjs'), resolve('src/cli/ascendops.ts'), 'update', '--yes'], {
+      cwd: checkout, encoding: 'utf8', timeout: 90000,
+      env: testEnv({ PATH: process.env.PATH, ASCENDOPS_DIR: checkout, TEST_GIT_ENV_LOG: join(home, 'git-env.log'),
+        npm_config_cache: cache, npm_config_audit: 'false', npm_config_fund: 'false', TMPDIR: home,
+        MEMBER_BUILD_SETTING: 'fake-member-config', ...productionEnv }),
+    }); } catch (error) {
+      failure = `Real production update failed: ${String((error as { stdout?: unknown }).stdout)}\n${String((error as { stderr?: unknown }).stderr)}`;
+    }
+    expect(failure).toBeUndefined();
+    expect(output).toContain('runtime rebuilt');
+    expect(git(checkout, ['rev-parse', 'HEAD'])).toBe(git(source, ['rev-parse', 'HEAD']));
+    expect(existsSync(join(checkout, 'node_modules', 'typescript', 'bin', 'tsc'))).toBe(true);
+    expect(existsSync(join(checkout, 'node_modules', 'tsup', 'dist', 'cli-default.js'))).toBe(true);
+    const compiled = realExec(process.execPath, ['-e', 'console.log(require("./dist/main.js").version)'], {
+      cwd: checkout, encoding: 'utf8', env: testEnv(),
+    });
+    expect(compiled.trim()).toBe('42');
+    realExec('npm', ['run', 'build'], { cwd: checkout, stdio: 'pipe', timeout: 30000,
+      env: testEnv({ MEMBER_BUILD_SETTING: 'fake-member-config', ...productionEnv }),
+    });
+  }, 100000);
+
   it('static census: every test-side spawn uses testEnv', () => {
     let count = 0;
     for (const name of ['apply', 'root', 'live-git']) {
@@ -327,7 +366,7 @@ describe('member update real Git children and live build guard', () => {
       }
       visit(tree);
     }
-    expect(count).toBe(19);
+    expect(count).toBe(23);
   });
   it('test children exclude a planted parent sentinel', () => {
     vi.stubEnv('MEMBER_TEST_PARENT_SENTINEL', 'fake-parent-sentinel');

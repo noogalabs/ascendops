@@ -110,7 +110,7 @@ describe('member installation entrypoints', () => {
       const remotes = execFileSync('git', ['remote'], { cwd: checkout, env, encoding: 'utf8' });
       expect(remotes.trim()).toBe('upstream');
       expect(execFileSync('git', ['config', '--local', '--get', 'ascendops.memberCheckout'], { cwd: checkout, env, encoding: 'utf8' }).trim()).toBe('true');
-      expect(readFileSync(npmCalls, 'utf8').split('\n')).toContain('ci');
+      expect(readFileSync(npmCalls, 'utf8').split('\n')).toContain('ci --include=dev');
       expect(readFileSync(npmCalls, 'utf8').split('\n')).not.toContain('install');
       expect(output).toContain('Build allowed in isolated checkout');
       expect(output.indexOf('Build complete')).toBeLessThan(output.indexOf('Linking cortextos CLI'));

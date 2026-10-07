@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, readdirSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'fs';
+import { join, dirname, relative, isAbsolute, sep } from 'path';
 import { stripSessionCredentialFromEnv } from '../utils/env.js';
 
 /** Build from the merged source without changing the installed runtime or dependencies. */
@@ -12,10 +12,27 @@ export function stageMemberRuntime(root: string, stateDirectory: string, sourceH
   execFileSync('tar', ['-xf', '-', '-C', stage], { input: archive, env });
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const options = { cwd: stage, env, stdio: 'inherit' as const, shell: process.platform === 'win32' };
-  try { execFileSync(npm, ['ci'], options); }
+  try { execFileSync(npm, ['ci', '--include=dev'], options); }
   catch { throw new Error('Dependency installation failed in the staging checkout'); }
   // npm may omit node_modules when the lockfile has no dependencies.
   if (!existsSync(join(stage, 'node_modules'))) mkdirSync(join(stage, 'node_modules'));
+  // npm run adds ancestor .bin directories to PATH. Require every declared
+  // package binary to exist in this stage before it can borrow an installed tool.
+  try {
+    const pkg = JSON.parse(readFileSync(join(stage, 'package.json'), 'utf8'));
+    const modules = realpathSync(join(stage, 'node_modules'));
+    for (const name of Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })) {
+      const installed = JSON.parse(readFileSync(join(modules, name, 'package.json'), 'utf8'));
+      const bins = typeof installed.bin === 'string'
+        ? { [(installed.name || name).split('/').pop()!]: installed.bin } : installed.bin || {};
+      for (const bin of Object.keys(bins)) {
+        const path = join(modules, '.bin', bin + (process.platform === 'win32' ? '.cmd' : ''));
+        const target = realpathSync(path);
+        const within = relative(modules, target);
+        if (isAbsolute(within) || within === '..' || within.startsWith('..' + sep)) throw new Error('binary outside stage');
+      }
+    }
+  } catch { throw new Error('Build failed: staging dependencies or package binaries are missing or unsafe'); }
   try { execFileSync(npm, ['run', 'build'], options); }
   catch { throw new Error('Build failed in the staging checkout'); }
   for (const name of ['dist', 'node_modules']) {

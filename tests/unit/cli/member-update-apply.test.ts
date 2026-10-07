@@ -32,6 +32,7 @@ describe('member update apply and chat-ID checkout', () => {
         if (args.includes('--git-path')) return join(root, 'no-operation');
       }
       const result = implementation?.(bin, args, options);
+      if (bin === 'tar') writeFileSync(join(args[args.indexOf('-C') + 1], 'package.json'), JSON.stringify({ name: 'cortextos' }));
       if (bin === 'npm' || bin === 'npm.cmd') {
         const name = args[0] === 'ci' ? 'node_modules' : 'dist';
         mkdirSync(join(options.cwd, name), { recursive: true });
@@ -76,7 +77,7 @@ describe('member update apply and chat-ID checkout', () => {
   });
   it('installs locked dependencies then builds in the resolved checkout before success', async () => {
     await expect(run()).resolves.toBeDefined();
-    expect(npmCalls().map(([, args]) => args)).toEqual([['ci'], ['run', 'build']]);
+    expect(npmCalls().map(([, args]) => args)).toEqual([['ci', '--include=dev'], ['run', 'build']]);
     for (const [bin, , options] of mocks.exec.mock.calls) {
       if (bin === 'git') expect(options.cwd).toBe(checkout);
       else if (bin === 'npm') expect(options.cwd.startsWith(join(checkout, '.ascendops-update-backups'))).toBe(true);
@@ -112,7 +113,7 @@ describe('member update apply and chat-ID checkout', () => {
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`git reset --hard ${previous}`));
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining('retry with ascendops update'));
       expect(vi.mocked(console.log).mock.calls.some(([text]) => String(text).includes('Updates applied'))).toBe(false);
-      if (failure === 'ci') expect(npmCalls().map(([, args]) => args)).toEqual([['ci']]);
+      if (failure === 'ci') expect(npmCalls().map(([, args]) => args)).toEqual([['ci', '--include=dev']]);
     });
   }
   it('dirty checkout refuses before merge or npm commands', async () => {
@@ -206,7 +207,7 @@ describe('member update apply and chat-ID checkout', () => {
     expect(process.listenerCount('SIGTERM')).toBe(signalsBefore.SIGTERM);
     const preflightChatter = vi.mocked(console.log).mock.calls.filter(([text]) => String(text).includes('pm2 start '));
     expect(preflightChatter).toHaveLength(1); // only the fixture's initial generator, never update's probes
-    const expectedNpm = ['other-dirt', 'untracked-dirt', 'merge-failure', 'interrupt'].includes(outcome) ? [] : outcome === 'install-failure' ? [['ci']] : [['ci'], ['run', 'build']];
+    const expectedNpm = ['other-dirt', 'untracked-dirt', 'merge-failure', 'interrupt'].includes(outcome) ? [] : outcome === 'install-failure' ? [['ci', '--include=dev']] : [['ci', '--include=dev'], ['run', 'build']];
     expect(npmCalls().map(([, args]) => args)).toEqual(expectedNpm);
     if (outcome === 'other-dirt' || outcome === 'untracked-dirt') return;
     if (outcome !== 'merge-failure' && outcome !== 'interrupt') expect(git(['show', 'HEAD:ecosystem.config.js'])).toBe('// upstream template change\n');

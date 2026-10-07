@@ -28,6 +28,25 @@ function fixture(valid: boolean) {
 }
 
 describe('staged member runtime', () => {
+  it('fails when the stage lacks tsc instead of borrowing the installed checkout tool', () => {
+    const npm = execFileSync('which', ['npm'], { env: testEnv(), encoding: 'utf8' }).trim();
+    const { root, state } = fixture(true);
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      devDependencies: { typescript: '0.0.0-fixture' }, scripts: { build: 'tsc' },
+    }));
+    execFileSync('git', ['add', 'package.json'], { cwd: root, env: testEnv() });
+    execFileSync('git', ['commit', '-qm', 'fixture missing staged compiler'], { cwd: root, env: testEnv() });
+    mkdirSync(join(root, 'node_modules', '.bin'));
+    const borrowed = join(root, 'borrowed-tool');
+    writeFileSync(join(root, 'node_modules', '.bin', 'tsc'), `#!/bin/sh\nprintf borrowed > '${borrowed}'\nmkdir -p dist\nprintf compiled > dist/cli.js\n`, { mode: 0o700 });
+    writeFileSync(join(root, 'fake-bin', 'npm'), `#!/bin/sh\nif [ "$1" = ci ]; then mkdir -p node_modules/typescript; printf '%s' '{"name":"typescript","bin":{"tsc":"bin/tsc"}}' > node_modules/typescript/package.json; exit 0; fi\nexec "${npm}" "$@"\n`, { mode: 0o700 });
+    let failure: unknown;
+    try { stageMemberRuntime(root, state); } catch (error) { failure = error; }
+    expect(existsSync(borrowed)).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('Build failed');
+  });
+
   it('a real compiler failure leaves installed dist and dependencies byte-identical', () => {
     const { root, state } = fixture(false);
     expect(() => stageMemberRuntime(root, state)).toThrow('Build failed');
