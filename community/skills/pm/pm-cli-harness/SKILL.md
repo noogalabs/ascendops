@@ -4,6 +4,19 @@ description: "CLI for Property Meld work order management. snapcli (pm) is the p
 effort: low
 triggers: ["pm work-orders", "pm assign-tech", "meld triage"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration; bind `PM_IN_HOUSE_TECH`
+to the selected member technician for executable assignment examples. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
 
 # Property Meld CLI
 
@@ -43,7 +56,7 @@ capture(
 ```
 
 **Prerequisites:**
-- David must already be logged into propertymeld.com in Safari (the parser only reads, it does not log in)
+- <maintenance-owner> must already be logged into propertymeld.com in Safari (the parser only reads, it does not log in)
 - Safari cookie store path: `~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies`
 - Output: ~14 cookies including the `sessionid` cookie
 
@@ -52,7 +65,7 @@ capture(
 pm work-orders list --status open --limit 1 --json   # Should return real data, not 401
 ```
 
-If the parser returns "0 cookies for propertymeld.com", David needs to log in to PM in Safari first, then re-run the capture.
+If the parser returns "0 cookies for propertymeld.com", <maintenance-owner> needs to log in to PM in Safari first, then re-run the capture.
 
 ## Commands
 
@@ -91,7 +104,7 @@ pm vendors list --json                            # All vendors
 
 ### Tech Assignment (in-house)
 ```bash
-pm assign-tech --work-order-id <id> --tech Alex --json
+pm assign-tech --work-order-id <id> --tech "${PM_IN_HOUSE_TECH:?Bind a member-configured technician}" --json
 ```
 
 ### Vendor Assignment
@@ -181,7 +194,7 @@ pm probe --json                                   # Verify credentials
 | maintenance_notes PATCH | Nexus API | PM_CLIENT_ID/SECRET |
 
 ## Notes
-- `complete` requires meld to be in PENDING_COMPLETION status. Applies to work by any in-house tech (Alex, Casey, Jordan, or any future in-house assignment).
+- `complete` requires meld to be in PENDING_COMPLETION status. Applies to work by any in-house tech (the member-configured technicians or any future in-house assignment).
 - `merge` requires both melds to be at the same unit. Source meld gets MANAGER_CANCELED with "(Merged)" prefix.
 - `tenants list --search` does client-side filtering (server does not support name/email query params).
 

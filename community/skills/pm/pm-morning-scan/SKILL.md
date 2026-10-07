@@ -4,16 +4,48 @@ effort: medium
 description: "Morning meld review workflow. Pull all open melds, apply triage rules, check threads for genuinely unhandled items, surface only what needs action."
 triggers: ["morning scan", "morning meld review", "run morning scan", "check open melds", "what needs attention"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
+The bundled reader `scripts/send-owner-route.py` loads exactly one
+member-approved owner binding from `PM_OWNER_BINDING_PATH`: a JSON object with
+only `argv` (an array of command-prefix strings, starting with the absolute sender
+executable) and `recipient` (a non-empty string). The adapter appends recipient
+and message as the final two arguments; bind only an approved transport adapter
+with that contract. No exported scalar command, shell string or inferred route
+is accepted. Duplicate/unknown keys or multiple routes refuse as ambiguous.
+The daemon and PTY set `CTX_AGENT_DIR`; a catalog install bundles the default
+reader at `.claude/skills/pm-morning-scan/scripts/send-owner-route.py`
+under that agent directory. No member environment setup or working-directory
+assumption is needed. For a differently loaded skill, `PM_SKILL_DIR` may name the
+absolute directory containing its `SKILL.md`; `PM_OWNER_ROUTE_ADAPTER` may name
+an absolute reader path. Missing runtime context and overrides alarms the coordinator. Its strict UTF-8 decoder rejects malformed
+bytes, BOM and NUL. It never echoes the binding or sender output. Exit 20 means
+unbound/invalid (not sent); 22 means a pre-launch failure (not sent); 21 means
+delivery outcome unknown; 0 means sender success.
+The shell caller independently alarms the configured coordinator on any reader
+or delivery failure, including a missing or broken reader. Never auto-retry an
+unknown delivery outcome.
+
 
 # PM Morning Scan
 
-> Run once per morning before the 07:30 briefing. Output goes to an agent, not David directly (unless emergency).
+> Run once per morning before the 07:30 briefing. Output goes to the configured orchestrator, not <maintenance-owner> directly (unless emergency).
 
 ---
 
 ## When to Run
 
-Triggered by morning cron at 06:30 ET, or manually on demand. Results feed an agent's 07:30 morning review.
+Triggered by morning cron at 06:30 ET, or manually on demand. Results feed the configured orchestrator's 07:30 morning review.
 
 ---
 
@@ -51,7 +83,7 @@ From the full list, keep only melds that meet at least one condition:
 
 Skip melds that have:
 - Vendor assigned AND scheduled date set
-- A Brittany note or Blue comment within last 6h
+- A configured staff member's note or maintenance agent comment within last 6h
 - Pest control classification with vendor search open
 
 ---
@@ -66,7 +98,7 @@ python3 scripts/pm-get-comments.py <meld_id>
 
 After reading thread, classify with pm-meld-triage rules:
 - Is it actually unhandled, or does the thread show it's in progress?
-- Nashville property? → route to Brittany
+- Designated property contact in member routing configuration? → route to that contact; ask the configured coordinator if routing is missing or ambiguous
 - Habitability override condition? → escalate immediately, don't wait for report
 
 Discard any candidate where thread reveals it is already actively managed.
@@ -92,17 +124,17 @@ Group by priority: Emergency → High → Normal → Low.
 
 ---
 
-## Step 5: Send to an agent
+## Step 5: Send to the configured orchestrator
 
 ```bash
-cortextos bus send-message an agent normal "Morning Meld Scan — $(date +%Y-%m-%d)
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" normal "Morning Meld Scan — $(date +%Y-%m-%d)
 
 Open melds reviewed: <total>
 Flagged for action: <N>
 
 <report lines>
 
-Nashville items (route to Brittany): <count>
+Designated-contact items (routed per member configuration): <count>
 Emergencies: <count or 'none'>
 ---
 Ready for dispatch decisions."
@@ -110,19 +142,19 @@ Ready for dispatch decisions."
 
 If zero items flagged:
 ```bash
-cortextos bus send-message an agent normal "Morning Meld Scan — $(date +%Y-%m-%d): All <N> open melds accounted for. No unhandled items."
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" normal "Morning Meld Scan — $(date +%Y-%m-%d): All <N> open melds accounted for. No unhandled items."
 ```
 
 ---
 
-## Step 6: Log Escalation Outcomes (an agent Cycle 7)
+## Step 6: Log Escalation Outcomes (the configured orchestrator Cycle 7)
 
-For each meld that was escalated in a **previous** scan and now has a confirmed resolution (status changed, vendor assigned, David/an agent/Brittany acted), append one JSON line to the outcomes surface:
+For each meld that was escalated in a **previous** scan and now has a confirmed resolution (status changed, vendor assigned, owner/coordinator/configured staff member acted), append one JSON line to the outcomes surface:
 
 ```bash
-OUTCOME_FILE="${CTX_ROOT}/orgs/${CTX_ORG}/agents/an agent/experiments/surfaces/blue-quality-outcomes.jsonl"
+OUTCOME_FILE="${CTX_ROOT}/orgs/${CTX_ORG}/agents/${CTX_AGENT_NAME}/experiments/surfaces/maintenance-quality-outcomes.jsonl"
 
-echo '{"timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","escalation_id":"<meld_id>","outcome_type":"acted_as_recommended","surface":"morning_scan","actor":"david","resolution_time_minutes":null,"notes":"<brief context>"}' >> $OUTCOME_FILE
+echo '{"timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","escalation_id":"<meld_id>","outcome_type":"acted_as_recommended","surface":"morning_scan","actor":"<maintenance-owner>","resolution_time_minutes":null,"notes":"<brief context>"}' >> $OUTCOME_FILE
 ```
 
 **outcome_type values:** `acted_as_recommended` | `modified` | `dismissed`
@@ -144,21 +176,47 @@ cortextos bus update-heartbeat "morning scan complete — <N> melds flagged"
 
 ## Emergencies: Don't Wait for the Report
 
-If at any point during Steps 1–3 you find a meld meeting a habitability override condition (see pm-meld-triage), message David on Telegram immediately — do not batch it into the 06:30 report.
+If at any point during Steps 1–3 you find a meld meeting a habitability override condition (see pm-meld-triage), message <maintenance-owner> via the configured owner route immediately — do not batch it into the 06:30 report.
 
 ```bash
-cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID "URGENT: <meld_id> — <condition>. <property>. Action needed now."
+owner_route_status=0
+owner_route_adapter="${PM_OWNER_ROUTE_ADAPTER:-}"
+if [ -z "$owner_route_adapter" ]; then
+  case "${PM_SKILL_DIR:-}" in
+    /*) owner_route_adapter="$PM_SKILL_DIR/scripts/send-owner-route.py" ;;
+    "")
+      case "${CTX_AGENT_DIR:-}" in
+        /*) owner_route_adapter="$CTX_AGENT_DIR/.claude/skills/pm-morning-scan/scripts/send-owner-route.py" ;;
+      esac ;;
+  esac
+fi
+case "$owner_route_adapter" in
+  /*) ;;
+  *) owner_route_status=22 ;;
+esac
+if [ "$owner_route_status" -eq 0 ]; then
+python3 "$owner_route_adapter" "${PM_OWNER_BINDING_PATH:-}" "URGENT: <meld_id> — <condition>. <property>. Action needed now." || owner_route_status=$?
+fi
+if [ "$owner_route_status" -ne 0 ]; then
+  case "$owner_route_status" in
+    20) owner_route_error="OWNER_CONTACT_BINDING_REQUIRED (not sent)" ;;
+    21) owner_route_error="OWNER_CONTACT_SEND_OUTCOME_UNKNOWN (outcome unknown)" ;;
+    *) owner_route_error="OWNER_CONTACT_NOT_SENT (not sent)" ;;
+  esac
+  cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" urgent "$owner_route_error: URGENT: <meld_id> — <condition>. <property>. Action needed now. Check binding and delivery receipts; do not assume no delivery." || printf '%s\n' 'OWNER_COORDINATOR_ALARM_FAILED' >&2
+  exit "$owner_route_status"
+fi
 ```
 
 ---
 
 ## Self-Check Before Sending
 
-Before sending the report to an agent, verify:
+Before sending the report to the configured orchestrator, verify:
 
 - [ ] Did I read the thread for every flagged meld (not just the title)?
 - [ ] Did I suppress pest control melds with open vendor searches?
-- [ ] Did I route Nashville items to Brittany, not the standard queue?
+- [ ] Did I apply the member-configured property routing and resolve any missing or ambiguous contact before dispatch?
 - [ ] Are zero genuinely-handled melds in the flagged list?
 - [ ] Did any habitability conditions get caught and escalated already?
 

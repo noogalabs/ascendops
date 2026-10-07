@@ -4,6 +4,18 @@ effort: medium
 description: "When a meld contains multiple interdependent or multi-trade work items, decompose it into parallel and sequential workstreams before acting. Prevents dispatching trade A before trade B's prerequisite work is done."
 triggers: ["complex meld", "multiple trades", "multi-step repair", "sequential work", "decompose", "planning"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
 
 # Planning Decompose
 
@@ -56,7 +68,7 @@ For each stream, determine:
 
 ---
 
-## Step 4 — Surface the Plan to David
+## Step 4 — Surface the Plan to <maintenance-owner>
 
 Format the plan as a numbered list. Do NOT send a wall of text. One line per stream:
 
@@ -64,8 +76,8 @@ Format the plan as a numbered list. Do NOT send a wall of text. One line per str
 Meld <id> — <address> — multi-stream:
 
 1. [URGENT] Plumbing (Example Plumbing) — stop active leak → gates Stream 2
-2. [Normal] Flooring (CT Flooring) — replace damaged subfloor → wait for Stream 1 completion + dry-out (est. 48–72h)
-3. [Low] Painting (in-house: Alex) — touch-up after flooring complete
+2. [Normal] Flooring (<configured-flooring-vendor>) — replace damaged subfloor → wait for Stream 1 completion + dry-out (est. 48–72h)
+3. [Low] Painting (in-house: <configured-in-house-tech>) — touch-up after flooring complete
 
 Recommend: dispatch Stream 1 today. Hold Streams 2–3 until leak confirmed dry.
 ```

@@ -1,9 +1,21 @@
 ---
 name: skill-auto-discovery
 effort: low
-description: "After completing a complex task, check whether the sequence of steps used represents a recurring pattern worth codifying into a skill. Logs skill candidates to the bus for weekly review by an agent."
+description: "After completing a complex task, check whether the sequence of steps used represents a recurring pattern worth codifying into a skill. Logs skill candidates to the bus for weekly review by the configured orchestrator."
 triggers: ["skill candidate", "repeated pattern", "should this be a skill", "codify this", "skill discovery"]
 ---
+## Member Role Bindings
+
+Before applying this skill, read the member organization configuration and bind
+`<maintenance-owner>` to its escalation/approval owner and approved contact route,
+`<maintenance-agent>` to its maintenance agent, and `<orchestrator-agent>` to its
+coordinator. Use `CTX_ORCHESTRATOR_AGENT` for executable bus examples and
+`CTX_AGENT_NAME` for the running agent's paths. Resolve vendor and in-house
+technician placeholders from the same member configuration. If a required role
+is missing or ambiguous, ask the configured coordinator before dispatch; never
+substitute a person, agent or chat ID from an example. Existing emergency and
+approval rules still govern actions.
+
 
 # Skill Auto-Discovery
 
@@ -59,7 +71,7 @@ Then write a one-line entry to today's memory file:
 - SKILL CANDIDATE: <proposed_name> — <description>. Evidence: <tasks>. Effort: <low/medium/high>
 ```
 
-Do NOT build the skill yourself. an agent reviews candidates weekly and decides what to build.
+Do NOT build the skill yourself. the configured orchestrator reviews candidates weekly and decides what to build.
 
 ---
 
@@ -71,10 +83,10 @@ On Monday morning, pull all skill_candidate events from the past 7 days:
 cortextos bus list-events --type quality --subtype skill_candidate --since 7d --format json
 ```
 
-If any candidates exist, send a message to an agent:
+If any candidates exist, send a message to the configured orchestrator:
 
 ```bash
-cortextos bus send-message an agent normal "Weekly skill candidates from Blue: <count> candidates logged this week. Top candidates: <list proposed_name + description for top 3>. Full list in activity log."
+cortextos bus send-message "${CTX_ORCHESTRATOR_AGENT:?Configure the member orchestrator}" normal "Weekly skill candidates from <maintenance-agent>: <count> candidates logged this week. Top candidates: <list proposed_name + description for top 3>. Full list in activity log."
 ```
 
 If no candidates: no message needed.
@@ -87,11 +99,11 @@ A skill candidate is worth building when:
 - It would save >10 min of reasoning per occurrence
 - It occurs at least 2–3x per week
 - It has clear inputs and outputs
-- It does not require David's judgment to execute
+- It does not require <maintenance-owner>'s judgment to execute
 
 A candidate is NOT worth building when:
 - It's a one-off edge case
-- It requires judgment that belongs to David
+- It requires judgment that belongs to <maintenance-owner>
 - An existing skill already covers it with minor extension
 
 ---
@@ -100,7 +112,7 @@ A candidate is NOT worth building when:
 
 - Never propose a skill that bypasses an approval workflow
 - Never propose a skill that touches tenant personal data without explicit rules
-- Candidates are suggestions only — an agent decides whether to build
+- Candidates are suggestions only — the configured orchestrator decides whether to build
 - Do not log the same pattern twice in one week
 
 ---
