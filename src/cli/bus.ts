@@ -1613,8 +1613,8 @@ busCommand
         emitResult({ status: 'error', error: 'Member apply requires CORTEXTOS_CONFIRM_UPSTREAM_MERGE=yes' });
         return;
       }
-      await runCheckoutUpdate({ yes: true }, true, resolveMemberCheckout());
-      emitResult({ status: 'applied', message: 'Member source, dependencies and runtime updated' });
+      const result = await runCheckoutUpdate({ yes: true, structured: true }, true, resolveMemberCheckout());
+      emitResult(result);
       return;
     }
     const env = resolveEnv();
