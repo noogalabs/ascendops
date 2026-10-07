@@ -26,6 +26,22 @@ describe('member installation entrypoints', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('supported Node boundaries reach the npm check without an unsupported-engine message', () => {
+    const root = mkdtempSync(join(tmpdir(), 'member-engine-accept-'));
+    const bin = join(root, 'bin'); mkdirSync(bin);
+    try {
+      for (const version of ['20.19.0', '22.13.0', '23.5.0']) {
+        const marker = join(root, 'npm-called'); rmSync(marker, { force: true });
+        writeFileSync(join(bin, 'node'), `#!/bin/sh\necho v${version}\n`, { mode: 0o700 });
+        writeFileSync(join(bin, 'npm'), `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o700 });
+        const result = spawnSync(process.execPath, ['install.mjs'], { env: testEnv({ PATH: `${bin}:/usr/bin:/bin` }), encoding: 'utf8', timeout: 10000 });
+        expect(`${result.stdout}${result.stderr}`, version).not.toContain('unsupported by the installed dependencies');
+        expect(existsSync(marker), version).toBe(true);
+        expect(result.status).toBe(1); // The fake npm check stops before any installation.
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   for (const command of ['restart', 'detect-chat-id']) {
     it(`ascendops exposes ${command} help without performing its action`, () => {
       const output = execFileSync(process.execPath, [
@@ -77,6 +93,7 @@ describe('member installation entrypoints', () => {
       }));
       writeFileSync(join(seed, '.gitignore'), 'node_modules/\ndist/\n');
       copyFileSync('scripts/prebuild-guard.mjs', join(seed, 'scripts/prebuild-guard.mjs'));
+      copyFileSync('scripts/build-branch.mjs', join(seed, 'scripts/build-branch.mjs'));
       copyFileSync('installer/consent-gate.mjs', join(seed, 'installer/consent-gate.mjs'));
       writeFileSync(join(seed, 'scripts/build.mjs'), `
         import { mkdirSync, writeFileSync } from 'node:fs';
@@ -92,7 +109,8 @@ describe('member installation entrypoints', () => {
       });
       const remotes = execFileSync('git', ['remote'], { cwd: checkout, env, encoding: 'utf8' });
       expect(remotes.trim()).toBe('upstream');
-      expect(readFileSync(npmCalls, 'utf8').split('\n')).toContain('ci');
+      expect(execFileSync('git', ['config', '--local', '--get', 'ascendops.memberCheckout'], { cwd: checkout, env, encoding: 'utf8' }).trim()).toBe('true');
+      expect(readFileSync(npmCalls, 'utf8').split('\n')).toContain('ci --include=dev');
       expect(readFileSync(npmCalls, 'utf8').split('\n')).not.toContain('install');
       expect(output).toContain('Build allowed in isolated checkout');
       expect(output.indexOf('Build complete')).toBeLessThan(output.indexOf('Linking cortextos CLI'));
