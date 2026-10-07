@@ -2,7 +2,7 @@ import ts from 'typescript';
 import { testEnv } from './member-update-test-env.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Command } from 'commander';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, rmSync, chmodSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, rmSync, chmodSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 
@@ -232,7 +232,34 @@ describe('member update real Git children and live build guard', () => {
     const output = realExec(process.execPath, ['scripts/prebuild-guard.mjs'], { cwd: checkout, encoding: 'utf8', env: testEnv() });
     expect(output).toContain('vs upstream/main');
   });
-  it('the real scheduled member bus apply installs and publishes the staged runtime', () => {
+  for (const gate of ['confirmation', 'non-owner'] as const) it(`real scheduled ${gate} gate preserves source and runtime with zero npm`, () => {
+    for (const name of ['dist', 'node_modules']) { mkdirSync(join(checkout, name)); writeFileSync(join(checkout, name, 'original.txt'), `original ${name}`); }
+    const npmLog = join(home, 'npm-calls');
+    writeFileSync(join(home, 'bin', 'npm'), `#!/bin/sh\nprintf call >> "${npmLog}"\nexit 99\n`, { mode: 0o700 });
+    const state = join(home, 'state'); mkdirSync(join(state, 'config'), { recursive: true });
+    writeFileSync(join(state, 'config', 'enabled-agents.json'), JSON.stringify({ first: { enabled: true, org: 'fixture' }, second: { enabled: true, org: 'fixture' } }));
+    const head = git(checkout, ['rev-parse', 'HEAD']);
+    const porcelain = git(checkout, ['status', '--porcelain']);
+    const args = [resolve('node_modules/tsx/dist/cli.mjs'), resolve('src/cli/ascendops.ts'), 'bus', 'check-upstream', '--apply', ...(gate === 'non-owner' ? ['--owner-only', '--cron-invocation'] : [])];
+    let output = '';
+    let exit = 0;
+    try {
+      output = realExec(process.execPath, args, { cwd: checkout, encoding: 'utf8', timeout: 30000,
+        env: testEnv({ PATH: process.env.PATH, ASCENDOPS_DIR: checkout, CTX_ROOT: state, CTX_ORG: 'fixture', CTX_AGENT_NAME: 'second',
+          CORTEXTOS_CONFIRM_UPSTREAM_MERGE: gate === 'non-owner' ? 'yes' : '', TEST_GIT_ENV_LOG: join(home, 'git-env.log') }),
+      });
+    } catch (error) { const child = error as { stdout: string; status: number }; output = String(child.stdout); exit = child.status; }
+    expect(() => JSON.parse(output)).not.toThrow();
+    const result = JSON.parse(output);
+    expect(result.status).toBe(gate === 'confirmation' ? 'error' : 'skipped');
+    expect(exit).toBe(gate === 'confirmation' ? 1 : 0);
+    expect(git(checkout, ['rev-parse', 'HEAD'])).toBe(head);
+    expect(git(checkout, ['status', '--porcelain'])).toBe(porcelain);
+    for (const name of ['dist', 'node_modules']) expect(readFileSync(join(checkout, name, 'original.txt'), 'utf8')).toBe(`original ${name}`);
+    expect(existsSync(npmLog)).toBe(false);
+    expect(existsSync(join(checkout, '.ascendops-update-backups'))).toBe(false);
+  });
+  for (const cleanupError of [false, true]) it(`two real scheduled member updates retain only the latest previous runtime pair (cleanup error: ${cleanupError})`, () => {
     const pkg = { name: 'cortextos', version: '1.0.0', scripts: { build: 'node -e "require(\'fs\').mkdirSync(\'dist\');require(\'fs\').writeFileSync(\'dist/cli.js\', \'scheduled build\')"' } };
     writeFileSync(join(source, 'package.json'), JSON.stringify(pkg));
     writeFileSync(join(source, 'package-lock.json'), JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, packages: { '': pkg } }));
@@ -247,6 +274,35 @@ describe('member update real Git children and live build guard', () => {
     expect(readFileSync(join(checkout, 'dist', 'cli.js'), 'utf8')).toBe('scheduled build');
     expect(git(checkout, ['rev-parse', 'HEAD'])).toBe(git(source, ['rev-parse', 'HEAD']));
     expect(readFileSync(join(home, 'git-env.log'), 'utf8')).not.toContain('fake-scheduled-session');
+    expect(git(checkout, ['config', '--local', '--get', 'ascendops.memberCheckout'])).toBe('true');
+    const state = join(checkout, '.ascendops-update-backups');
+    const firstStage = readdirSync(state).find(name => name.startsWith('runtime-'))!;
+    const failedStage = join(state, 'runtime-failed'); mkdirSync(failedStage); writeFileSync(join(failedStage, '.failed-runtime'), '');
+    const blocked = join(state, 'runtime-blocked');
+    if (cleanupError) {
+      mkdirSync(blocked); writeFileSync(join(blocked, '.failed-runtime'), ''); chmodSync(blocked, 0o000);
+      expect(() => readdirSync(blocked)).toThrow(expect.objectContaining({ code: 'EACCES' }));
+    }
+    pkg.scripts.build = pkg.scripts.build.replace('scheduled build', 'second scheduled build');
+    writeFileSync(join(source, 'package.json'), JSON.stringify(pkg));
+    writeFileSync(join(source, 'package-lock.json'), JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, packages: { '': pkg } }));
+    git(source, ['add', '.']); git(source, ['commit', '-qm', 'second scheduled fixture']);
+    let secondOutput = '';
+    try { secondOutput = realExec(process.execPath, [resolve('node_modules/tsx/dist/cli.mjs'), resolve('src/cli/ascendops.ts'), 'bus', 'check-upstream', '--apply'], {
+      cwd: checkout, encoding: 'utf8', timeout: 30000,
+      env: testEnv({ PATH: process.env.PATH, ASCENDOPS_DIR: checkout, CORTEXTOS_CONFIRM_UPSTREAM_MERGE: 'yes', TEST_GIT_ENV_LOG: join(home, 'git-env.log'), npm_config_cache: join(home, 'cache'), TMPDIR: home }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }); } finally { if (cleanupError) chmodSync(blocked, 0o700); }
+    const retained = readdirSync(state).filter(name => name.startsWith('runtime-') && name !== 'runtime-blocked');
+    expect(secondOutput).toContain('Member source, dependencies and runtime updated');
+    if (cleanupError) expect(existsSync(blocked)).toBe(true);
+    expect(retained).toHaveLength(1);
+    expect(existsSync(join(state, firstStage))).toBe(false);
+    expect(existsSync(failedStage)).toBe(false);
+    expect(readFileSync(join(state, retained[0], 'previous-runtime', 'dist', 'cli.js'), 'utf8')).toBe('scheduled build');
+    expect(readFileSync(join(checkout, 'dist', 'cli.js'), 'utf8')).toBe('second scheduled build');
+    expect(existsSync(join(checkout, 'node_modules'))).toBe(true);
+    expect(existsSync(join(state, retained[0], 'previous-runtime', 'node_modules'))).toBe(true);
   }, 35000);
   it('static census: every test-side spawn uses testEnv', () => {
     let count = 0;
@@ -271,7 +327,7 @@ describe('member update real Git children and live build guard', () => {
       }
       visit(tree);
     }
-    expect(count).toBe(17);
+    expect(count).toBe(19);
   });
   it('test children exclude a planted parent sentinel', () => {
     vi.stubEnv('MEMBER_TEST_PARENT_SENTINEL', 'fake-parent-sentinel');

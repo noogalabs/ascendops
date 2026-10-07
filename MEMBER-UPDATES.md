@@ -10,7 +10,10 @@ automatically; edited configurations are refused.
 The updater merges source, installs the lockfile and compiles in a separate
 staging checkout. The installed runtime and dependencies stay in place during
 installation and compilation. After success, the new pair replaces them and the
-previous pair remains in the ignored update recovery directory. A failed
+latest previous pair remains in the ignored update recovery directory. After
+successful publication, older published stages and marked failed stages are
+pruned; active or unrecognized stages are preserved. Cleanup errors are logged
+and leave recovery files in place. A failed
 publication restores the previous pair. Restart agents only after a successful
 update; a source rollback alone does not finish a failed update.
 

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, symlinkSync, accessSync, constants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { stageMemberRuntime, publishMemberRuntime } from '../../../src/cli/member-runtime.js';
+import { stageMemberRuntime, publishMemberRuntime, pruneMemberRuntimeStages } from '../../../src/cli/member-runtime.js';
 import { testEnv } from './member-test-env.js';
 
 const roots: string[] = [];
@@ -50,5 +50,32 @@ describe('staged member runtime', () => {
     expect(() => publishMemberRuntime(root, stage)).toThrow();
     for (const name of ['dist', 'node_modules']) expect(readFileSync(join(root, name, 'old.txt'), 'utf8')).toBe(`previous ${name}`);
     expect(existsSync(join(root, 'node_modules', 'new.txt'))).toBe(false);
+  });
+  it('cleanup skips links and active stages and never follows them to the running pair', () => {
+    const { root, state } = fixture(true);
+    const current = join(state, 'runtime-current'); mkdirSync(current); mkdirSync(join(current, 'previous-runtime'));
+    const active = join(state, 'runtime-active'); mkdirSync(active); writeFileSync(join(active, 'building.txt'), 'active');
+    symlinkSync(join(root, 'dist'), join(state, 'runtime-link'), 'dir');
+    const old = join(state, 'runtime-old'); mkdirSync(old); mkdirSync(join(old, 'previous-runtime'));
+    pruneMemberRuntimeStages(root, current);
+    expect(existsSync(old)).toBe(false);
+    expect(readFileSync(join(active, 'building.txt'), 'utf8')).toBe('active');
+    expect(readFileSync(join(root, 'dist', 'old.txt'), 'utf8')).toBe('previous dist');
+    expect(existsSync(join(current, 'previous-runtime'))).toBe(true);
+  });
+  it('cleanup permission failure logs and preserves both installed and previous pairs', () => {
+    const { root, state } = fixture(true);
+    const current = join(state, 'runtime-current'); mkdirSync(current); mkdirSync(join(current, 'previous-runtime'));
+    const old = join(state, 'runtime-old'); mkdirSync(old); mkdirSync(join(old, 'previous-runtime'));
+    chmodSync(state, 0o500);
+    const output = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => accessSync(state, constants.W_OK)).toThrow(expect.objectContaining({ code: 'EACCES' }));
+      expect(() => pruneMemberRuntimeStages(root, current)).not.toThrow();
+      expect(existsSync(old)).toBe(true);
+      expect(existsSync(join(current, 'previous-runtime'))).toBe(true);
+      for (const name of ['dist', 'node_modules']) expect(readFileSync(join(root, name, 'old.txt'), 'utf8')).toBe(`previous ${name}`);
+      expect(output).toHaveBeenCalledWith(expect.stringContaining('cleanup skipped'));
+    } finally { chmodSync(state, 0o700); output.mockRestore(); }
   });
 });

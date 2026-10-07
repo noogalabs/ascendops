@@ -1,11 +1,12 @@
 import { execFileSync } from 'child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync } from 'fs';
-import { join } from 'path';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { join, dirname } from 'path';
 import { stripSessionCredentialFromEnv } from '../utils/env.js';
 
 /** Build from the merged source without changing the installed runtime or dependencies. */
 export function stageMemberRuntime(root: string, stateDirectory: string, sourceHead = 'HEAD'): string {
   const stage = mkdtempSync(join(stateDirectory, 'runtime-'));
+  try {
   const env = { ...stripSessionCredentialFromEnv(process.env), ASCENDOPS_MEMBER_UPDATE: '1' };
   const archive = execFileSync('git', ['archive', sourceHead], { cwd: root, env, maxBuffer: 128 * 1024 * 1024 });
   execFileSync('tar', ['-xf', '-', '-C', stage], { input: archive, env });
@@ -24,6 +25,35 @@ export function stageMemberRuntime(root: string, stateDirectory: string, sourceH
     }
   }
   return stage;
+  } catch (error) {
+    // Only failed or previously published stages are eligible for later cleanup.
+    // An in-progress stage must never be mistaken for an abandoned one.
+    try { writeFileSync(join(stage, '.failed-runtime'), '', { flag: 'wx', mode: 0o600 }); } catch { /* preserve on uncertainty */ }
+    throw error;
+  }
+}
+
+/** After publication retain exactly the latest previous pair; cleanup never gates success. */
+export function pruneMemberRuntimeStages(root: string, currentStage: string): void {
+  try {
+    const state = join(root, '.ascendops-update-backups');
+    if (lstatSync(state).isSymbolicLink() || lstatSync(currentStage).isSymbolicLink()) throw new Error('unsafe recovery directory');
+    const canonicalState = realpathSync(state);
+    const current = realpathSync(currentStage);
+    if (dirname(current) !== canonicalState || !lstatSync(join(current, 'previous-runtime')).isDirectory()) throw new Error('current recovery pair missing');
+    for (const name of readdirSync(state)) {
+      if (!/^runtime-[A-Za-z0-9]+$/.test(name)) continue;
+      const candidate = join(state, name);
+      try {
+        const entry = lstatSync(candidate);
+        if (entry.isSymbolicLink() || !entry.isDirectory() || realpathSync(candidate) === current) continue;
+        const published = lstatSync(join(candidate, 'previous-runtime'), { throwIfNoEntry: false });
+        const failed = lstatSync(join(candidate, '.failed-runtime'), { throwIfNoEntry: false });
+        if (!(published?.isDirectory() && !published.isSymbolicLink()) && !(failed?.isFile() && !failed.isSymbolicLink())) continue;
+        rmSync(candidate, { recursive: true });
+      } catch { console.error(`Update recovery cleanup skipped for ${name}; retained for manual inspection.`); }
+    }
+  } catch { console.error('Update recovery cleanup skipped; recovery directories retained for manual inspection.'); }
 }
 
 /** Retain the previous pair and restore it if either publication rename fails. */

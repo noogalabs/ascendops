@@ -32,7 +32,7 @@ import { generateEcosystem } from './ecosystem.js';
 import { checkUpstream } from '../bus/metrics.js';
 import { resolveMemberCheckout } from './member-checkout.js';
 import { stripSessionCredentialFromEnv } from '../utils/env.js';
-import { stageMemberRuntime, publishMemberRuntime } from './member-runtime.js';
+import { stageMemberRuntime, publishMemberRuntime, pruneMemberRuntimeStages } from './member-runtime.js';
 
 function rl(): Interface {
   return createInterface({ input: process.stdin, output: process.stdout });
@@ -301,6 +301,7 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
     if (execFileSync('git', ['rev-parse', 'HEAD'], execOptions).trim() !== mergedHead) throw new Error('Source changed before publication');
     execFileSync('git', ['config', '--local', 'ascendops.memberCheckout', 'true'], execOptions);
     publishMemberRuntime(frameworkRoot, stagedRuntime);
+    pruneMemberRuntimeStages(frameworkRoot, stagedRuntime);
   }
   catch { recovery('Runtime publication', 'restore access to the runtime directories'); process.exit(1); }
   rmSync(pendingBuild, { force: true });
