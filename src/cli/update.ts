@@ -68,16 +68,26 @@ interface UpdateOptions {
   yes?: boolean;
   check?: boolean;
   rebuild?: boolean;
+  structured?: boolean;
+}
+
+export interface CheckoutUpdateResult {
+  status: 'up_to_date' | 'updates_available' | 'aborted' | 'applied' | 'error' | 'conflict';
+  error?: string;
+  message?: string;
 }
 
 async function runUpdate(opts: UpdateOptions, command: Command): Promise<void> {
   const memberMode = command.parent?.name() === 'ascendops';
   const frameworkRoot = findFrameworkRoot(memberMode);
-  return runCheckoutUpdate(opts, memberMode, frameworkRoot);
+  const result = await runCheckoutUpdate(opts, memberMode, frameworkRoot);
+  if (result.status === 'error' || result.status === 'conflict') process.exit(1);
+  if (result.status === 'up_to_date' || result.status === 'updates_available' || result.status === 'aborted') process.exit(0);
 }
 
 /** Both interactive and scheduled member applies use this complete transaction. */
-export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean, frameworkRoot: string): Promise<void> {
+export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean, frameworkRoot: string): Promise<CheckoutUpdateResult> {
+  const progress = opts.structured ? console.error : console.log;
 
   const backupRoot = join(frameworkRoot, '.ascendops-update-backups');
   const pendingBuild = join(backupRoot, 'merged-not-built.json');
@@ -94,28 +104,28 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
   if (status.status === 'error') {
     console.error(`Error: ${status.error}`);
     if (status.hint) console.error(`  Hint: ${status.hint}`);
-    process.exit(1);
+    return { status: 'error', error: status.error };
   }
 
   if (status.status === 'up_to_date') {
-    console.log('Already up to date — no upstream changes available.');
-    if (opts.check || !(retryBuild || opts.rebuild)) process.exit(0);
-    console.log('Reinstalling and rebuilding the current checkout.');
+    progress('Already up to date — no upstream changes available.');
+    if (opts.check || !(retryBuild || opts.rebuild)) return { status: 'up_to_date' };
+    progress('Reinstalling and rebuilding the current checkout.');
   }
 
   // Updates available.
   const commitCount = status.commits ?? '?';
   const diffStat = status.diff_stat || '';
   if (status.status !== 'up_to_date') {
-    console.log('');
-    console.log(`Upstream updates available: ${commitCount} commit(s) behind.`);
-    if (diffStat) console.log(`  ${diffStat}`);
-    console.log('');
+    progress('');
+    progress(`Upstream updates available: ${commitCount} commit(s) behind.`);
+    if (diffStat) progress(`  ${diffStat}`);
+    progress('');
   }
 
   if (opts.check) {
-    console.log('--check mode — exiting without applying.');
-    process.exit(0);
+    progress('--check mode — exiting without applying.');
+    return { status: 'updates_available' };
   }
 
   let confirmed = !!opts.yes;
@@ -130,8 +140,8 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
   }
 
   if (!confirmed) {
-    console.log('Aborted — no updates applied. Re-run when ready.');
-    process.exit(0);
+    progress('Aborted — no updates applied. Re-run when ready.');
+    return { status: 'aborted' };
   }
 
   if (!memberMode) {
@@ -140,17 +150,16 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
     try {
       process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = 'yes';
       const result = checkUpstream(frameworkRoot, { apply: true });
-      console.log(JSON.stringify(result, null, 2));
-      if (result.status === 'error' || result.status === 'conflict') process.exit(1);
+      if (!opts.structured) console.log(JSON.stringify(result, null, 2));
+      return result as CheckoutUpdateResult;
     } finally {
       if (saved === undefined) delete process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE;
       else process.env.CORTEXTOS_CONFIRM_UPSTREAM_MERGE = saved;
     }
-    return;
   }
 
-  console.log('');
-  console.log('Applying upstream updates...');
+  progress('');
+  progress('Applying upstream updates...');
   const execOptions = { cwd: frameworkRoot, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], env: stripSessionCredentialFromEnv(process.env) };
   let previousHead: string;
   let generatedConfig: { instance: string; org: string; backup: string } | undefined;
@@ -206,7 +215,7 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
           const backup = join(savedDir, 'ecosystem.config.js');
           writeFileSync(backup, original, { mode: 0o600 });
           generatedConfig = { instance, org, backup };
-          console.log(`Saved generated PM2 config before update: ${backup}`);
+          progress(`Saved generated PM2 config before update: ${backup}`);
           process.once('SIGINT', onSigint);
           process.once('SIGTERM', onSigterm);
           execFileSync('git', ['restore', '--source=HEAD', '--worktree', '--', 'ecosystem.config.js'], execOptions);
@@ -215,7 +224,7 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
     }
     if (dirt.trim() && !generatedConfig) {
       console.error('Update refused: checkout has uncommitted changes. Commit or stash your work, then retry update.');
-      process.exit(1);
+      return { status: 'error', error: 'Checkout has uncommitted changes' };
     }
     previousHead = execFileSync('git', ['rev-parse', 'HEAD'], execOptions).trim();
     if (!/^[0-9a-f]{40}$/.test(previousHead)) throw new Error('invalid HEAD');
@@ -223,7 +232,7 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
     restoreGeneratedConfig();
     if (generatedConfig) console.error(`Your generated PM2 config is saved at ${generatedConfig.backup}.`);
     console.error(`Update refused during preflight: ${error instanceof Error ? error.message : "invalid checkout"}. Verify the checkout and retry update.${generatedConfig ? ` Saved PM2 config backup: ${generatedConfig.backup}.` : ''}`);
-    process.exit(1);
+    return { status: 'error', error: 'Update refused during preflight' };
   }
   // checkUpstream's apply path gates on CORTEXTOS_CONFIRM_UPSTREAM_MERGE — the
   // customer's interactive `y` (or --yes flag) IS that confirmation, so set it
@@ -251,7 +260,7 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
       try { execFileSync('git', ['merge', '--abort'], execOptions); } catch { /* may already be aborted */ }
     }
     recovery('Upstream merge', 'resolve the merge error and retry update');
-    process.exit(1);
+    return { status: applied.status === 'conflict' ? 'conflict' : 'error', error: 'Upstream merge failed' };
   }
   let mergedHead: string;
   try {
@@ -261,16 +270,16 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
     writeFileSync(pendingBuild, JSON.stringify({ head: mergedHead }), { mode: 0o600 });
   } catch {
     recovery('Rebuild checkpoint', 'restore write access to the member update backup directory');
-    process.exit(1);
+    return { status: 'error', error: 'Rebuild checkpoint failed' };
   }
-  const npmOptions = { cwd: frameworkRoot, stdio: 'inherit' as const, shell: process.platform === 'win32', env: { ...stripSessionCredentialFromEnv(process.env), ASCENDOPS_MEMBER_UPDATE: memberMode ? '1' : '' } };
+  const npmOptions = { cwd: frameworkRoot, stdio: (opts.structured ? ['ignore', 2, 2] : 'inherit') as import('child_process').StdioOptions, shell: process.platform === 'win32', env: { ...stripSessionCredentialFromEnv(process.env), ASCENDOPS_MEMBER_UPDATE: memberMode ? '1' : '' } };
   let stagedRuntime: string;
   try {
-    stagedRuntime = stageMemberRuntime(frameworkRoot, backupRoot, mergedHead);
+    stagedRuntime = stageMemberRuntime(frameworkRoot, backupRoot, mergedHead, !!opts.structured);
   } catch (error) {
     const stage = error instanceof Error && error.message.startsWith('Dependency') ? 'Dependency installation' : 'Build';
     recovery(stage, 'fix the staging error');
-    process.exit(1);
+    return { status: 'error', error: `${stage} failed` };
   }
   try {
     if (execFileSync('git', ['rev-parse', 'HEAD'], execOptions).trim() !== mergedHead
@@ -279,7 +288,7 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
     }
   } catch {
     recovery('Source validation', 'save the new changes and retry');
-    process.exit(1);
+    return { status: 'error', error: 'Source validation failed' };
   }
   if (generatedConfig) {
     try {
@@ -291,10 +300,10 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
       });
       if (!existsSync(regenerated)) throw new Error('config missing');
       copyFileSync(regenerated, join(frameworkRoot, 'ecosystem.config.js'));
-      console.log(`Regenerated PM2 config; previous generated config is saved at ${generatedConfig.backup}.`);
+      progress(`Regenerated PM2 config; previous generated config is saved at ${generatedConfig.backup}.`);
     } catch {
       recovery('PM2 config regeneration', 'retry the ecosystem command before restarting');
-      process.exit(1);
+      return { status: 'error', error: 'PM2 config regeneration failed' };
     }
   }
   try {
@@ -303,10 +312,11 @@ export async function runCheckoutUpdate(opts: UpdateOptions, memberMode: boolean
     publishMemberRuntime(frameworkRoot, stagedRuntime);
     pruneMemberRuntimeStages(frameworkRoot, stagedRuntime);
   }
-  catch { recovery('Runtime publication', 'restore access to the runtime directories'); process.exit(1); }
+  catch { recovery('Runtime publication', 'restore access to the runtime directories'); return { status: 'error', error: 'Runtime publication failed' }; }
   rmSync(pendingBuild, { force: true });
   const cli = memberMode ? 'ascendops' : 'cortextos';
-  console.log(`Updates applied, dependencies installed, and runtime rebuilt. Restart your agents with ${cli} restart <agent> and restart the daemon (for PM2: pm2 restart cortextos-daemon) to use the new runtime.`);
+  progress(`Updates applied, dependencies installed, and runtime rebuilt. Restart your agents with ${cli} restart <agent> and restart the daemon (for PM2: pm2 restart cortextos-daemon) to use the new runtime.`);
+  return { status: 'applied', message: 'Member source, dependencies and runtime updated' };
   } finally {
     process.off('SIGINT', onSigint);
     process.off('SIGTERM', onSigterm);

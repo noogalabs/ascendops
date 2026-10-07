@@ -4,14 +4,14 @@ import { join, dirname, relative, isAbsolute, sep } from 'path';
 import { stripSessionCredentialFromEnv } from '../utils/env.js';
 
 /** Build from the merged source without changing the installed runtime or dependencies. */
-export function stageMemberRuntime(root: string, stateDirectory: string, sourceHead = 'HEAD'): string {
+export function stageMemberRuntime(root: string, stateDirectory: string, sourceHead = 'HEAD', stderrOnly = false): string {
   const stage = mkdtempSync(join(stateDirectory, 'runtime-'));
   try {
   const env = { ...stripSessionCredentialFromEnv(process.env), ASCENDOPS_MEMBER_UPDATE: '1' };
   const archive = execFileSync('git', ['archive', sourceHead], { cwd: root, env, maxBuffer: 128 * 1024 * 1024 });
   execFileSync('tar', ['-xf', '-', '-C', stage], { input: archive, env });
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const options = { cwd: stage, env, stdio: 'inherit' as const, shell: process.platform === 'win32' };
+  const options = { cwd: stage, env, stdio: (stderrOnly ? ['ignore', 2, 2] : 'inherit') as import('child_process').StdioOptions, shell: process.platform === 'win32' };
   try { execFileSync(npm, ['ci', '--include=dev'], options); }
   catch { throw new Error('Dependency installation failed in the staging checkout'); }
   // npm may omit node_modules when the lockfile has no dependencies.
