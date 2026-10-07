@@ -401,7 +401,7 @@ describe('installer unattended consent gate', () => {
     expect(installDependencies).not.toHaveBeenCalled();
   });
 
-  it('aborts a stale checkout before npm install when pull fails and the gate is absent', async () => {
+  it('aborts a stale checkout before npm ci when pull fails and the gate is absent', async () => {
     const root = mkdtempSync(join(tmpdir(), 'stale-installer-'));
     const installDir = join(root, 'checkout');
     const fakeBin = join(root, 'bin');

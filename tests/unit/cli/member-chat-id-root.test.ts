@@ -54,6 +54,27 @@ describe('member chat-ID checkout', () => {
     expect(readFileSync(join(memberAgent, '.env'), 'utf8')).toContain('CHAT_ID=2');
     expect(() => readFileSync(join(legacyAgent, '.env'))).toThrow();
   });
+  it('a real legacy checkout as cwd never wins over the home member checkout', async () => {
+    const relative = join('orgs', 'example-org', 'agents', 'worker');
+    const legacy = join(root, 'cortextos');
+    mkdirSync(join(legacy, relative), { recursive: true });
+    writeFileSync(join(legacy, 'package.json'), JSON.stringify({ name: 'cortextos' }));
+    mkdirSync(join(checkout, relative), { recursive: true });
+    vi.mocked(process.cwd).mockReturnValue(legacy);
+    await capture();
+    expect(existsSync(join(checkout, relative, '.env'))).toBe(true);
+    expect(readFileSync(join(checkout, relative, '.env'), 'utf8')).toContain('CHAT_ID=2');
+    expect(existsSync(join(legacy, relative, '.env'))).toBe(false);
+  });
+  it('only a legacy home checkout without an override or binary checkout refuses', async () => {
+    const relative = join('orgs', 'example-org', 'agents', 'worker');
+    const legacy = join(root, 'cortextos');
+    rmSync(checkout, { recursive: true, force: true });
+    mkdirSync(join(legacy, relative), { recursive: true });
+    writeFileSync(join(legacy, 'package.json'), JSON.stringify({ name: 'cortextos' }));
+    await expect(capture()).rejects.toThrow('AscendOps checkout not found');
+    expect(existsSync(join(legacy, relative, '.env'))).toBe(false);
+  });
   it('chat-ID capture refuses upstream-only member mode', async () => {
     // Leave the member package present but with no orgs; legacy orgs cannot win.
     mkdirSync(join(root, 'cortextos', 'orgs', 'example-org', 'agents', 'worker'), { recursive: true });
@@ -78,6 +99,17 @@ describe('member chat-ID checkout', () => {
     vi.stubEnv('CORTEXTOS_DIR', join(root, 'cortextos'));
     await capture('cortextos');
     expect(readFileSync(join(agent, '.env'), 'utf8')).toContain('CHAT_ID=2');
+  });
+  it('an unrelated package is rejected as a member override', async () => {
+    const override = join(root, 'unrelated-package');
+    const relative = join('orgs', 'example-org', 'agents', 'worker');
+    mkdirSync(join(override, relative), { recursive: true });
+    writeFileSync(join(override, 'package.json'), JSON.stringify({ name: 'unrelated-package' }));
+    mkdirSync(join(checkout, relative), { recursive: true });
+    vi.stubEnv('ASCENDOPS_DIR', override);
+    await capture();
+    expect(existsSync(join(checkout, relative, '.env'))).toBe(true);
+    expect(existsSync(join(override, relative, '.env'))).toBe(false);
   });
   it('binary-bound member checkout strips the planted credential during Git discovery', async () => {
     const binaryRoot = join(root, 'linked-member');

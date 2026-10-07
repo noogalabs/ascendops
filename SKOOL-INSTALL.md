@@ -295,7 +295,7 @@ cd ~/ascendops && git remote -v
 
 - **You see both `origin` (your fork) and `upstream` (noogalabs/ascendops):** the
   installer forked for you. Two-way flow:
-  - Check and apply upstream updates with `cortextos update` (asks before applying). The AscendOps update command will arrive in a separate update repair.
+  - Pull our updates: `git pull upstream main`
   - Send yours back:
     ```bash
     git checkout -b feat/my-improvement

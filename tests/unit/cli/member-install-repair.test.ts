@@ -1,23 +1,29 @@
 import { testEnv } from './member-test-env.js';
 import { describe, it, expect, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, symlinkSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, symlinkSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runInNewContext } from 'node:vm';
 
 describe('member installation entrypoints', () => {
   it('the installer rejects unsupported dependency-engine boundaries without running installation', () => {
-    const source = readFileSync('install.mjs', 'utf8');
-    const predicate = source.match(/const supportedNode = ([\s\S]*?);/);
-    expect(predicate).not.toBeNull();
-    for (const [version, accepted] of [
-      ['20.0', false], ['20.18', false], ['20.19', true], ['21.7', false],
-      ['22.12', false], ['22.13', true], ['23.4', false], ['23.5', true], ['24.0', true],
-    ] as const) {
-      const [nodeMajor, nodeMinor] = version.split('.').map(Number);
-      expect(runInNewContext(predicate![1], { nodeMajor, nodeMinor }), version).toBe(accepted);
-    }
+    const root = mkdtempSync(join(tmpdir(), 'member-engine-use-'));
+    const bin = join(root, 'bin'); mkdirSync(bin);
+    try {
+      for (const version of ['20.0.0', '20.18.0', '21.7.0', '22.12.0', '23.4.0']) {
+        const node = join(bin, 'node');
+        writeFileSync(node, `#!/bin/sh\necho v${version}\n`); chmodSync(node, 0o755);
+        const npm = join(bin, 'npm');
+        const marker = join(root, 'npm-called');
+        writeFileSync(npm, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`); chmodSync(npm, 0o755);
+        const result = spawnSync(process.execPath, ['install.mjs'], {
+          env: testEnv({ PATH: `${bin}:/usr/bin:/bin` }), encoding: 'utf8', timeout: 10000,
+        });
+        expect(result.status, version).toBe(1);
+        expect(`${result.stdout}${result.stderr}`, version).toContain('unsupported by the installed dependencies');
+        expect(existsSync(marker), version).toBe(false);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   for (const command of ['restart', 'detect-chat-id']) {
@@ -50,6 +56,10 @@ describe('member installation entrypoints', () => {
       writeFileSync(path, `#!/bin/sh\n${body}\n`); chmodSync(path, 0o755);
     };
     try {
+      const realNpm = execFileSync('which', ['npm'], { encoding: 'utf8', env: testEnv() }).trim();
+      const npmCalls = join(root, 'npm-calls');
+      const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+      fake('npm', `printf '%s\\n' "$*" >> ${quote(npmCalls)}\nexec ${quote(realNpm)} "$@"`);
       symlinkSync(process.execPath, join(bin, 'node'));
       fake('gh', 'exit 1');
       fake('claude', 'if [ "$1 $2" = "auth status" ]; then echo \'{"loggedIn":true}\'; else echo fixture; fi');
@@ -82,6 +92,8 @@ describe('member installation entrypoints', () => {
       });
       const remotes = execFileSync('git', ['remote'], { cwd: checkout, env, encoding: 'utf8' });
       expect(remotes.trim()).toBe('upstream');
+      expect(readFileSync(npmCalls, 'utf8').split('\n')).toContain('ci');
+      expect(readFileSync(npmCalls, 'utf8').split('\n')).not.toContain('install');
       expect(output).toContain('Build allowed in isolated checkout');
       expect(output.indexOf('Build complete')).toBeLessThan(output.indexOf('Linking cortextos CLI'));
       expect(output).toContain('AscendOps installed successfully');
@@ -89,6 +101,20 @@ describe('member installation entrypoints', () => {
       expect(readFileSync(join(checkout, 'dist/cli.js'), 'utf8')).toContain('#!/usr/bin/env node');
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 65000);
+
+  it('the member CLI finalizes a completed command despite an open timer', () => {
+    const root = mkdtempSync(join(tmpdir(), 'member-finalize-'));
+    const preload = join(root, 'keep-open.cjs');
+    writeFileSync(preload, 'setInterval(() => {}, 100);');
+    try {
+      const result = spawnSync(process.execPath, [
+        '--import', 'tsx', '--require', preload,
+        'src/cli/ascendops.ts', 'list-skills', '--agent-dir', root, '--format', 'json',
+      ], { env: testEnv(), encoding: 'utf8', timeout: 5000 });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim().startsWith('[')).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 10000);
 
   it('test child environment excludes a fake parent sentinel', () => {
     vi.stubEnv('MEMBER_TEST_PARENT_SENTINEL', 'fake-parent-sentinel');
