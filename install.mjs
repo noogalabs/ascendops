@@ -2,8 +2,11 @@
 /**
  * AscendOps cross-platform installer
  *
- * Mac/Linux:   curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs | node
- * Windows:     node -e "$(irm https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs)"
+ * Mac/Linux:   installer_dir="$(mktemp -d)" && curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs -o "$installer_dir/install.mjs" && node "$installer_dir/install.mjs"
+ * Windows (PowerShell):
+ *   $installer = Join-Path $env:TEMP ("ascendops-install-" + [guid]::NewGuid() + ".mjs")
+ *   Invoke-WebRequest https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs -OutFile $installer -ErrorAction Stop
+ *   node $installer
  * Local test:  node install.mjs
  */
 
@@ -18,7 +21,7 @@ const INSTALL_DIR = process.env.ASCENDOPS_DIR || process.env.CORTEXTOS_DIR || jo
 
 // CORTEXTOS_BRANCH lets you install a specific branch instead of `main`. Useful
 // for testing fixes before they merge:
-//   CORTEXTOS_BRANCH=fix/foo curl -fsSL .../fix/foo/install.mjs | node
+//   CORTEXTOS_BRANCH=fix/foo node /path/to/downloaded/install.mjs
 // Branch name is restricted to standard git ref characters to avoid shell injection.
 const REPO_BRANCH_RAW = process.env.CORTEXTOS_BRANCH || 'main';
 if (!/^[a-zA-Z0-9._/-]+$/.test(REPO_BRANCH_RAW)) {
@@ -170,9 +173,15 @@ console.log('');
 
 log('Checking Node.js...');
 const nodeVersion = run('node --version').replace('v', '');
-const nodeMajor = parseInt(nodeVersion.split('.')[0], 10);
-if (nodeMajor < 20) {
-  fail(`Node.js v${nodeVersion} is too old. v20 or later required.\n    Install from https://nodejs.org`);
+const [nodeMajor, nodeMinor] = nodeVersion.split('.').map(Number);
+// Intersection of the locked runtime dependency engines, also reflected in
+// package.json: noble/chokidar, inquirer, and mute-stream.
+const supportedNode = (nodeMajor === 20 && nodeMinor >= 19)
+  || (nodeMajor === 22 && nodeMinor >= 13)
+  || (nodeMajor === 23 && nodeMinor >= 5)
+  || nodeMajor >= 24;
+if (!supportedNode) {
+  fail(`Node.js v${nodeVersion} is unsupported by the installed dependencies.\n    Use Node 20.19+ (20.x), 22.13+ (22.x), or 23.5+. Install current LTS from https://nodejs.org`);
 }
 ok(`Node.js v${nodeVersion}`);
 
@@ -277,25 +286,15 @@ if (IS_MAC) {
     console.log('');
     console.log(`${Y}  ! Visual C++ Build Tools are required for native Node.js addons.${R}`);
     console.log('');
-    console.log(`    ${BOLD}Option A (recommended): Install via npm${R}`);
-    console.log('    Run this command in an Administrator PowerShell, then re-run this installer:');
-    console.log(`    ${Y}  npm install -g windows-build-tools${R}`);
+    console.log('    Run this command in an Administrator PowerShell:');
+    console.log(`    ${Y}  winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"${R}`);
     console.log('');
-    console.log(`    ${BOLD}Option B: Install Visual Studio Build Tools manually${R}`);
+    console.log('    Or install the Desktop development with C++ workload from:');
     console.log('    https://visualstudio.microsoft.com/visual-cpp-build-tools/');
     console.log('');
-    const tryAuto = process.env.AUTO_BUILD_TOOLS === '1';
-    if (tryAuto) {
-      warn('Attempting auto-install of windows-build-tools...');
-      try {
-        runVisible('npm install -g windows-build-tools');
-        ok('windows-build-tools installed');
-      } catch {
-        fail('Could not auto-install build tools. See instructions above.');
-      }
-    } else {
-      fail('Visual C++ Build Tools required. See instructions above.\nSet AUTO_BUILD_TOOLS=1 to attempt auto-install (requires admin).');
-    }
+    console.log('    After installation, close this terminal and open Developer PowerShell for VS 2022.');
+    console.log('    Re-run the installer there so cl.exe is available on PATH.');
+    fail('Visual C++ Build Tools required. Follow WINDOWS-INSTALL.md Step 4, then rerun in Developer PowerShell for VS 2022.');
   } else {
     ok('Visual C++ Build Tools found');
   }
@@ -599,15 +598,15 @@ if (!existsSync(consentGatePath)) {
   fail(`Required installer file is missing: ${consentGatePath}\n    Restore the checkout or remove ${INSTALL_DIR} and rerun the installer.`);
 }
 
-// ─── 8. npm install ───────────────────────────────────────────────────────────
+// ─── 8. npm ci ───────────────────────────────────────────────────────────
 
 log('Installing dependencies (this may take a minute)...');
 try {
-  runVisible('npm install', { cwd: INSTALL_DIR });
+  runVisible('npm ci', { cwd: INSTALL_DIR });
   ok('Dependencies installed');
 } catch (err) {
   console.error('');
-  console.error(`${RED}  npm install failed.${R}`);
+  console.error(`${RED}  npm ci failed.${R}`);
   if (IS_MAC) {
     console.error('  If you see C++ compilation errors, install Xcode CLI tools:');
     console.error('    xcode-select --install');
@@ -616,7 +615,7 @@ try {
     console.error('    sudo apt-get install -y build-essential');
   } else if (IS_WINDOWS) {
     console.error('  If you see C++ compilation errors, install Visual C++ Build Tools:');
-    console.error('    npm install -g windows-build-tools  (run as Administrator)');
+    console.error('    Follow WINDOWS-INSTALL.md Step 4 to install the C++ workload, then rerun in Developer PowerShell for VS 2022.');
   }
   process.exit(1);
 }

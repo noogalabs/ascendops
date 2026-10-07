@@ -1,7 +1,7 @@
 /**
  * AscendOps CLI entry point — branded alias for the cortextos CLI.
  *
- * Identical command set to `cortextos`; branding comes from the
+ * Member-facing command subset of `cortextos`; branding comes from the
  * ASCENDOPS_BRAND environment variable (set to "1" in .env files
  * for AscendOps deployments).
  */
@@ -13,6 +13,9 @@ import { addAgentCommand } from './add-agent.js';
 import { materializeOnboardingCommand } from './onboarding-skill.js';
 import { startCommand } from './start.js';
 import { stopCommand } from './stop.js';
+import { restartCommand } from './restart.js';
+import { detectChatIdCommand } from './detect-chat-id.js';
+import { finalizeProcess } from './_finalize.js';
 import { statusCommand } from './status.js';
 import { doctorCommand } from './doctor.js';
 import { busCommand } from './bus.js';
@@ -45,6 +48,8 @@ program.addCommand(addAgentCommand);
 program.addCommand(materializeOnboardingCommand);
 program.addCommand(startCommand);
 program.addCommand(stopCommand);
+program.addCommand(restartCommand);
+program.addCommand(detectChatIdCommand);
 program.addCommand(statusCommand);
 program.addCommand(doctorCommand);
 program.addCommand(busCommand);
@@ -77,4 +82,10 @@ const crashAlertCommand = new Command('crash-alert')
   });
 program.addCommand(crashAlertCommand);
 
-program.parse();
+program
+  .parseAsync(process.argv)
+  .then(() => finalizeProcess(typeof process.exitCode === 'number' ? process.exitCode : 0))
+  .catch((err: unknown) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    finalizeProcess(1);
+  });

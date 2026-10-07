@@ -1,6 +1,6 @@
-![npm version](https://img.shields.io/npm/v/cortextos) ![License](https://img.shields.io/badge/license-MIT-green) ![Node](https://img.shields.io/badge/node-20%2B-brightgreen) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![npm version](https://img.shields.io/npm/v/cortextos) ![License](https://img.shields.io/badge/license-MIT-green) ![Node](https://img.shields.io/badge/node-20.19%2B-brightgreen) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-# cortextOS
+# AscendOps
 
 **Persistent 24/7 Claude Code agents you control from Telegram or your phone.**
 
@@ -54,22 +54,23 @@ flowchart TD
 
 ## Quick Start
 
-**Requirements:** Node.js 20+, Claude API key, PM2, Telegram bot token from @BotFather.
+Start with the [Zero-to-Fleet Install Guide](SKOOL-INSTALL.md), or the
+[Windows Install Guide](WINDOWS-INSTALL.md) for Windows 10/11. You need Node.js
+20.19+ (20.x), 22.13+ (22.x), or 23.5+, Claude Code authenticated with your subscription or API key, and Telegram.
+The installer sets up PM2 and the CLI; onboarding walks you through your
+organization and agent bots.
+
+On macOS or Linux:
 
 ```bash
-# 1. Install PM2 globally if you don't have it
-npm install -g pm2
-
-# 2. Install cortextOS
-curl -fsSL https://raw.githubusercontent.com/grandamenium/cortextos/main/install.mjs | node
-
-# 3. Open the project in Claude Code and run guided onboarding
-claude ~/cortextos
-# Then inside Claude Code:
-# /onboarding
+installer_dir="$(mktemp -d)" && curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs -o "$installer_dir/install.mjs" && node "$installer_dir/install.mjs"
+cd ~/ascendops && claude /onboarding
 ```
 
-Onboarding handles everything: dependency checks, org setup, bot creation, PM2 config, and dashboard launch. Your Orchestrator comes online in Telegram and finishes its own setup there.
+The downloaded `.mjs` file runs as an ES module on supported Node versions and keeps terminal
+input available for the installer's prompts. If you set `ASCENDOPS_DIR`, use
+that folder in the onboarding command. Follow the install guide through each
+agent's Telegram onboarding before using it for live work.
 
 ### Manual setup (advanced)
 
@@ -99,7 +100,7 @@ pm2 start ecosystem.config.js && pm2 save && pm2 startup
 
 | Dependency | Notes |
 |---|---|
-| Node.js 20+ | [nodejs.org](https://nodejs.org) |
+| Node.js 20.19+ (20.x), 22.13+ (22.x), or 23.5+ | [nodejs.org](https://nodejs.org) |
 | macOS, Linux, or Windows 10/11 | Windows uses Task Scheduler for reboot persistence — see `scripts/install-windows-pm2-startup.ps1` |
 | Claude Code | `npm install -g @anthropic-ai/claude-code` + `claude login` |
 | PM2 | `npm install -g pm2` |

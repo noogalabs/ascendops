@@ -21,7 +21,8 @@ operator hasn't completed bootstrap, point them there. The two phases:
 - **Phase 1 — Bootstrap (must be done before this skill matters):** create prereq
   accounts (GitHub, Anthropic/Claude, Google, Telegram, optional Telnyx) → install
   Claude Code (`npm install -g @anthropic-ai/claude-code` + `claude login`) → run
-  the installer (`curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs | node`)
+  the installer (download and run an explicit .mjs file, keeping stdin interactive):
+  `installer_dir="$(mktemp -d)" && curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs -o "$installer_dir/install.mjs" && node "$installer_dir/install.mjs"`
   → open `~/ascendops` in Claude Code → create a Telegram bot per agent with auto
   chat_id capture (below).
 - **Phase 2 — Onboarding (this skill):** configure the agent for the operator's PM

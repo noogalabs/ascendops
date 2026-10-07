@@ -28,6 +28,7 @@ import { createInterface, type Interface } from 'readline';
 import { existsSync, readdirSync, readFileSync, writeFileSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { TelegramAPI } from '../telegram/api.js';
+import { resolveMemberCheckout } from './member-checkout.js';
 
 function rl(): Interface {
   return createInterface({ input: process.stdin, output: process.stdout });
@@ -198,7 +199,7 @@ interface DetectOptions {
   json?: boolean;
 }
 
-async function detectChatId(opts: DetectOptions): Promise<void> {
+async function detectChatId(opts: DetectOptions, command: Command): Promise<void> {
   const timeoutSec = Math.max(5, parseInt(opts.timeout, 10) || 120);
   const intervalSec = Math.max(1, parseInt(opts.interval, 10) || 2);
 
@@ -206,7 +207,7 @@ async function detectChatId(opts: DetectOptions): Promise<void> {
   // agent name before asking the operator to do any Telegram work.
   let envTarget: { dir: string; org: string; envPath: string; originalContent: string | null } | null = null;
   if (opts.agent) {
-    const projectRoot = findProjectRoot();
+    const projectRoot = command.parent?.name() === 'ascendops' ? resolveMemberCheckout() : findProjectRoot();
     const resolved = resolveAgentDir(projectRoot, opts.agent, opts.org);
     if (!resolved) {
       console.error(`Error: agent "${opts.agent}" not found under any org in ${projectRoot}/orgs/`);

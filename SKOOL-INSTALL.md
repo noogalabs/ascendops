@@ -53,15 +53,15 @@ free tiers):
 Claude Code is the command-line app the agents run inside. You almost certainly
 don't have it yet — install it now.
 
-**First, make sure you have Node.js 20+.** Open a terminal (on Mac: Cmd+Space →
+**First, make sure you have Node.js 20.19+ (20.x), 22.13+ (22.x), or 23.5+.** Open a terminal (on Mac: Cmd+Space →
 "Terminal"; on Linux: your terminal app) and run:
 
 ```bash
 node --version
 ```
 
-- If it prints `v20.x` or higher, you're set.
-- If it prints a lower version or "command not found", install Node from
+- If it prints a version in one of those ranges, you're set.
+- If it prints an unsupported version or "command not found", install Node from
   [nodejs.org](https://nodejs.org/) (the LTS download) and re-check.
 
 **Then install Claude Code and log in:**
@@ -91,8 +91,12 @@ until you set up a fork later.
 Copy-paste this single line into your terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs | node
+installer_dir="$(mktemp -d)" && curl -fsSL https://raw.githubusercontent.com/noogalabs/ascendops/main/install.mjs -o "$installer_dir/install.mjs" && node "$installer_dir/install.mjs"
 ```
+
+This downloads a `.mjs` file before running it. Supported Node versions interpret the file as an
+ES module, and your terminal input stays available for installer prompts.
+Windows users should use the PowerShell commands in [WINDOWS-INSTALL.md](WINDOWS-INSTALL.md).
 
 > **Not comfortable in the terminal?** Paste this whole guide into Claude or
 > ChatGPT and ask it to walk you through each step — it has everything it needs.
@@ -139,7 +143,7 @@ You'll repeat this short loop once per agent, in the order Phase 2 lays out
 **b. Let AscendOps capture the chat id automatically.** In your terminal, run:
 
 ```bash
-cortextos detect-chat-id --agent <agent-name> --org <your-org>
+ascendops detect-chat-id --agent <agent-name> --org <your-org>
 ```
 
 It will:
@@ -153,7 +157,7 @@ It will:
 
 If you wait too long or messaged the wrong bot it times out cleanly with a clear
 message — just re-run it. (The same flow is also available as the interactive
-`cortextos bot create <agent-name>` if you prefer one combined walkthrough.)
+`ascendops bot create <agent-name>` if you prefer one combined walkthrough.)
 
 That's the bootstrap. Every agent now has a bot and a captured chat id. On to the
 real value.
@@ -205,18 +209,18 @@ For every agent in the roster (top to bottom, required before optional):
 
 1. **Create it** (skip if the wizard already did):
    ```bash
-   cortextos add-agent <agent-name> --template <template> --org <your-org>
+   ascendops add-agent <agent-name> --template <template> --org <your-org>
    ```
    Confirm you see `Copied template files from <template>` (not
    `Created minimal agent files` — that means the template wasn't on disk; run
    `git pull upstream main` and retry).
 
 2. **Wire its Telegram bot** using the Phase-1 Step 1.5 loop
-   (`cortextos detect-chat-id --agent <agent-name> --org <your-org>`).
+   (`ascendops detect-chat-id --agent <agent-name> --org <your-org>`).
 
 3. **Start it and run its onboarding:**
    ```bash
-   cortextos start <agent-name>
+   ascendops start <agent-name>
    ```
    "Booting up..." lands in that bot's Telegram chat within ~5–15s. Then, in that
    Telegram chat, send:
@@ -241,7 +245,7 @@ mentions prospects / showings, the orchestrator gives a fleet-level pulse. You c
 also run:
 
 ```bash
-cortextos status
+ascendops status
 ```
 
 If everything is green and the agents reply on Telegram, you have a running fleet.
@@ -318,16 +322,18 @@ real businesses. AscendOps gets better as you do.
 |---|---|---|
 | `curl` install fails (HTTP error) | Network / rate limit | Wait a minute, retry. Or clone manually: `git clone https://github.com/noogalabs/ascendops.git ~/ascendops` then `node ~/ascendops/install.mjs` |
 | `claude: command not found` | Claude Code not installed | `npm install -g @anthropic-ai/claude-code` then `claude login` (Step 1.2) |
-| `node: command not found` or version < 20 | Node.js missing/old | Install Node LTS from [nodejs.org](https://nodejs.org/) (Step 1.2) |
+| `node: command not found` or unsupported version | Node.js missing/old | Install Node LTS from [nodejs.org](https://nodejs.org/) (Step 1.2) |
 | Installer says "gh installed but not authed" | No `gh auth login` | Run `gh auth login`, or accept the plain-clone fallback (fork later) |
 | `/onboarding` does nothing in Claude Code | Not at the project root | `cd ~/ascendops` then `claude .` |
 | `detect-chat-id` / bot setup times out | You didn't `/start` the bot, or messaged the wrong one | Re-run it; send `/start` to the exact `@username` it prints, from your own account (not a channel/bot) |
-| Agent starts but never messages Telegram | Wrong BOT_TOKEN / CHAT_ID | Re-run `cortextos detect-chat-id --agent <name>`; confirm with `cortextos status` |
+| Agent starts but never messages Telegram | Wrong BOT_TOKEN / CHAT_ID | Re-run `ascendops detect-chat-id --agent <name>`; confirm with `ascendops status` |
 | `add-agent` says "Created minimal agent files" | Template not on disk (fork behind upstream) | `git pull upstream main`, then re-run `add-agent` |
-| Agent boots but `/onboarding` does nothing | `.onboarded` already exists from a prior attempt | `rm ~/.cortextos/default/state/<agent-name>/.onboarded` and retry |
+| Agent boots but `/onboarding` does nothing | `.onboarded` already exists from a prior attempt | `rm ~/.cortextos/<instance>/state/<agent-name>/.onboarded` and retry |
 
-For anything else: check `~/.cortextos/default/logs/<agent>/stderr.log` and run
-`cortextos bus read-all-heartbeats`. The Skool community is the place to ask.
+For anything else: check `~/.cortextos/<instance>/logs/<agent>/stdout.log`
+(`default` is the usual instance name), then run `ascendops bus read-all-heartbeats`.
+If you configured a different state root, use `<CTX_ROOT>/logs/<agent>/stdout.log`.
+The Skool community is the place to ask.
 
 ---
 
