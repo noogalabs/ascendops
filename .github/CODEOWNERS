@@ -1,6 +1,7 @@
 # Leak-guard machinery — any change requires owner review (SEC-1 F1).
 # These files are owner-reviewed and scanned by the same guard. No gate file is
 # exempt from secret detection.
+/.github/ @noogalabs
 /.github/scripts/leak-guard.sh @noogalabs
 /.github/scripts/scope-reconcile.py @noogalabs
 /.github/workflows/leak-guard.yml @noogalabs
@@ -10,3 +11,20 @@
 /.github/CODEOWNERS @noogalabs
 # .gitignore defines the tracked/public surface (carve-out re-includes) the guard reasons over.
 /.gitignore @noogalabs
+
+# Install and runtime guard surfaces.
+/install.mjs @noogalabs
+/installer/ @noogalabs
+/installers/ @noogalabs
+/scripts/install-* @noogalabs
+/scripts/prebuild-guard.mjs @noogalabs
+/src/hooks/ @noogalabs
+/src/cli/add-agent.ts @noogalabs
+
+# Hook enablement copied into new agents. Keep these scoped to runtime settings,
+# rather than owning unrelated template content.
+/templates/**/.claude/settings.json @noogalabs
+/community/agents/**/.claude/settings.json @noogalabs
+
+# Public-export policy and gate code. The path is protected before it lands.
+/scripts/public-export/ @noogalabs
