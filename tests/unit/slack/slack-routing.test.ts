@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -7,6 +7,7 @@ import {
   loadSlackRoutingConfig,
   composeSenderKey,
   slackConfigPath,
+  SlackRoutingConfigError,
   type SlackRoutingConfig,
 } from '../../../src/slack/slack-routing';
 
@@ -86,16 +87,51 @@ describe('loadSlackRoutingConfig', () => {
     expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
   });
 
-  it('malformed JSON returns null instead of throwing (a typo must not kill the daemon)', () => {
+  it('defaults channel mention gating on for a present config, and preserves an explicit opt-out', () => {
+    writeFileSync(join(agentDir(root), 'slack.json'), JSON.stringify(OPEN));
+    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')?.channel_mentions_only).toBe(true);
+    writeFileSync(join(agentDir(root), 'slack.json'), JSON.stringify({ ...OPEN, channel_mentions_only: false }));
+    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')?.channel_mentions_only).toBe(false);
+  });
+
+  it('rejects a non-boolean channel_mentions_only instead of treating truthy text as a policy', () => {
+    writeFileSync(join(agentDir(root), 'slack.json'), JSON.stringify({ ...OPEN, channel_mentions_only: 'false' }));
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
+  });
+
+  it('throws for an existing config path that cannot be read as a file', () => {
+    mkdirSync(join(agentDir(root), 'slack.json'));
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/unreadable.*refusing legacy fallback/);
+  });
+
+  it.skipIf(process.platform === 'win32')('a dangling config symlink is invalid rather than absent', () => {
+    symlinkSync(join(root, 'missing-target.json'), join(agentDir(root), 'slack.json'));
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/unreadable.*refusing legacy fallback/);
+  });
+
+  it('malformed JSON throws rather than selecting the less restrictive legacy route', () => {
     writeFileSync(join(agentDir(root), 'slack.json'), '{ not json');
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(SlackRoutingConfigError);
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-json.*refusing legacy fallback/);
+  });
+
+  it('does not copy malformed file contents into the reported error', () => {
+    writeFileSync(join(agentDir(root), 'slack.json'), '{"value":"PRIVATE_SENTINEL"');
+    try {
+      loadSlackRoutingConfig(root, 'acme', 'alpha');
+      expect.fail('Malformed routing should throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SlackRoutingConfigError);
+      expect((error as SlackRoutingConfigError).code).toBe('SLACK_ROUTING_CONFIG_INVALID');
+      expect((error as Error).message).not.toContain('PRIVATE_SENTINEL');
+    }
   });
 
   it('a JSON array or scalar is rejected as malformed, not coerced', () => {
     writeFileSync(join(agentDir(root), 'slack.json'), '["C123"]');
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
     writeFileSync(join(agentDir(root), 'slack.json'), '42');
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
   });
 
   // SHAPE VALIDATION (PR313 Codex P1): a syntactically valid JSON object whose
@@ -106,12 +142,12 @@ describe('loadSlackRoutingConfig', () => {
       join(agentDir(root), 'slack.json'),
       JSON.stringify({ allowed_channels: {}, allowed_users: {} }),
     );
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
     writeFileSync(
       join(agentDir(root), 'slack.json'),
       JSON.stringify({ allowed_channels: 'C123', allowed_users: ['T01:U01'] }),
     );
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
   });
 
   it('arrays with non-string members are rejected as malformed', () => {
@@ -119,7 +155,7 @@ describe('loadSlackRoutingConfig', () => {
       join(agentDir(root), 'slack.json'),
       JSON.stringify({ allowed_channels: ['C123', 42], allowed_users: ['T01:U01'] }),
     );
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
   });
 
   it('non-string display fields and non-array allowlists are rejected as malformed', () => {
@@ -127,12 +163,12 @@ describe('loadSlackRoutingConfig', () => {
       join(agentDir(root), 'slack.json'),
       JSON.stringify({ allowed_channels: 'C123' }),
     );
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
     writeFileSync(
       join(agentDir(root), 'slack.json'),
       JSON.stringify({ display_name: 7, allowed_channels: ['C123'] }),
     );
-    expect(loadSlackRoutingConfig(root, 'acme', 'alpha')).toBeNull();
+    expect(() => loadSlackRoutingConfig(root, 'acme', 'alpha')).toThrow(/invalid-shape/);
   });
 
   it('POLARITY CONTROL: a fully-populated valid config still loads and routes', () => {

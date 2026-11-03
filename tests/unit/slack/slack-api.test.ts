@@ -78,6 +78,55 @@ describe('SlackAPI — transport hardening', () => {
     await expect(api.postMessage('C1', 'hi')).rejects.toThrow(/rate limited/i);
   });
 
+  it('sends a thread parent as the original string and still redacts message content', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new SlackAPI('xoxb-test').postMessage('D1', 'Case SSN 123-45-6789', undefined, {
+      thread_ts: '1762182234.000001',
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.channel).toBe('D1');
+    expect(body.thread_ts).toBe('1762182234.000001');
+    expect(body.text).not.toContain('123-45-6789');
+    expect(body).not.toHaveProperty('reply_broadcast');
+  });
+
+  it('keeps existing top-level calls unchanged', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    await new SlackAPI('xoxb-test').postMessage('C1', 'status');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ channel: 'C1', text: 'status' });
+  });
+
+  it('returns the posted timestamp string and conversation for a durable new case parent', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({
+      ok: true, ts: '1762182234.000001', channel: 'D12345',
+    })));
+    await expect(new SlackAPI('xoxb-test').postMessage('D12345', 'New case')).resolves.toEqual({
+      ts: '1762182234.000001', channel: 'D12345',
+    });
+  });
+
+  it('does not emit malformed receipt fields returned by the API', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({
+      ok: true, ts: 1762182234.000001, channel: 'unsafe\nchannel',
+    })));
+    await expect(new SlackAPI('xoxb-test').postMessage('D12345', 'New case')).resolves.toEqual({});
+  });
+
+  it.each(['1e9', '1762182234', '1762182234.1', '1762182234.000001\n', '1762182234.000001;other', 1762182234.000001, null])(
+    'rejects an invalid thread timestamp before sending: %j', async (thread_ts) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(new SlackAPI('xoxb-test').postMessage('D1', 'status', undefined, {
+        thread_ts: thread_ts as string,
+      })).rejects.toThrow(/thread timestamp/i);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
   it('getUserInfo never throws: HTTP failure -> null', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(httpError(500)));
     const api = new SlackAPI('xoxb-test');

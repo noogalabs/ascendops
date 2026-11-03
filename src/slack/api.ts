@@ -66,6 +66,22 @@ export interface SlackMessage {
  */
 const API_TIMEOUT_MS = 10_000;
 
+export interface SlackPostMessageOptions {
+  /** The original parent message timestamp. Keep it as a string. */
+  thread_ts?: string;
+}
+
+export interface SlackPostMessageResult {
+  /** The newly posted message's timestamp, useful when recording a new case parent. */
+  ts?: string;
+  channel?: string;
+}
+
+/** Slack timestamps are decimal strings, never floating-point numbers. */
+export function isSlackTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{1,16}\.\d{6}$/.test(value);
+}
+
 export class SlackAPI {
   private readonly baseUrl = 'https://slack.com/api';
   private readonly token: string;
@@ -108,7 +124,11 @@ export class SlackAPI {
     channel: string,
     text: string,
     identity?: GatedDisplayIdentity,
-  ): Promise<void> {
+    options: SlackPostMessageOptions = {},
+  ): Promise<SlackPostMessageResult> {
+    if (options.thread_ts !== undefined && !isSlackTimestamp(options.thread_ts)) {
+      throw new Error('Invalid Slack thread timestamp: expected a seconds.microseconds string.');
+    }
     // Scrub at the egress primitive: never SHARE an SSN to Slack.
     text = redactSSN(text);
     // D4 PERSONA GATE, layered at the final primitive:
@@ -122,6 +142,7 @@ export class SlackAPI {
     //    subclass, or mutate. Icons have no payload field at all, regardless
     //    of caller shape.
     const body: Record<string, unknown> = { channel, text };
+    if (options.thread_ts !== undefined) body.thread_ts = options.thread_ts;
     if (identity !== undefined) {
       const warn = (line: string) => console.error(line);
       const claimed: unknown = (identity as { username?: unknown }).username;
@@ -138,7 +159,7 @@ export class SlackAPI {
         body.username = RUNTIME_AGENT_NAME;
       }
     }
-    const data = await this.requestJson<{ ok: boolean; error?: string }>('chat.postMessage', {
+    const data = await this.requestJson<{ ok: boolean; error?: string; ts?: unknown; channel?: unknown }>('chat.postMessage', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.token}`,
@@ -149,6 +170,10 @@ export class SlackAPI {
     if (!data.ok) {
       throw new Error(`Slack postMessage failed: ${data.error ?? 'unknown'}`);
     }
+    return {
+      ...(isSlackTimestamp(data.ts) ? { ts: data.ts } : {}),
+      ...(typeof data.channel === 'string' && /^[CDG][A-Z0-9]{1,32}$/.test(data.channel) ? { channel: data.channel } : {}),
+    };
   }
 
   async getHistory(channel: string, oldest: string): Promise<SlackMessage[]> {
