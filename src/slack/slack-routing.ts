@@ -15,7 +15,7 @@
  * this module at all — it keeps the existing `.env`-driven 1:1 channel binding
  * byte-for-byte. Adding routing is opt-in; no agent is forced to migrate.
  */
-import { existsSync, readFileSync } from 'fs';
+import { lstatSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 /** Schema of `orgs/<org>/agents/<name>/slack.json`. Non-secret: tokens stay in .env. */
@@ -29,6 +29,9 @@ export interface SlackRoutingConfig {
   allowed_channels?: string[];
   /** `"<team_id>:<user_id>"` composite senders allowed. Empty/absent denies all. */
   allowed_users?: string[];
+  /** Shared channels require an explicit mention by default. DMs are exempt.
+   * Absent slack.json retains legacy behavior; false is an explicit opt-out. */
+  channel_mentions_only?: boolean;
 }
 
 export interface SlackRouteEvent {
@@ -70,18 +73,31 @@ export function isValidSlackRoutingShape(parsed: unknown): parsed is SlackRoutin
   if (!isOptionalString(cfg.icon_url)) return false;
   if (cfg.allowed_channels !== undefined && !isStringArray(cfg.allowed_channels)) return false;
   if (cfg.allowed_users !== undefined && !isStringArray(cfg.allowed_users)) return false;
+  if (cfg.channel_mentions_only !== undefined && typeof cfg.channel_mentions_only !== 'boolean') return false;
   return true;
 }
 
+export type SlackRoutingConfigErrorReason = 'unreadable' | 'invalid-json' | 'invalid-shape';
+
+/** Existing invalid routing must never be confused with an absent legacy config. */
+export class SlackRoutingConfigError extends Error {
+  readonly code = 'SLACK_ROUTING_CONFIG_INVALID';
+
+  constructor(readonly configPath: string, readonly reason: SlackRoutingConfigErrorReason) {
+    // Do not include parser/read error text or file contents: a misplaced secret
+    // in the routing file must not be echoed to logs while reporting the failure.
+    super(`Slack routing config ${configPath} is ${reason}; refusing legacy fallback`);
+    this.name = 'SlackRoutingConfigError';
+  }
+}
+
 /**
- * Load `slack.json` for one agent, or null when absent/unreadable/malformed.
+ * Load `slack.json` for one agent, or null only when genuinely absent.
  *
- * Malformed includes SHAPE-invalid, not just unparseable: any file this
- * function returns is safe for every consumer to use without type checks. A
- * malformed file returns null rather than throwing: a broken config must not
- * take the daemon down. It is indistinguishable from absent HERE, but callers
- * that care (the loader in agent-manager) log the failure loudly so a typo
- * does not silently disable routing.
+ * Existing unreadable, unparseable, and shape-invalid configs throw. Consumers
+ * must disable Slack for that agent and report the error instead of falling
+ * back to a less restrictive legacy binding. A valid routing config defaults
+ * channel_mentions_only to true; no-config agents keep legacy behavior.
  */
 export function loadSlackRoutingConfig(
   frameworkRoot: string,
@@ -89,13 +105,30 @@ export function loadSlackRoutingConfig(
   agentName: string,
 ): SlackRoutingConfig | null {
   const path = slackConfigPath(frameworkRoot, org, agentName);
-  if (!existsSync(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
-    return isValidSlackRoutingShape(parsed) ? parsed : null;
-  } catch {
-    return null;
+    // existsSync returns false on permission errors and dangling links as well
+    // as absence. lstat distinguishes a genuinely absent file from an existing
+    // config we cannot safely read. A removal race after this check also fails
+    // closed rather than silently switching back to the legacy route.
+    lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new SlackRoutingConfigError(path, 'unreadable');
   }
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch {
+    throw new SlackRoutingConfigError(path, 'unreadable');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new SlackRoutingConfigError(path, 'invalid-json');
+  }
+  if (!isValidSlackRoutingShape(parsed)) throw new SlackRoutingConfigError(path, 'invalid-shape');
+  return { ...parsed, channel_mentions_only: parsed.channel_mentions_only ?? true };
 }
 
 /**

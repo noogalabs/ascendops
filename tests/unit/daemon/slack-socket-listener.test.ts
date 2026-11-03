@@ -11,7 +11,8 @@ vi.mock('../../../src/bus/message.js', async (importOriginal) => {
 const getUserInfoMock = vi.fn();
 const getBotUserIdMock = vi.fn();
 const getAuthIdentityMock = vi.fn();
-vi.mock('../../../src/slack/api.js', () => ({
+vi.mock('../../../src/slack/api.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/slack/api.js')>(),
   SlackAPI: vi.fn().mockImplementation(function () {
     return {
       getUserInfo: getUserInfoMock,
@@ -20,16 +21,18 @@ vi.mock('../../../src/slack/api.js', () => ({
     };
   }),
 }));
+vi.mock('../../../src/slack/slack-files.js', () => ({ downloadSlackAttachments: vi.fn() }));
 
 import { SlackSocketListener } from '../../../src/daemon/slack-socket-listener.js';
 import { sendMessage } from '../../../src/bus/message.js';
+import { downloadSlackAttachments } from '../../../src/slack/slack-files.js';
 import type { SlackMessageEvent } from '../../../src/slack/slack-socket.js';
 import type { BusPaths, TeamMember } from '../../../src/types/index.js';
 
 const sendMessageMock = vi.mocked(sendMessage);
 
 // Minimal BusPaths stub — handleMessage never reads disk because sendMessage is mocked.
-const paths = { ctxRoot: '/tmp/fake' } as unknown as BusPaths;
+const paths = { ctxRoot: '/tmp/fake', stateDir: '/tmp/fake/state/moss' } as unknown as BusPaths;
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
   return {
@@ -400,6 +403,7 @@ describe('routing-mode dedup reservation (TOCTOU)', () => {
   const ROUTING = {
     allowed_channels: ['C123'],
     allowed_users: ['T01:U999'],
+    channel_mentions_only: false,
   };
 
   beforeEach(() => {
@@ -482,5 +486,135 @@ describe('routing-mode dedup reservation (TOCTOU)', () => {
     await listener.handleMessage(makeEvent({ ts: '1700000000.000200' }));
 
     expect(sendMessageMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('guide-mode private DMs, channel mentions, threads, and files', () => {
+  const routing = {
+    allowed_channels: ['C123', 'D123', 'D456'],
+    allowed_users: ['T01:U999', 'T01:U888'],
+  };
+  const filesMock = vi.mocked(downloadSlackAttachments);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendMessageMock.mockReset();
+    filesMock.mockReset();
+    filesMock.mockResolvedValue([]);
+    getAuthIdentityMock.mockResolvedValue({ userId: 'UBOT', teamId: 'T01' });
+    getUserInfoMock.mockResolvedValue({ handle: 'member', displayName: 'Member' });
+  });
+
+  function guideListener() {
+    return makeListener(() => {}, { routing, trustedSlackUsers: ['member'] });
+  }
+
+  it('blocks ordinary channel input and mentions of another agent before identity/file work', async () => {
+    const listener = guideListener();
+    await listener.handleMessage(makeEvent({ text: 'ordinary conversation', files: [{ id: 'F01' }] }));
+    await listener.handleMessage(makeEvent({ text: '<@UOTHER> status?', ts: '1700000000.000200' }));
+    expect(getUserInfoMock).not.toHaveBeenCalled();
+    expect(filesMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('delivers a real mention with the root timestamp and private-action rule', async () => {
+    await guideListener().handleMessage(makeEvent({ type: 'app_mention', text: '<@UBOT> status?' }));
+    const text = sendMessageMock.mock.calls[0][4];
+    expect(text).toContain('thread_ts:1700000000.000100');
+    expect(text).toContain('Channel requests are for status and clarification');
+    expect(text).toContain('send-slack C123 "<reply>" --thread-ts 1700000000.000100');
+  });
+
+  it('recognizes the exact own-bot mention delivered as a normal message', async () => {
+    await guideListener().handleMessage(makeEvent({ text: '<@UBOT> status?' }));
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers plain DMs without mentions and preserves an existing parent', async () => {
+    await guideListener().handleMessage(makeEvent({
+      channel: 'D123', text: 'follow up', thread_ts: '1699999999.000001',
+    }));
+    const text = sendMessageMock.mock.calls[0][4];
+    expect(text).toContain('channel:D123');
+    expect(text).toContain("Keep this person's private conversation separate");
+    expect(text).toContain('--thread-ts 1699999999.000001');
+    expect(text).not.toContain('--thread-ts 1700000000.000100');
+  });
+
+  it('keeps different people and issue parents attached to their own DM', async () => {
+    const listener = guideListener();
+    await listener.handleMessage(makeEvent({ channel: 'D123', thread_ts: '1699999999.000001' }));
+    await listener.handleMessage(makeEvent({ channel: 'D456', user: 'U888', thread_ts: '1699999998.000002' }));
+    const [first, second] = sendMessageMock.mock.calls.map((call) => call[4]);
+    expect(first).toContain('send-slack D123 "<reply>" --thread-ts 1699999999.000001');
+    expect(second).toContain('send-slack D456 "<reply>" --thread-ts 1699999998.000002');
+    expect(second).not.toContain('D123');
+  });
+
+  it('collapses overlapping message and app_mention events into one durable delivery', async () => {
+    const listener = guideListener();
+    await Promise.all([
+      listener.handleMessage(makeEvent({ type: 'message', text: '<@UBOT> status?' })),
+      listener.handleMessage(makeEvent({ type: 'app_mention', text: '<@UBOT> status?' })),
+    ]);
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a supplied thread for legacy connections as well', async () => {
+    getBotUserIdMock.mockResolvedValue('UBOT');
+    await makeListener().handleMessage(makeEvent({ thread_ts: '1699999999.000001' }));
+    expect(sendMessageMock.mock.calls[0][4]).toContain('--thread-ts 1699999999.000001');
+  });
+
+  it('keeps legacy mention delivery on its original message event only', async () => {
+    const listener = makeListener();
+    await listener.handleMessage(makeEvent({ type: 'message', text: '<@UBOT> status?' }));
+    await listener.handleMessage(makeEvent({ type: 'app_mention', text: '<@UBOT> status?' }));
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('downloads permitted files after both gates and reports saved content or explicit errors', async () => {
+    filesMock.mockResolvedValue([
+      { id: 'F01', name: 'photo.png', path: '/tmp/private/files/random.png' },
+      { id: 'F02', name: 'report.pdf', error: 'File exceeds download limit' },
+    ]);
+    await guideListener().handleMessage(makeEvent({
+      channel: 'D123', files: [{ id: 'F01' }, { id: 'F02' }],
+    }));
+    expect(filesMock).toHaveBeenCalledWith({
+      files: [{ id: 'F01' }, { id: 'F02' }], botToken: 'xoxb-test',
+      directory: '/tmp/fake/state/moss/slack-files',
+    });
+    const text = sendMessageMock.mock.calls[0][4];
+    expect(text).toContain('local file "/tmp/private/files/random.png"');
+    expect(text).toContain('unavailable (File exceeds download limit)');
+  });
+
+  it('never downloads a denied sender or unapproved conversation file', async () => {
+    const listener = guideListener();
+    await listener.handleMessage(makeEvent({ channel: 'D123', user: 'UNOT', files: [{ id: 'F01' }] }));
+    await listener.handleMessage(makeEvent({ channel: 'DOTHER', files: [{ id: 'F01' }] }));
+    getUserInfoMock.mockResolvedValue({ handle: 'untrusted', displayName: 'Untrusted' });
+    await listener.handleMessage(makeEvent({ channel: 'D123', files: [{ id: 'F01' }] }));
+    expect(filesMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('reports an attachment processing failure while delivering the text', async () => {
+    filesMock.mockRejectedValue(new Error('private exception containing a token'));
+    await expect(guideListener().handleMessage(makeEvent({
+      channel: 'D123', text: 'please inspect this', files: [{ id: 'F01' }],
+    }))).resolves.toBeUndefined();
+    const text = sendMessageMock.mock.calls[0][4];
+    expect(text).toContain('please inspect this');
+    expect(text).toContain('Attachments unavailable: processing failed');
+    expect(text).not.toContain('private exception');
+  });
+
+  it('rejects malformed timestamp fields before constructing reply instructions', async () => {
+    await guideListener().handleMessage(makeEvent({ channel: 'D123', thread_ts: '1; echo unsafe' }));
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(filesMock).not.toHaveBeenCalled();
   });
 });

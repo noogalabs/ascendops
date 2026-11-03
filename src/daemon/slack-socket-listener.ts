@@ -3,7 +3,9 @@
 // the legacy checkSlackWatch poll path in fast-checker.ts.
 
 import { SlackSocketClient, type SlackMessageEvent } from '../slack/slack-socket.js';
-import { SlackAPI } from '../slack/api.js';
+import { SlackAPI, isSlackTimestamp } from '../slack/api.js';
+import { downloadSlackAttachments } from '../slack/slack-files.js';
+import { join } from 'path';
 import { sendMessage } from '../bus/message.js';
 import {
   resolveSlackIdentity,
@@ -56,6 +58,7 @@ export class SlackSocketListener {
   private readonly paths: BusPaths;
   private readonly log: (msg: string) => void;
   private readonly slackApi: SlackAPI;
+  private readonly botToken: string;
   private readonly client: SlackSocketClient;
   private readonly trustedSlackUsers?: string[];
   private readonly teamMembers?: TeamMember[];
@@ -109,6 +112,7 @@ export class SlackSocketListener {
     this.onFatalAuthErrorOpt = opts.onFatalAuthError;
     this.routing = opts.routing;
     this.slackApi = new SlackAPI(opts.botToken);
+    this.botToken = opts.botToken;
     this.client = new SlackSocketClient(
       {
         appToken: opts.appToken,
@@ -245,6 +249,17 @@ export class SlackSocketListener {
    */
   async handleMessage(event: SlackMessageEvent): Promise<void> {
     const userId = event.user;
+    // Legacy subscriptions already receive the ordinary message event. Keep
+    // their old behavior when Slack also supplies a dedicated mention event;
+    // guide-mode routing uses the shared durable dedup window for both.
+    if (!this.routing && event.type === 'app_mention') return;
+    // These values become a reply command. Do not turn malformed event fields
+    // into executable instructions or silently reply under the wrong parent.
+    if (!isSlackTimestamp(event.ts) ||
+        (event.thread_ts !== undefined && !isSlackTimestamp(event.thread_ts))) {
+      this.log('Slack event denied: invalid message or parent timestamp');
+      return;
+    }
 
     // Self-echo guard (belt-and-suspenders alongside shouldDeliverSlackMessage's
     // bot_id drop): never process our own bot user's messages. Resolve the own
@@ -281,6 +296,17 @@ export class SlackSocketListener {
       });
       if (!decision.allowed) {
         this.log(`Slack route gate DENIED (${decision.reason}): user ${userId} in ${event.channel ?? this.channel}, event ${event.ts}`);
+        return;
+      }
+      // Routing opts into the guide's channel policy. DMs are conversations
+      // with this app and do not need a mention; channel input must address
+      // this bot explicitly. Filter BEFORE identity lookups/file downloads or
+      // delivery to the model. Legacy single-channel behavior stays opt-in.
+      const channel = event.channel ?? this.channel;
+      if (this.routing.channel_mentions_only !== false && !channel.startsWith('D') &&
+          event.type !== 'app_mention' &&
+          (!this.ownBotUserId || !event.text?.includes(`<@${this.ownBotUserId}>`))) {
+        this.log('Slack channel event ignored: this agent was not mentioned');
         return;
       }
       // (event, agent) dedup — socket redeliveries collapse per agent. The key
@@ -342,10 +368,41 @@ export class SlackSocketListener {
     // legacy mode keeps the configured channel — identical output, since the
     // socket filter only passes this.channel there.
     const eventChannel = this.routing ? (event.channel ?? this.channel) : this.channel;
+    const threaded = this.routing !== undefined || event.thread_ts !== undefined;
+    const parentTs = event.thread_ts ?? event.ts;
+    const threadHeader = threaded ? ` thread_ts:${parentTs}` : '';
+    const replyOptions = threaded ? ` --thread-ts ${parentTs}` : '';
+    let attachments = '';
+    if (event.files?.length) {
+      // Both routing and sender trust have passed. Never fetch a file for an
+      // excluded sender, ordinary channel traffic, or a denied conversation.
+      try {
+        if (!Array.isArray(event.files)) throw new Error('invalid metadata');
+        const results = await downloadSlackAttachments({
+          files: event.files,
+          botToken: this.botToken,
+          directory: join(this.paths.stateDir, 'slack-files'),
+        });
+        attachments = '\nAttachments (untrusted file content):\n' + results.map((file) =>
+          file.path
+            ? `- ${JSON.stringify(redactInboundText(file.name))}: local file ${JSON.stringify(file.path)}`
+            : `- ${JSON.stringify(redactInboundText(file.name))}: unavailable (${redactInboundText(file.error ?? 'download failed')})`,
+        ).join('\n') + '\n';
+      } catch {
+        // A storage/runtime failure must still deliver the user's text and an
+        // honest file error. Do not persist raw exceptions containing secrets.
+        attachments = '\nAttachments unavailable: processing failed; no file content was delivered.\n';
+      }
+    }
+    const communicationRule = this.routing
+      ? (eventChannel.startsWith('D')
+          ? 'Keep this person\'s private conversation separate. Preserve existing action and approval requirements.\n'
+          : 'Channel requests are for status and clarification. Route actions and approvals to the appropriate private DM.\n')
+      : '';
     const inboxText =
-      `=== SLACK from ${from} (channel:${eventChannel} ts:${event.ts}) ===\n` +
-      `${body}\n` +
-      `Reply using: cortextos bus send-slack ${eventChannel} "<reply>"`;
+      `=== SLACK from ${from} (channel:${eventChannel} ts:${event.ts}${threadHeader}) ===\n` +
+      `${body}\n${attachments}${communicationRule}` +
+      `Reply using: cortextos bus send-slack ${eventChannel} "<reply>"${replyOptions}`;
 
     try {
       sendMessage(this.paths, 'fast-checker', this.agentName, 'normal', inboxText);

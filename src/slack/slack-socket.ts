@@ -64,6 +64,7 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 import { redactSSN } from '../utils/ssn-redaction.js';
+import type { SlackFileAttachment } from './slack-files.js';
 
 // ============================================================================
 // Constants
@@ -423,14 +424,19 @@ export function validateSlackMessage(
   return { valid: true };
 }
 
-/** Slack message event payload */
+/** Human message or channel-mention payload delivered by Slack Events API. */
 export interface SlackMessageEvent {
-  type: string;
+  type: 'message' | 'app_mention';
   channel: string;
   user: string;
-  text: string;
+  /** Captionless file shares can omit text. */
+  text?: string;
   ts: string;
   thread_ts?: string;
+  subtype?: string;
+  channel_type?: string;
+  /** Metadata only; the listener applies access gates before downloading files. */
+  files?: SlackFileAttachment[];
   /**
    * Present when the message was authored by a bot (including messages this
    * agent posts via its own bot token). Used by {@link shouldDeliverSlackMessage}
@@ -450,7 +456,8 @@ export interface SlackMessageEvent {
  *
  * A file/photo can be shared with NO caption, so `file_share` events may have
  * empty `text`; the poll woke on those too. So deliver any non-bot `message`
- * that has text OR is a `file_share` (captioned or not). Contentless events
+ * or `app_mention` that has text OR is a `file_share` (captioned or not).
+ * Mentions with files can also be captionless. Contentless events
  * (edits/deletes/system joins with neither text nor a file_share) are not
  * delivered. Channel scoping is applied by the caller.
  *
@@ -462,12 +469,23 @@ export interface SlackMessageEvent {
  * event carrying `bot_id` closes that self-echo path.
  */
 export function shouldDeliverSlackMessage(
-  event: { type?: string; subtype?: string; text?: string; bot_id?: string },
+  event: {
+    type?: string;
+    subtype?: string;
+    text?: string;
+    bot_id?: string;
+    files?: SlackFileAttachment[];
+  },
 ): boolean {
-  if (event.type !== 'message' || event.subtype === 'bot_message' || event.bot_id) {
+  if (
+    (event.type !== 'message' && event.type !== 'app_mention') ||
+    event.subtype === 'bot_message' || event.bot_id
+  ) {
     return false;
   }
-  return !!event.text || event.subtype === 'file_share';
+  return (typeof event.text === 'string' && event.text.length > 0) ||
+    event.subtype === 'file_share' ||
+    (Array.isArray(event.files) && event.files.length > 0);
 }
 
 /** Socket Mode configuration */
@@ -813,7 +831,7 @@ export class SlackSocketClient {
         envelope_id: string;
         type: string;
         payload?: {
-          event?: SlackMessageEvent & { subtype?: string };
+          event?: SlackMessageEvent;
         };
         reason?: string;
       };
@@ -872,13 +890,17 @@ export class SlackSocketClient {
         }
       }
 
-      // Process events_api envelopes containing message events
+      // Process both ordinary messages and explicit channel mentions. A single
+      // Slack message can arrive through both subscriptions with different
+      // event ids. Leave deduplication to the listener, where the key is claimed
+      // only after a successful durable inbox write: suppressing it here would
+      // prevent recovery from a transient identity or storage failure.
       if (envelope.type === 'events_api' && envelope.payload?.event) {
         const event = envelope.payload.event;
 
-        // Deliver message events in our channel that the poll would have
-        // delivered (non-bot, has text) — including human subtyped messages
-        // like file_share. Channel scoping stays inline (needs config).
+        // Deliver human messages/mentions, including captionless file shares.
+        // Channel scoping stays inline; authorization and mention-only rules
+        // are applied by the listener after resolving the app's own identity.
         const watchedChannels = this.config.channelIds ?? [this.config.channelId];
         if (
           watchedChannels.includes(event.channel) &&

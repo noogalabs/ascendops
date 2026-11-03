@@ -5,6 +5,7 @@ import {
   shouldDeliverSlackMessage,
   SlackSocketClient,
   SLACK_PERMANENT_AUTH_ERRORS,
+  type SlackMessageEvent,
 } from '../../../src/slack/slack-socket.js';
 import { redactTokens } from '../../../src/slack/slack-redact.js';
 
@@ -92,6 +93,17 @@ describe('shouldDeliverSlackMessage (parity with the legacy poll)', () => {
     expect(shouldDeliverSlackMessage({ type: 'message', text: 'hello team' })).toBe(true);
   });
 
+  it('delivers explicit channel mentions while preserving bot guards', () => {
+    expect(shouldDeliverSlackMessage({ type: 'app_mention', text: '<@U_BOT> status?' })).toBe(true);
+    expect(shouldDeliverSlackMessage({ type: 'app_mention', text: 'echo', bot_id: 'B_BOT' })).toBe(false);
+    expect(shouldDeliverSlackMessage({ type: 'app_mention', text: 'echo', subtype: 'bot_message' })).toBe(false);
+  });
+
+  it('delivers file metadata without a caption, and rejects a contentless mention', () => {
+    expect(shouldDeliverSlackMessage({ type: 'app_mention', files: [{ id: 'F_FILE' }] })).toBe(true);
+    expect(shouldDeliverSlackMessage({ type: 'app_mention', text: '', files: [] })).toBe(false);
+  });
+
   // THE regression guard: the poll delivered file shares (non-bot subtype with
   // text); the socket must too, or human file/photo shares are silently dropped.
   it('delivers a file_share message that has text (not dropped)', () => {
@@ -142,6 +154,105 @@ describe('shouldDeliverSlackMessage (parity with the legacy poll)', () => {
     expect(
       shouldDeliverSlackMessage({ type: 'message', subtype: 'file_share', bot_id: 'B0123', text: 'echo' }),
     ).toBe(false);
+  });
+});
+
+describe('SlackSocketClient — channel mentions and overlapping subscriptions', () => {
+  let client: SlackSocketClient | undefined;
+
+  afterEach(() => {
+    client?.stop();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  async function connectedClient(channelIds?: string[]) {
+    const onMessage = vi.fn<(event: SlackMessageEvent) => void>();
+    let socket!: MockWebSocket;
+    class MockWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      send = vi.fn();
+      private handlers = new Map<string, Set<(...args: unknown[]) => void>>();
+      constructor() { socket = this; }
+      addEventListener(type: string, handler: (...args: unknown[]) => void): void {
+        const handlers = this.handlers.get(type) ?? new Set();
+        handlers.add(handler);
+        this.handlers.set(type, handlers);
+      }
+      removeEventListener(type: string, handler: (...args: unknown[]) => void): void {
+        this.handlers.get(type)?.delete(handler);
+      }
+      close(): void {}
+      emit(type: string, value?: unknown): void {
+        for (const handler of this.handlers.get(type) ?? []) handler(value);
+      }
+      envelope(event: SlackMessageEvent, envelopeId: string, eventId: string): void {
+        this.emit('message', {
+          data: JSON.stringify({
+            type: 'events_api',
+            envelope_id: envelopeId,
+            payload: { team_id: 'T_WORKSPACE', event_id: eventId, event },
+          }),
+        });
+      }
+    }
+    vi.stubGlobal('WebSocket', MockWebSocket);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, url: 'wss://example.test/socket' }),
+    }));
+    client = new SlackSocketClient(
+      { appToken: 'xapp-test', botToken: 'xoxb-test', channelId: 'C_PRIMARY', channelIds },
+      onMessage,
+      () => {},
+    );
+    await client.start();
+    socket.emit('open');
+    socket.emit('message', { data: JSON.stringify({ type: 'hello' }) });
+    return { socket, onMessage };
+  }
+
+  it('delivers a watched app_mention with thread and file metadata and acknowledges its envelope', async () => {
+    const { socket, onMessage } = await connectedClient(['C_DEPARTMENT']);
+    const event: SlackMessageEvent = {
+      type: 'app_mention', channel: 'C_DEPARTMENT', user: 'U_MEMBER',
+      text: '<@U_BOT> review this', ts: '100.2', thread_ts: '100.1',
+      files: [{ id: 'F_FILE', name: 'example.txt', size: 16, mimetype: 'text/plain',
+        url_private_download: 'https://files.slack.com/files-pri/example/download' }],
+    };
+    socket.envelope(event, 'env-mention', 'EvMention');
+    expect(onMessage).toHaveBeenCalledExactlyOnceWith(event);
+    expect(socket.send).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ envelope_id: 'env-mention' }));
+  });
+
+  it('leaves overlapping message/mention events and retries available to durable listener dedup', async () => {
+    const { socket, onMessage } = await connectedClient();
+    const event: SlackMessageEvent = {
+      type: 'message', channel: 'C_PRIMARY', user: 'U_MEMBER', text: '<@U_BOT> status?', ts: '100.1',
+    };
+    socket.envelope(event, 'env-message', 'EvMessage');
+    socket.envelope({ ...event, type: 'app_mention' }, 'env-mention', 'EvMention');
+    socket.envelope(event, 'env-retry', 'EvMessage');
+    // The socket has no knowledge of durable inbox success. In particular, a
+    // failed first handler must not make the second event or retry disappear.
+    expect(onMessage).toHaveBeenCalledTimes(3);
+    expect(socket.send.mock.calls.map(([raw]) => JSON.parse(raw).envelope_id))
+      .toEqual(['env-message', 'env-mention', 'env-retry']);
+  });
+
+  it('applies the configured conversation list to mentions and DMs, and still rejects bots', async () => {
+    const { socket, onMessage } = await connectedClient(['C_DEPARTMENT', 'D_PRIVATE']);
+    const event: SlackMessageEvent = {
+      type: 'app_mention', channel: 'C_PRIMARY', user: 'U_MEMBER', text: '<@U_BOT> status?', ts: '100.1',
+    };
+    socket.envelope(event, 'env-unapproved', 'EvUnapproved');
+    socket.envelope({ ...event, channel: 'C_DEPARTMENT', bot_id: 'B_BOT' }, 'env-bot', 'EvBot');
+    const dm: SlackMessageEvent = { ...event, type: 'message', channel: 'D_PRIVATE', text: 'hello' };
+    socket.envelope(dm, 'env-dm', 'EvDm');
+    expect(onMessage).toHaveBeenCalledExactlyOnceWith(dm);
+    expect(socket.send).toHaveBeenCalledTimes(3);
   });
 });
 

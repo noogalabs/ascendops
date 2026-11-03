@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { spawnSync, execFileSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, lstatSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { sendMessage, checkInbox, ackInbox, pruneProcessed, PROCESSED_TTL_DAYS, PROCESSED_TTL_MIN_DAYS } from '../bus/message.js';
 import { agentExists } from '../bus/agents.js';
@@ -37,7 +37,7 @@ import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, 
 import { createSkillPr, createSkillAuditPr } from '../bus/skill-autopr.js';
 import { atomicWriteSync } from '../utils/atomic.js';
 import { resolvePaths } from '../utils/paths.js';
-import { parseEnvFile, resolveEnv, resolveTargetAgentDir } from '../utils/env.js';
+import { parseEnvFile, parseEnvFileStrict, resolveEnv, resolveTargetAgentDir } from '../utils/env.js';
 import { configuredTimezone } from '../utils/timezone.js';
 import {
   resolveCommsLintRules,
@@ -1647,38 +1647,53 @@ busCommand
   .description('Send a message to a Slack channel')
   .argument('<channel>', 'Slack channel ID (e.g. C1234567890) or name (e.g. #general)')
   .argument('<message>', 'Message text')
-  .action(async (channel: string, message: string) => {
+  .option('--thread-ts <timestamp>', 'Reply under the original Slack parent timestamp')
+  .action(async (channel: string, message: string, opts: { threadTs?: string }) => {
     const env = resolveEnv();
-    let slackToken = '';
-
-    if (env.agentDir) {
-      const { readFileSync, existsSync } = require('fs');
-      const { join } = require('path');
-      const agentEnv = join(env.agentDir, '.env');
-      if (existsSync(agentEnv)) {
-        const content = readFileSync(agentEnv, 'utf-8') as string;
-        const match = content.match(/^SLACK_BOT_TOKEN=(.+)$/m);
-        if (match?.[1]?.trim()) slackToken = match[1].trim();
-      }
+    const { SlackAPI, isSlackTimestamp } = await import('../slack/api.js');
+    if (opts.threadTs !== undefined && !isSlackTimestamp(opts.threadTs)) {
+      console.error('Invalid Slack thread timestamp: expected a seconds.microseconds string.');
+      process.exitCode = 1;
+      return;
     }
 
-    if (!slackToken) slackToken = process.env.SLACK_BOT_TOKEN ?? '';
-
-    if (!slackToken) {
-      console.error('Warning: SLACK_BOT_TOKEN not set. Skipping Slack message. Set it in your agent .env file or as SLACK_BOT_TOKEN env var.');
-      process.exit(0);
-    }
-
-    const { SlackAPI } = await import('../slack/api.js');
-    const api = new SlackAPI(slackToken);
     try {
-      await api.postMessage(channel, message, await resolveSlackDisplayIdentity(env));
-      console.log(`Slack message sent to ${channel}`);
+      const routed = await assertSlackOutboundRoute(env, channel);
+      const slackToken = await resolveSlackBotToken(env, routed);
+      if (!slackToken) {
+        console.error('Error: SLACK_BOT_TOKEN not set. Slack message was not sent.');
+        process.exitCode = 1;
+        return;
+      }
+      const sent = await new SlackAPI(slackToken).postMessage(channel, message, await resolveSlackDisplayIdentity(env), { thread_ts: opts.threadTs });
+      emitResult({
+        status: 'sent', channel: sent?.channel ?? channel, ts: sent?.ts,
+        thread_ts: opts.threadTs ?? sent?.ts, new_parent: opts.threadTs === undefined,
+      });
     } catch (err) {
       console.error(`Failed to send Slack message: ${err}`);
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
+
+/** Apply the same route restriction to ordinary and test sends. */
+async function assertSlackOutboundRoute(env: ReturnType<typeof resolveEnv>, channel: string): Promise<boolean> {
+  const routingRoot = env.frameworkRoot || env.projectRoot;
+  if (!routingRoot || !env.org || !env.agentName) return false;
+  const { loadSlackRoutingConfig } = await import('../slack/slack-routing.js');
+  let routing: ReturnType<typeof loadSlackRoutingConfig>;
+  try {
+    // The loader distinguishes absent (legacy) from unreadable/malformed
+    // (throws). An existsSync precheck would conceal access errors.
+    routing = loadSlackRoutingConfig(routingRoot, env.org, env.agentName);
+  } catch {
+    throw new Error('Slack routing is invalid; fix slack.json before sending.');
+  }
+  if (routing && !(routing.allowed_channels ?? []).includes(channel)) {
+    throw new Error('Slack outbound conversation is not in this agent\'s allowed_channels.');
+  }
+  return routing !== null;
+}
 
 /** D4 display identity from the agent's slack.json, when present — GATED.
  * The persona gate is structural: only gateSlackDisplayIdentity can produce a
@@ -1688,27 +1703,53 @@ busCommand
 async function resolveSlackDisplayIdentity(
   env: ReturnType<typeof resolveEnv>,
 ): Promise<import('../slack/slack-routing.js').GatedDisplayIdentity | undefined> {
-  if (!env.frameworkRoot || !env.org || !env.agentName) return undefined;
+  const routingRoot = env.frameworkRoot || env.projectRoot;
+  if (!routingRoot || !env.org || !env.agentName) return undefined;
   const { resolveGatedDisplayIdentity } = await import('../slack/slack-routing.js');
-  return resolveGatedDisplayIdentity(env.frameworkRoot, env.org, env.agentName, (line) =>
+  return resolveGatedDisplayIdentity(routingRoot, env.org, env.agentName, (line) =>
     console.error(line),
   );
 }
 
-/** Shared Slack token resolution: agent .env first, then process env — the
- * same flow as send-slack so all three commands act as the same identity. */
-function resolveSlackBotToken(env: ReturnType<typeof resolveEnv>): string {
-  if (env.agentDir) {
-    const { readFileSync, existsSync } = require('fs');
-    const { join } = require('path');
-    const agentEnv = join(env.agentDir, '.env');
-    if (existsSync(agentEnv)) {
-      const content = readFileSync(agentEnv, 'utf-8') as string;
-      const match = content.match(/^SLACK_BOT_TOKEN=(.+)$/m);
-      if (match?.[1]?.trim()) return match[1].trim();
+/** Shared Slack token resolution. A present routed-agent secrets file must
+ * contain its own bot token; never fill a partial file with ambient identity. */
+async function resolveSlackBotToken(env: ReturnType<typeof resolveEnv>, routed?: boolean): Promise<string> {
+  const routingRoot = env.frameworkRoot || env.projectRoot;
+  if (routed === undefined && routingRoot && env.org && env.agentName) {
+    const { loadSlackRoutingConfig } = await import('../slack/slack-routing.js');
+    try {
+      routed = loadSlackRoutingConfig(routingRoot, env.org, env.agentName) !== null;
+    } catch {
+      throw new Error('Slack routing is invalid; fix slack.json before using Slack credentials.');
     }
   }
-  return process.env.SLACK_BOT_TOKEN ?? '';
+  if (env.agentDir) {
+    const agentEnv = join(env.agentDir, '.env');
+    let present = false;
+    try {
+      // lstat sees a dangling symlink as present; a broken secrets reference
+      // must fail rather than accidentally borrow another agent's token.
+      lstatSync(agentEnv);
+      present = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error('Agent Slack credentials are unreadable; refusing ambient credentials.');
+      }
+    }
+    if (present) {
+      let token: string | undefined;
+      try {
+        token = parseEnvFileStrict(agentEnv).SLACK_BOT_TOKEN?.trim();
+      } catch {
+        throw new Error('Agent Slack credentials are unreadable; refusing ambient credentials.');
+      }
+      if (token) return token;
+      if (routed) {
+        throw new Error('Agent Slack bot token is missing or blank; refusing ambient credentials for routed agents.');
+      }
+    }
+  }
+  return process.env.SLACK_BOT_TOKEN?.trim() ?? '';
 }
 
 busCommand
@@ -1718,21 +1759,21 @@ busCommand
   .argument('[message]', 'Test message text', 'cortextos slack test message')
   .action(async (channel: string, message: string) => {
     const env = resolveEnv();
-    const slackToken = resolveSlackBotToken(env);
-    if (!slackToken) {
-      console.error('Error: SLACK_BOT_TOKEN not set (agent .env or environment).');
-      process.exit(1);
-    }
     const { SlackAPI } = await import('../slack/api.js');
     try {
-      await new SlackAPI(slackToken)
+      const routed = await assertSlackOutboundRoute(env, channel);
+      const slackToken = await resolveSlackBotToken(env, routed);
+      if (!slackToken) {
+        console.error('Error: SLACK_BOT_TOKEN not set (agent .env or environment).');
+        process.exitCode = 1;
+        return;
+      }
+      const sent = await new SlackAPI(slackToken)
         .postMessage(channel, message, await resolveSlackDisplayIdentity(env));
-      console.log(`OK: test message posted to ${channel}`);
+      emitResult({ status: 'sent', test: true, channel: sent?.channel ?? channel, ts: sent?.ts, new_parent: true });
     } catch (err) {
-      // Unlike send-slack's soft-skip, a TEST send failing is the answer the
-      // operator asked for — exit nonzero with the API's reason.
       console.error(`FAIL: ${err instanceof Error ? err.message : err}`);
-      process.exit(1);
+      process.exitCode = 1;
     }
   });
 
@@ -1742,13 +1783,14 @@ busCommand
   .option('--all', 'Include channels the bot is NOT a member of', false)
   .action(async (opts: { all?: boolean }) => {
     const env = resolveEnv();
-    const slackToken = resolveSlackBotToken(env);
-    if (!slackToken) {
-      console.error('Error: SLACK_BOT_TOKEN not set (agent .env or environment).');
-      process.exit(1);
-    }
     const { SlackAPI } = await import('../slack/api.js');
     try {
+      const slackToken = await resolveSlackBotToken(env);
+      if (!slackToken) {
+        console.error('Error: SLACK_BOT_TOKEN not set (agent .env or environment).');
+        process.exitCode = 1;
+        return;
+      }
       const channels = await new SlackAPI(slackToken).listChannels(!opts.all);
       if (channels.length === 0) {
         console.log(opts.all ? 'No channels visible to this bot.' : 'Bot is not a member of any channel. Invite it, or use --all to list visible channels.');
