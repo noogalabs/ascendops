@@ -218,4 +218,51 @@ describe('send-slack thread and outbound route', () => {
     expect(receipt.thread_ts).toBe('1762182234.000001');
     expect(receipt.new_parent).toBe(false);
   });
+
+  describe('legacy PROJECT_ROOT-only contexts', () => {
+    beforeEach(() => {
+      vi.stubEnv('CTX_FRAMEWORK_ROOT', '');
+      vi.stubEnv('CORTEXTOS_DIR', '');
+      // Older agent shells derive their directory from PROJECT_ROOT too.
+      vi.stubEnv('CTX_AGENT_DIR', '');
+      allow();
+    });
+
+    it.each(['send-slack', 'slack-test-send'])('%s still rejects an out-of-route destination', async (command) => {
+      await busCommand.parseAsync([command, 'D-other', 'status'], { from: 'user' });
+      expect(postMessage).not.toHaveBeenCalled();
+      expect(tokenSeen).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('allowed_channels'));
+    });
+
+    it.each(['send-slack', 'slack-test-send'])('%s still rejects partial own credentials instead of borrowing ambient identity', async (command) => {
+      writeFileSync(join(agentDir, '.env'), 'SLACK_APP_TOKEN=own-app-token\n');
+      vi.stubEnv('SLACK_BOT_TOKEN', 'ambient-wrong-agent-token');
+      await busCommand.parseAsync([command, 'D-approved', 'status'], { from: 'user' });
+      expect(postMessage).not.toHaveBeenCalled();
+      expect(tokenSeen).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('refusing ambient credentials for routed agents'));
+    });
+
+    it.each(['send-slack', 'slack-test-send'])('%s sends an approved destination with the routed functional identity', async (command) => {
+      await busCommand.parseAsync([command, 'D-approved', 'status'], { from: 'user' });
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      expect(postMessage.mock.calls[0][0]).toBe('D-approved');
+      expect(postMessage.mock.calls[0][2]).toEqual({ username: 'test-agent' });
+      expect(tokenSeen).toHaveBeenCalledWith('test-token');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('infers routing from PROJECT_ROOT for discovery credential loading too', async () => {
+      writeFileSync(join(agentDir, '.env'), 'SLACK_BOT_TOKEN=\n');
+      vi.stubEnv('SLACK_BOT_TOKEN', 'ambient-wrong-agent-token');
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('test exit'); });
+      await expect(busCommand.parseAsync(['slack-discover-channels'], { from: 'user' })).rejects.toThrow('test exit');
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(tokenSeen).not.toHaveBeenCalled();
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('refusing ambient credentials for routed agents'));
+    });
+  });
 });

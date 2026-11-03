@@ -110,7 +110,7 @@ Never disable routing globally to discover a DM ID. Each person has a separate c
 
 Routed channels default to `channel_mentions_only: true`. Direct messages whose conversation ID begins with `D` do not need a mention. In other allowed conversations, the runtime accepts a real `app_mention` event or a message containing the exact `<@BOT_USER_ID>` mention for this app. Plain text resembling its display name is insufficient. Setting `channel_mentions_only: false` is an explicit opt-out for a separately approved workflow.
 
-Mention-only filtering also excludes unmentioned urgent channel posts from the model. If an existing approved escalation workflow requires monitoring those posts, configure that channel workflow deliberately with filtering disabled and retain the agent's quiet-channel and emergency rules. Do not assume an agent can react to input the runtime has filtered out.
+This setting applies to every allowed non-DM conversation for this agent. Mention-only filtering also excludes unmentioned urgent channel posts from the model. If an existing approved escalation workflow requires monitoring those posts, choose the agent-wide opt-out deliberately, narrow its allowed conversations, and retain the agent's quiet-channel and emergency rules. Do not assume an agent can react to input the runtime has filtered out.
 
 The runtime's mention check controls delivery to the model. Durable agent instructions still govern what to say and what authority applies:
 

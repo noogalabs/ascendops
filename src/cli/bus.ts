@@ -1678,13 +1678,14 @@ busCommand
 
 /** Apply the same route restriction to ordinary and test sends. */
 async function assertSlackOutboundRoute(env: ReturnType<typeof resolveEnv>, channel: string): Promise<boolean> {
-  if (!env.frameworkRoot || !env.org || !env.agentName) return false;
+  const routingRoot = env.frameworkRoot || env.projectRoot;
+  if (!routingRoot || !env.org || !env.agentName) return false;
   const { loadSlackRoutingConfig } = await import('../slack/slack-routing.js');
   let routing: ReturnType<typeof loadSlackRoutingConfig>;
   try {
     // The loader distinguishes absent (legacy) from unreadable/malformed
     // (throws). An existsSync precheck would conceal access errors.
-    routing = loadSlackRoutingConfig(env.frameworkRoot, env.org, env.agentName);
+    routing = loadSlackRoutingConfig(routingRoot, env.org, env.agentName);
   } catch {
     throw new Error('Slack routing is invalid; fix slack.json before sending.');
   }
@@ -1702,9 +1703,10 @@ async function assertSlackOutboundRoute(env: ReturnType<typeof resolveEnv>, chan
 async function resolveSlackDisplayIdentity(
   env: ReturnType<typeof resolveEnv>,
 ): Promise<import('../slack/slack-routing.js').GatedDisplayIdentity | undefined> {
-  if (!env.frameworkRoot || !env.org || !env.agentName) return undefined;
+  const routingRoot = env.frameworkRoot || env.projectRoot;
+  if (!routingRoot || !env.org || !env.agentName) return undefined;
   const { resolveGatedDisplayIdentity } = await import('../slack/slack-routing.js');
-  return resolveGatedDisplayIdentity(env.frameworkRoot, env.org, env.agentName, (line) =>
+  return resolveGatedDisplayIdentity(routingRoot, env.org, env.agentName, (line) =>
     console.error(line),
   );
 }
@@ -1712,10 +1714,11 @@ async function resolveSlackDisplayIdentity(
 /** Shared Slack token resolution. A present routed-agent secrets file must
  * contain its own bot token; never fill a partial file with ambient identity. */
 async function resolveSlackBotToken(env: ReturnType<typeof resolveEnv>, routed?: boolean): Promise<string> {
-  if (routed === undefined && env.frameworkRoot && env.org && env.agentName) {
+  const routingRoot = env.frameworkRoot || env.projectRoot;
+  if (routed === undefined && routingRoot && env.org && env.agentName) {
     const { loadSlackRoutingConfig } = await import('../slack/slack-routing.js');
     try {
-      routed = loadSlackRoutingConfig(env.frameworkRoot, env.org, env.agentName) !== null;
+      routed = loadSlackRoutingConfig(routingRoot, env.org, env.agentName) !== null;
     } catch {
       throw new Error('Slack routing is invalid; fix slack.json before using Slack credentials.');
     }
