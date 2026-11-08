@@ -206,9 +206,9 @@ change without changing the install steps — work down the list top to bottom a
 | Order | Agent | Template | Required? | Role |
 |-------|-------|----------|-----------|------|
 | 1 | EA / Orchestrator | `orchestrator` | **required** | Coordinates the fleet; your single point of contact |
-| 2 | Maintenance Coordinator | `maintenance-coordinator` | optional | Work-order triage, vendor dispatch, resident comms |
-| 3 | Analyst | `analyst` | **required** | Metrics, reporting, and fleet/data analysis |
-| 4 | Dev | `agent` | **required** | Builds + reviews code changes for your fleet (Claude Code) |
+| 2 | Analyst | `analyst` | **required** | Metrics, reporting, and fleet/data analysis |
+| 3 | Dev | `agent` | **required** | Builds + reviews code changes for your fleet (Claude Code) |
+| 4 | Maintenance Coordinator | `maintenance-coordinator` | optional | Work-order triage, vendor dispatch, resident comms |
 | 5 | Second Dev (Codex) | `agent-codex` | optional | A second build agent on the Codex runtime |
 | 6 | Leasing Coordinator | `leasing-coordinator` | optional | Leasing pipeline: intake, showings, applications, move-in. **Newer — built + defined but not yet production-proven; the Maintenance Coordinator is the proven PM persona.** |
 
